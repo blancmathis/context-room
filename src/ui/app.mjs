@@ -8333,6 +8333,7 @@ function confirmReviewUndo(receiptId) {
       confirmPendingLabel: "Undoing…",
       confirmVariant: "primary",
       onConfirm: async () => {
+        await settleReviewFlowSavesBeforeBulkReview();
         await api("/api/context-hub/review-undo", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -8341,6 +8342,7 @@ function confirmReviewUndo(receiptId) {
         state.reviewHistoryStale = true;
         setStatus("Trust undone · " + receipt.count + " files are back in review");
         explorerViewController?.invalidate();
+        refreshReviewCachesAfterBulkReview(receipt.projectId);
         await refreshContextHubReviewQueueAfterUndo();
       },
     });
@@ -8368,6 +8370,25 @@ function confirmReviewUndo(receiptId) {
 // "Trust the current versions" (docs/features/review-authority.md): one explicit, undoable human
 // gesture for a project with no accepted version yet. The person sees the exact list first; the
 // server refuses the gesture if any file changed since this list (nothing is written then).
+// Trust and its undo change many acceptances at once. Queued flow decisions
+// (and their outbox records) land first; afterwards the flow and the report
+// cached for that project are dropped or read again, so neither shows a file
+// in its old review state.
+async function settleReviewFlowSavesBeforeBulkReview() {
+  await reviewFlowSaves.chain.catch(() => {});
+}
+
+function refreshReviewCachesAfterBulkReview(projectId) {
+  const flow = currentReviewFlow();
+  if (flow && !flow.done && flow.items.some((item) => item.projectId === projectId)) closeReviewFlow();
+  if (!projectId || state.activeProjectLocationId !== projectId) return;
+  api("/api/docqa").then((docqa) => {
+    if (state.activeProjectLocationId !== projectId) return;
+    state.docqa = docqa;
+    renderReviewFlowBar();
+  }).catch(() => {});
+}
+
 async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { afterAdd = false, trigger = null } = {}) {
   if (!projectId || IS_HOSTED_CONTEXT_ROOM) return;
   if (trigger?.getAttribute("aria-busy") === "true") return;
@@ -8402,6 +8423,7 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
     confirmVariant: "primary",
     focusCancel: true,
     onConfirm: async () => {
+      await settleReviewFlowSavesBeforeBulkReview();
       try {
         await api("/api/context-hub/trust-current", {
           method: "POST",
@@ -8415,6 +8437,7 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
       state.reviewHistoryStale = true;
       setStatus("Trusted " + count + " current version" + plural + " · undo from Recent decisions");
       explorerViewController?.invalidate();
+      refreshReviewCachesAfterBulkReview(projectId);
       await refreshContextHubReviewQueueAfterUndo();
     },
   });
