@@ -1869,7 +1869,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-flow-failures summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
     .review-flow-failures ul { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
     .review-flow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    .review-flow-actions button { min-height: 40px; padding: 0 14px; }
+    .review-flow-actions button { min-height: 48px; padding: 0 14px; }
     .review-flow-actions kbd { margin-left: 6px; font-size: 11px; color: var(--muted); }
     .review-flow-busy { color: var(--muted); font-size: 12px; }
     .review-history-panel { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
@@ -7826,12 +7826,21 @@ async function decideReviewFlow(action) {
     finishReviewFlow({ stopped: true });
     return;
   }
+  if (action === "previous") {
+    if (flow.index < 1) return;
+    flow.index -= 1;
+    await openReviewFlowItem();
+    return;
+  }
   if (action === "later") {
-    flow.results[item.id] = "later";
+    // Back on a file already decided, L moves on and keeps that decision.
+    if (!REVIEW_FLOW_DECIDED[flow.results[item.id]]) flow.results[item.id] = "later";
     flow.index += 1;
     await openReviewFlowItem();
     return;
   }
+  // A decision still on its way is not decided a second time.
+  if (flow.results[item.id] === "saving") return;
   if (state.dirty) {
     setStatus("save or discard your edits before deciding");
     return;
@@ -7874,7 +7883,7 @@ async function decideReviewFlow(action) {
 // with opening it. Saves run one after another, each once (own requestId, no
 // retry); a page closed before a save starts sends it on pagehide. A failed
 // save stays in the bar and in the summary; the file stays pending.
-const reviewFlowSaves = { chain: Promise.resolve(), pending: 0, settleTimer: 0, unsent: new Set(), sending: new Map() };
+const reviewFlowSaves = { chain: Promise.resolve(), pending: 0, settleTimer: 0, unsent: new Set(), sending: new Map(), inFlight: new Set() };
 // Decisions not yet confirmed by the server. They outlive the page, so a page
 // closed or reloaded mid-save shows the outcome the next time it opens.
 const REVIEW_FLOW_OUTBOX_KEY = "context-room:review-flow-outbox:v1";
@@ -8000,12 +8009,23 @@ function reviewFlowDecisionRequests(decision) {
 
 // The page is going away: send what the queue has not started, each decision
 // with base and review sent together (both carry the hash of the version
-// shown, so order does not matter). Their outcome is read back the next time the
-// page shows (the outbox), or here if the page comes back from the cache.
+// shown, so order does not matter). A decision whose base is still on its way
+// sends its review now too: after pagehide, nothing would send it later.
+// Their outcome is read back the next time the page shows (the outbox), or
+// here if the page comes back from the cache.
 function flushUnsentReviewFlowDecisions() {
+  for (const decision of reviewFlowSaves.inFlight) {
+    if (!decision.reviewSent) sendReviewFlowReviewOnce(decision, reviewFlowDecisionRequests(decision)).catch(() => {});
+  }
   const decisions = [...reviewFlowSaves.unsent];
   reviewFlowSaves.unsent.clear();
   for (const decision of decisions) void sendReviewFlowDecision(decision, true);
+}
+
+// One review request per decision, whoever sends it first (the queue or pagehide).
+function sendReviewFlowReviewOnce(decision, requests) {
+  decision.reviewSent ||= api(...requests.review);
+  return decision.reviewSent;
 }
 
 async function saveReviewFlowDecision(decision) {
@@ -8015,15 +8035,16 @@ async function saveReviewFlowDecision(decision) {
 
 async function sendReviewFlowDecision(decision, together = false) {
   reviewFlowSaves.sending.set(decision.body.requestId, decision.itemId);
+  reviewFlowSaves.inFlight.add(decision);
   const requests = reviewFlowDecisionRequests(decision);
   let failure = null;
   try {
     if (together) {
       // The page is leaving: nothing after the first answer would run.
-      await Promise.all([requests.baseline && api(...requests.baseline), api(...requests.review)]);
+      await Promise.all([requests.baseline && api(...requests.baseline), sendReviewFlowReviewOnce(decision, requests)]);
     } else {
       if (requests.baseline) await api(...requests.baseline);
-      await api(...requests.review);
+      await sendReviewFlowReviewOnce(decision, requests);
     }
     state.reviewHistoryStale = true;
   } catch (error) {
@@ -8031,12 +8052,14 @@ async function sendReviewFlowDecision(decision, together = false) {
     // the outbox reads the outcome back from the review queue.
     if (error instanceof TypeError) {
       reviewFlowSaves.sending.delete(decision.body.requestId);
+      reviewFlowSaves.inFlight.delete(decision);
       window.setTimeout(() => reconcileReviewFlowOutbox().catch(() => {}), 1500);
       return;
     }
     failure = error?.code === "review_revision_conflict" ? "a newer version is waiting" : error?.message || String(error);
   }
   reviewFlowSaves.sending.delete(decision.body.requestId);
+  reviewFlowSaves.inFlight.delete(decision);
   settleReviewFlowDecision(reviewFlowOutboxRecord(decision), failure);
 }
 
@@ -8050,6 +8073,8 @@ function settleReviewFlowDecision(record, failure) {
     flow.failures = [...(flow.failures || []).filter((entry) => entry.path !== record.path), { path: record.path, message: failure }];
   } else {
     flow.results[record.itemId] = record.status === "verified" ? "accepted" : "changes";
+    // A file decided again after "Previous" no longer shows its first failure.
+    if (flow.failures?.length) flow.failures = flow.failures.filter((entry) => entry.path !== record.path);
   }
   saveReviewFlow();
   renderReviewFlowBar();
@@ -8165,6 +8190,14 @@ function setReviewFlowMarkup(node, markup) {
   node.__reviewFlowMarkup = markup;
 }
 
+// What the bar says about a file decided earlier in this flow ("Previous").
+const REVIEW_FLOW_DECIDED = {
+  accepted: "You accepted this file.",
+  changes: "You requested changes on this file.",
+  saving: "Your decision on this file is being saved.",
+  failed: "Your decision on this file was not saved.",
+};
+
 function renderReviewFlowBar() {
   let bar = el("reviewFlowBar");
   const item = reviewFlowShownItem();
@@ -8193,17 +8226,23 @@ function renderReviewFlowBar() {
   const changed = Boolean(item.currentHash && live?.currentHash && live.currentHash !== item.currentHash);
   const failures = flow.failures || [];
   const disabled = flow.busy ? " disabled" : "";
-  const accept = reviewFlowAcceptAvailable()
+  const result = flow.results[item.id];
+  const decided = REVIEW_FLOW_DECIDED[result] || "";
+  const saving = result === "saving";
+  // Back on a decided file: Accept and Request changes replace that decision.
+  const accept = !saving && reviewFlowAcceptAvailable()
     ? '<button type="button" class="primary" data-review-flow="accept"' + disabled + '>Accept <kbd>A</kbd></button>' : "";
-  const changes = secondaryReviewActionForSelectedFile()
+  const changes = !saving && secondaryReviewActionForSelectedFile()
     ? '<button type="button" data-review-flow="changes"' + disabled + '>Request changes <kbd>R</kbd></button>' : "";
+  const previous = flow.index > 0 ? '<button type="button" data-review-flow="previous"' + disabled + '>Previous <kbd>P</kbd></button>' : "";
   setReviewFlowMarkup(bar, '<div class="review-flow-where"><strong>' + (flow.index + 1) + ' of ' + flow.items.length + '</strong> · '
       + escapeHtml(item.projectTitle || "Project") + ' · ' + escapeHtml(lever.label) + '</div>'
     + '<p class="review-flow-why"><strong>Why</strong> ' + escapeHtml(why) + ' <strong>Effect</strong> ' + escapeHtml(lever.effect) + '</p>'
     + (changed ? '<p class="review-flow-note">Changed since this review started. You decide on the version shown.</p>' : "")
+    + (decided ? '<p class="review-flow-note review-flow-decided" role="status"><strong>Decided</strong> ' + escapeHtml(decided) + (accept || changes ? " Decide again to change it." : "") + '</p>' : "")
     + reviewFlowFailuresMarkup(failures)
-    + '<div class="review-flow-actions">' + accept + changes
-    + '<button type="button" data-review-flow="later"' + disabled + '>Later <kbd>L</kbd></button>'
+    + '<div class="review-flow-actions">' + previous + accept + changes
+    + '<button type="button" data-review-flow="later"' + disabled + '>' + (decided ? "Next" : "Later") + ' <kbd>L</kbd></button>'
     + '<button type="button" class="quiet-button" data-review-flow="stop"' + disabled + '>Stop</button>'
     + (flow.busy ? '<span class="review-flow-busy" role="status">Saving…</span>' : "")
     + '</div>');
@@ -8364,6 +8403,7 @@ function confirmReviewUndo(receiptId) {
     confirmPendingLabel: "Undoing…",
     confirmVariant: "primary",
     onConfirm: async () => {
+      await settleReviewFlowSavesBeforeBulkReview();
       await api("/api/context-hub/review-undo", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8371,6 +8411,8 @@ function confirmReviewUndo(receiptId) {
       });
       state.reviewHistoryStale = true;
       setStatus("Acceptance undone · " + receipt.path + " is back in review");
+      explorerViewController?.invalidate();
+      refreshReviewCachesAfterBulkReview(receipt.projectId, receipt.path);
       await refreshContextHubReviewQueueAfterUndo();
     },
   });
@@ -8389,32 +8431,39 @@ async function settleReviewFlowSavesBeforeBulkReview() {
   await Promise.race([reviewFlowSaves.chain.catch(() => {}), new Promise((resolve) => window.setTimeout(resolve, 10000))]);
 }
 
-// Only this project's items leave an open flow; items of other projects keep their place.
-function dropProjectFromReviewFlow(projectId) {
+// Only this project's items (or this one file, for the undo of one acceptance)
+// leave an open flow; the other items keep their place. A file that left the
+// flow is back in the review queue.
+function dropProjectFromReviewFlow(projectId, path = "") {
   const flow = currentReviewFlow();
-  if (!flow || flow.done || !flow.items.some((item) => item.projectId === projectId)) return;
-  const kept = flow.items.filter((item) => item.projectId !== projectId);
-  if (!kept.length) {
+  const dropped = (item) => item.projectId === projectId && (!path || item.path === path);
+  if (!flow || !flow.items.some(dropped)) return;
+  const shown = flow.items[flow.index];
+  flow.index = flow.items.slice(0, flow.index).filter((item) => !dropped(item)).length;
+  for (const item of flow.items) if (dropped(item)) delete flow.results[item.id];
+  flow.items = flow.items.filter((item) => !dropped(item));
+  if (flow.done) {
+    // The summary no longer counts what the undo or the trust replaced.
+    saveReviewFlow();
+    renderReviewFlowPanel();
+    return;
+  }
+  if (!flow.items.length) {
     closeReviewFlow();
     return;
   }
-  const shown = flow.items[flow.index];
-  const index = flow.items.slice(0, flow.index).filter((item) => item.projectId !== projectId).length;
-  for (const item of flow.items) if (item.projectId === projectId) delete flow.results[item.id];
-  flow.items = kept;
-  flow.index = index;
-  if (index >= kept.length) {
+  if (flow.index >= flow.items.length) {
     finishReviewFlow();
     return;
   }
   saveReviewFlow();
   renderReviewFlowBar();
   renderReviewFlowPanel();
-  if (shown?.projectId === projectId) openReviewFlowItem().catch((error) => setStatus(error.message));
+  if (shown && dropped(shown)) openReviewFlowItem().catch((error) => setStatus(error.message));
 }
 
-function refreshReviewCachesAfterBulkReview(projectId) {
-  dropProjectFromReviewFlow(projectId);
+function refreshReviewCachesAfterBulkReview(projectId, path = "") {
+  dropProjectFromReviewFlow(projectId, path);
   if (!projectId || state.activeProjectLocationId !== projectId) return;
   api("/api/docqa").then((docqa) => {
     if (state.activeProjectLocationId !== projectId) return;
@@ -9096,7 +9145,9 @@ function renderContextRoomReviewRow(item) {
     const readinessStatus = String(item.openReadiness?.status || "ready");
     const preparing = openable && readinessStatus === "preparing";
     const blocked = !openable || readinessStatus === "blocked";
-    const disabled = blocked || preparing;
+    // A blocked card stays clickable: the click opens the notice that says why
+    // review is unavailable. A disabled card gave no feedback at all.
+    const disabled = preparing || (blocked && selectionMode);
     const description = item.authorityMessage || item.description || "Review the files together, then accept or reject the proposal as one shared change.";
     const descriptionId = "contextRoomProposalDescription-" + item.id.replace(/[^A-Za-z0-9_-]/g, "-");
     const proposalLabel = item.title || item.branch || projectLabel;
@@ -14883,7 +14934,12 @@ async function loadFiles(options = {}) {
 
   if (options.waitForBackground) await refreshBackgroundReports({ forceReports: true });
   else if (reportsRequest) applyInitialReportsWhenReady(reportsRequest);
-  else scheduleBackgroundRefresh({ forceReports: true });
+  // A page load and a project change (Explorer, history, each move to another
+  // project in the review flow) read the reports from the server cache, as the
+  // single-project load above does: writes and the file watcher clear it, and
+  // it lasts at most 60 s. Not covered: a change the watcher cannot see (outside
+  // the watched folders) shows after those 60 s or with Refresh, which recomputes.
+  else scheduleBackgroundRefresh(options.initial || options.navigation ? { reportsNow: true } : { forceReports: true });
   if (options.initial && requestedWorkspaceView === "graph" && state.page !== "graph") {
     await applyWorkspaceUrlState({ reason: "initial-graph", force: true });
   }
@@ -16569,7 +16625,7 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
   const headerActions = panel.querySelector(".context-health-header-actions");
   if (headerActions) headerActions.hidden = true;
   holder.classList.add("global-project-inspection");
-  const project = workspaceSelectedProject();
+  const project = globalInspectionProject();
   const worktree = project ? globalProjectSelectedWorktree(project) : null;
   const heading = panel.querySelector("h2");
   if (heading) heading.textContent = "Project inspection";
@@ -17107,8 +17163,18 @@ function renderContextRoomOtherAttention() {
   }));
 }
 
+// The project menu can inspect a project that is not the Explorer selection.
+// That target holds only while the selection stays the one it was opened from.
+function globalInspectionProject() {
+  const selected = workspaceSelectedProject();
+  const target = state.globalInspectionTarget;
+  if (!target || (selected?.projectKey || "") !== target.selectedKey) return selected;
+  return (state.contextHub?.projects || []).find((project) => project.projectKey === target.projectKey) || selected;
+}
+
 function openGlobalProjectInspection(view, project) {
   if (!project || !["health", "startup"].includes(view)) return;
+  state.globalInspectionTarget = { projectKey: project.projectKey, selectedKey: workspaceSelectedProject()?.projectKey || "" };
   state.globalInspectionView = view;
   renderContextHealth();
   loadGlobalProjectInspection(project).catch((error) => setStatus(error.message));
@@ -27838,10 +27904,10 @@ el("reviewFlowPanel")?.addEventListener("click", (event) => {
     renderContextRoomGlobalReviewQueue();
   }
 });
-// A, R and L decide the open file of a review flow. A held key makes one decision only.
+// A, R and L decide the open file of a review flow; P goes back to the one before. A held key makes one decision only.
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-  const action = { a: "accept", r: "changes", l: "later" }[String(event.key || "").toLowerCase()];
+  const action = { a: "accept", r: "changes", l: "later", p: "previous" }[String(event.key || "").toLowerCase()];
   const bar = el("reviewFlowBar");
   if (!action || !bar || bar.hidden) return;
   if (event.target.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true'], .cm-editor")) return;
