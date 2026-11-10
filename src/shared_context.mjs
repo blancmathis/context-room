@@ -5549,7 +5549,7 @@ function syncSharedContextInternal(root, options = {}, { registryLockHeld = fals
   } = options;
   const resolvedRoot = path.resolve(root);
   const connection = readSharedProjectConnection(resolvedRoot);
-  if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+  if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared connect first");
   authenticatedSharedGit(connection.repository, options.push, timeoutMs);
   const localProjectRoot = connection.projectRoot || resolvedRoot;
   const exactProjectCapabilities = Array.isArray(projectCapabilities)
@@ -8620,7 +8620,7 @@ export function proposeSharedDocumentationFile(repository, options = {}) {
 
 export function listSharedProposals(root, { allProjects = true, refresh = true } = {}) {
   const connection = readSharedProjectConnection(root);
-  if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+  if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared connect first");
   const synced = refresh
     ? syncSharedContext(root, { allowOffline: true })
     : cachedSharedRepositoryState(connection.repository, {
@@ -10018,7 +10018,7 @@ export function materializeSharedReview(root, options = {}) {
   if (initialConnection) authenticatedSharedGit(initialConnection.repository, push, timeoutMs);
   return withSharedRegistryLock(() => {
     const connection = readSharedProjectConnection(root);
-    if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+    if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared connect first");
     return withSharedRepositoryCloneLock(connection.repository, () => {
       const synced = syncSharedContextInternal(
         root,

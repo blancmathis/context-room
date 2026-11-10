@@ -391,9 +391,9 @@ test("inventory impact expands a proven global resource to every registered cons
 });
 
 function withHome(home, callback) {
-  const previous = process.env.HOME;
-  process.env.HOME = home;
-  try { return callback(); } finally { process.env.HOME = previous; }
+  const previous = process.env.HOME, previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  process.env.HOME = home; delete process.env.CLAUDE_CONFIG_DIR;
+  try { return callback(); } finally { process.env.HOME = previous; if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previousConfig; }
 }
 
 function claudeEffective(root, runtime) {
