@@ -8368,8 +8368,10 @@ export function localProposalDocumentChecks(root, id) {
 // Word 3-grams of the project's Markdown documents as they are on disk, for advisory review checks.
 // Runs only in the "checks" background worker (never on the Hub main thread): one index per project
 // root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list of documents is kept
-// until something changes: a Hub write (a new generation from the main thread) or the background
-// refresh (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
+// until a listed folder changes (a document added, removed or renamed): checked on the first call after
+// a Hub write (a new generation from the main thread) and by the background refresh
+// (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
+// A Hub write that only changes a document's content (or the review state) keeps the list.
 // On every call each listed document is checked with one stat and read and hashed again only when its
 // size, modification time, change time or inode changed.
 // Memory: one sorted Uint32Array per document of at most REVIEW_CHECK_MAX_BYTES, at most REVIEW_INDEX_MAX_DOCS documents.
@@ -8405,16 +8407,24 @@ function listReviewDocuments(root, index) {
   const kept = new Set(index.paths);
   for (const rel of index.files.keys()) if (!kept.has(rel)) index.files.delete(rel);
 }
+function reviewIndexFoldersChanged(index) {
+  for (const [folder, mtimeMs] of index.folders) {
+    let current = null;
+    try { current = fs.statSync(path.join(index.root, folder)).mtimeMs; } catch {}
+    if (current !== mtimeMs) return true;
+  }
+  return false;
+}
 function reviewDocumentIndex(root, { generation } = {}) {
   const key = path.resolve(root);
   const index = reviewDocumentIndexes.get(key) || { root: key, listedAt: 0, generation: null, total: 0, paths: [], folders: new Map(), files: new Map() };
   reviewDocumentIndexes.delete(key);
   reviewDocumentIndexes.set(key, index);
   while (reviewDocumentIndexes.size > REVIEW_INDEX_ROOTS) reviewDocumentIndexes.delete(reviewDocumentIndexes.keys().next().value);
-  if (!index.listedAt || (generation !== undefined && generation !== index.generation)) {
+  if (!index.listedAt || (generation !== undefined && generation !== index.generation && reviewIndexFoldersChanged(index))) {
     listReviewDocuments(root, index);
-    if (generation !== undefined) index.generation = generation;
   }
+  if (generation !== undefined) index.generation = generation;
   for (const rel of index.paths) {
     let stats = null;
     try { stats = fs.statSync(path.join(root, rel)); } catch {}
@@ -8438,13 +8448,7 @@ export function refreshReviewDocumentIndexes({ now = Date.now() } = {}) {
   const relisted = [];
   for (const [key, index] of [...reviewDocumentIndexes]) {
     if (!fs.existsSync(index.root)) { reviewDocumentIndexes.delete(key); continue; }
-    let changed = now - index.listedAt >= REVIEW_INDEX_FULL_MS;
-    for (const [folder, mtimeMs] of changed ? [] : index.folders) {
-      let current = null;
-      try { current = fs.statSync(path.join(index.root, folder)).mtimeMs; } catch {}
-      if (current !== mtimeMs) { changed = true; break; }
-    }
-    if (!changed) continue;
+    if (now - index.listedAt < REVIEW_INDEX_FULL_MS && !reviewIndexFoldersChanged(index)) continue;
     try { listReviewDocuments(index.root, index); relisted.push(index.root); } catch {}
   }
   return relisted;
@@ -16457,24 +16461,80 @@ function readBackgroundFileTask(task, root, payload = {}, { expectedRootIdentity
 // documentChecksPending and the page asks /api/docqa/document-checks, which waits for the same run.
 const DOCUMENT_CHECK_TASKS = new Set(["review-checks", "local-proposal-checks"]);
 const DOCUMENT_CHECKS_GRACE_MS = 0;
+// A hung run must not freeze a project's checks: past the timeout the run says "unavailable" and the
+// checks worker is closed (the next run starts a new one). Per project and kind one run at a time; a
+// run still waiting when a newer file asks is dropped (the reviewer moved on). An idle worker is closed.
+function documentChecksTestMs(name, fallback) {
+  const value = Number(process.env.NODE_TEST_CONTEXT && process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.max(20, value) : fallback;
+}
 const reviewIndexGenerations = new Map();
 const documentChecksRuns = new Map();
+const documentChecksLanes = new Map();
+const documentChecksIdleTimers = new Map();
 function documentChecksRun(root, { path: rel = "", proposal = "" } = {}) {
   const rootKey = path.resolve(root);
   const task = proposal ? "local-proposal-checks" : "review-checks";
   const generation = reviewIndexGenerations.get(rootKey) || 0;
   const key = `${rootKey}\0${task}\0${proposal}\0${normalizeRelPath(rel)}\0${generation}`;
   if (documentChecksRuns.has(key)) return documentChecksRuns.get(key);
-  const run = Promise.resolve().then(() => runBackgroundTask(task, rootKey, { path: rel, proposal, generation }))
-    .then((checks) => Array.isArray(checks) ? checks : [], () => [])
-    .finally(() => documentChecksRuns.delete(key));
+  const laneKey = `${rootKey}\0${task}`;
+  const lane = documentChecksLanes.get(laneKey) || { busy: false, waiting: null };
+  documentChecksLanes.set(laneKey, lane);
+  const run = new Promise((resolve) => {
+    const start = () => {
+      lane.busy = true;
+      clearTimeout(documentChecksIdleTimers.get(rootKey));
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error("Documentation checks timed out"), { code: "document_checks_timeout" })),
+          documentChecksTestMs("CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_TIMEOUT_MS", 20_000));
+        timer.unref?.();
+      });
+      Promise.race([Promise.resolve().then(() => runBackgroundTask(task, rootKey, { path: rel, proposal, generation })), timeout])
+        .then((checks) => ({ documentChecks: Array.isArray(checks) ? checks : [] }), (error) => {
+          if (error?.code === "document_checks_timeout") closeBackgroundWorkerByKey(backgroundWorkerKey(rootKey, "checks"), "Documentation checks timed out");
+          return { documentChecksUnavailable: true, documentChecks: [{ type: "checks_unavailable", path: normalizeRelPath(rel), line: 1,
+            message: "Documentation checks are unavailable: they did not finish. Open the file again to retry." }] };
+        })
+        .then((result) => {
+          clearTimeout(timer);
+          resolve(result);
+          lane.busy = false;
+          const next = lane.waiting;
+          lane.waiting = null;
+          if (next) next.start();
+          else scheduleDocumentChecksIdleClose(rootKey);
+        });
+    };
+    if (!lane.busy) start();
+    else {
+      lane.waiting?.drop();
+      lane.waiting = { start, drop: () => resolve({ documentChecks: [], documentChecksSuperseded: true }) };
+    }
+  }).finally(() => documentChecksRuns.delete(key));
   documentChecksRuns.set(key, run);
   return run;
+}
+// Test seam: the background worker groups alive for a project.
+export function backgroundWorkerGroupsForRoot(root) {
+  const prefix = `${path.resolve(root)}\0`;
+  return [...backgroundWorkerPools.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
+}
+function scheduleDocumentChecksIdleClose(rootKey) {
+  clearTimeout(documentChecksIdleTimers.get(rootKey));
+  const timer = setTimeout(() => {
+    documentChecksIdleTimers.delete(rootKey);
+    const workerKey = backgroundWorkerKey(rootKey, "checks");
+    if (backgroundWorkerPools.get(workerKey)?.pending.size === 0) closeBackgroundWorkerByKey(workerKey, "Documentation checks idle");
+  }, documentChecksTestMs("CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_IDLE_MS", 10 * 60_000));
+  timer.unref?.();
+  documentChecksIdleTimers.set(rootKey, timer);
 }
 async function documentChecksWithinGrace(run) {
   let timer = null;
   const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), DOCUMENT_CHECKS_GRACE_MS); timer.unref?.(); });
-  const ready = await Promise.race([run.then((documentChecks) => ({ documentChecks })), late]);
+  const ready = await Promise.race([run, late]);
   clearTimeout(timer);
   return ready || { documentChecks: [], documentChecksPending: true };
 }
@@ -25297,7 +25357,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const relPath = url.searchParams.get("path") || "";
     if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
     assertManagedProjectRootIdentity(path.resolve(root), expectedRootIdentity);
-    sendJson(res, 200, { path: relPath, documentChecks: await documentChecksRun(root, { path: relPath, proposal: url.searchParams.get("proposal") || "" }) });
+    sendJson(res, 200, { path: relPath, ...await documentChecksRun(root, { path: relPath, proposal: url.searchParams.get("proposal") || "" }) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/file/revert") {

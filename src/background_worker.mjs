@@ -27,6 +27,9 @@ function runTask(task, root, payload = {}) {
   if (task === "review-base") return readReviewBaseFile(root, payload.path || "", { readOnly: true });
   // Advisory documentation checks: only the "checks" worker builds and keeps the document index.
   if (task === "review-checks") {
+    // Test seam: a run that hangs (the Hub must time it out).
+    const hangMs = Number(process.env.NODE_TEST_CONTEXT && process.env.CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_HANG_MS);
+    if (hangMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, hangMs);
     return withReviewDocumentChecks(root, readReviewBaseFile(root, payload.path || "", { readOnly: true }), { generation: payload.generation })?.documentChecks || [];
   }
   if (task === "local-proposal-checks") {

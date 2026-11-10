@@ -266,7 +266,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   }
 
   function renderChecks(checks) {
-    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc", "duplicate_partial"].includes(check?.type)) : [];
+    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc", "duplicate_partial", "checks_unavailable"].includes(check?.type)) : [];
     checksPanel.replaceChildren();
     checksPanel.hidden = !list.length;
     if (!list.length) return;

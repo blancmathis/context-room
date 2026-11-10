@@ -24208,11 +24208,12 @@ function reviewRiskNoticeMarkup(beforeText, afterText) {
 
 // Deterministic documentation warnings for this version: added dead links, likely duplicate. Never a block.
 function reviewDocumentChecksMarkup(checks) {
-  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc", "duplicate_partial"].includes(item.type)) : [];
+  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc", "duplicate_partial", "checks_unavailable"].includes(item.type)) : [];
   if (!list.length) return "";
   const links = list.filter((item) => item.type === "dead_link").length;
   const summary = [links ? links + " new dead link" + (links === 1 ? "" : "s") : "", list.some((item) => item.type === "duplicate_doc") ? "likely duplicate" : "",
-    list.some((item) => item.type === "duplicate_partial") ? "duplicate check partial" : ""].filter(Boolean).join(" · ");
+    list.some((item) => item.type === "duplicate_partial") ? "duplicate check partial" : "",
+    list.some((item) => item.type === "checks_unavailable") ? "unavailable" : ""].filter(Boolean).join(" · ");
   const rows = list.slice(0, 8).map((item) => '<li data-review-doc-check="' + escapeHtml(item.type) + '">' + (item.type === "dead_link" ? '<span>Line ' + escapeHtml(String(item.line)) + '</span> ' : '') + escapeHtml(item.message) + '</li>').join("");
   return '<details class="issue review-risk-notice" data-review-doc-checks open><summary><strong>Documentation checks</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + rows + '</ul><p class="muted">A warning: you can still accept.</p></details>';
 }
