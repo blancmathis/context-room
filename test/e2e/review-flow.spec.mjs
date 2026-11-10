@@ -156,3 +156,42 @@ test('@smoke review flow decision sent on pagehide that does not land is visible
     fs.writeFileSync(runbook, before);
   }
 });
+
+// A decision with a base (accepting an external change) is sent on pagehide
+// with both requests at once. Requests sent while a page unloads skip
+// Playwright routes, so the page's own fetch is wrapped: the base never
+// answers, as in a page that is gone, and the review must still be sent.
+test('@smoke review flow pagehide sends the review even when the base never answers', async ({ page }) => {
+  const data = fixture();
+  let holdOpen = false;
+  const hung = [];
+  await page.route(/\/api\/file(\/[a-z-]+)?\?/, (request) => (holdOpen ? hung.push(request) : request.fallback()));
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  await reachSameProjectPair(page);
+  holdOpen = true;
+  await page.evaluate(() => {
+    window.__decisionCalls = [];
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, window.location.href).pathname;
+      if (url === '/api/docqa/review-baseline' || url === '/api/docqa/review') {
+        window.__decisionCalls.push(url);
+        // Nothing reaches the shared fixture; the base never answers.
+        return url.endsWith('baseline') ? new Promise(() => {}) : Promise.reject(new TypeError('page gone'));
+      }
+      return realFetch(input, init);
+    };
+    // The shown file carries an external change, so accept sends a base too.
+    state.externalChange = { source: 'review', path: state.selected, diskHash: state.savedHash, diskContent: state.saved + '\nAdded outside.\n', baseContent: state.saved, reviewDecisions: {} };
+    void decideReviewFlow('accept');
+  });
+  await expect.poll(() => hung.length, { timeout: 30_000 }).toBeGreaterThan(0);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(() => page.evaluate(() => window.__decisionCalls), { timeout: 5_000 }).toEqual(expect.arrayContaining(['/api/docqa/review']));
+  expect(await page.evaluate(() => window.__decisionCalls)).toContain('/api/docqa/review-baseline');
+  holdOpen = false;
+  for (const request of hung.splice(0)) await request.abort().catch(() => {});
+});
