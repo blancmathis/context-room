@@ -58,3 +58,20 @@ test("stale binary decisions preserve newer changes and reject a tampered accept
   assert.throws(() => buildDocumentationCorpus(root), /authority/);
   assert.deepEqual(fs.readFileSync(file), Buffer.from([2,0,255]));
 });
+
+test("inspecting a location with symbolic links succeeds, reports them and never follows or changes them", (t) => {
+  const { root } = fixture(t), outside = fs.mkdtempSync(path.join(os.tmpdir(), "cr-assets-out-"));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(outside, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(outside, "docs/hidden.png"), Buffer.from([1, 2, 3]));
+  fs.symlinkSync(outside, path.join(root, "archive"));
+  fs.symlinkSync(path.join(outside, "gone"), path.join(root, "docs/broken"));
+  fs.symlinkSync(path.join(outside, "docs/hidden.png"), path.join(root, "docs/linked.png"));
+  writeMemoryWebappSettings(root, { allowedPaths: ["docs/", "archive/docs/"], watchAllow: ["docs/", "archive/docs/"] });
+  const assets = readProjectDocumentAssets(root);
+  assert.deepEqual(assets.map((asset) => asset.path), []);
+  assert.deepEqual({ count: assets.symbolicLinks.count, broken: assets.symbolicLinks.broken }, { count: 3, broken: 1 });
+  assert.equal(fs.lstatSync(path.join(root, "archive")).isSymbolicLink(), true);
+  assert.deepEqual(fs.readFileSync(path.join(outside, "docs/hidden.png")), Buffer.from([1, 2, 3]));
+  assert.throws(() => reviewProjectDocumentAsset(root, "docs/linked.png", { decision: "accepted", expectedRevision: "x" }), /Symbolic links cannot be mutated/);
+});
