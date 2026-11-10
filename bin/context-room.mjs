@@ -127,6 +127,7 @@ import { recordDocumentationRead } from "../src/documentation_readers.mjs";
 import { previewCodexProjectImport, applyCodexProjectImport } from "../src/codex_catalog.mjs";
 import { COMPACT_SEARCH_RESULT, CONTEXT_BUNDLE_TRIMMERS, fitToTokenBudget } from "../src/agent_budget.mjs";
 import { preReviewDocumentChecks } from "../src/doc_tidy.mjs";
+import { listLocalProposals } from "../src/local_proposals.mjs";
 import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
@@ -1311,7 +1312,11 @@ if (command === "proposal") {
   const action = args._[1] || "list";
   try {
     if (action === "list") {
-      let proposals = listSharedProposals(root, { allProjects: true, refresh: false });
+      // A project without a Shared binding still has local proposals (`changes begin`): list those.
+      const localOnly = !args.shared && !readSharedProjectConnection(root);
+      let proposals = localOnly
+        ? listLocalProposals(root).map((proposal) => ({ id: proposal.id, branch: proposal.id, title: proposal.title, description: proposal.description, status: proposal.status, source: "local", updatedAt: proposal.updatedAt, submittedAt: proposal.submittedAt, files: (proposal.changes || []).map((change) => change.path) }))
+        : listSharedProposals(root, { allProjects: true, refresh: false });
       if (args.session && args.session !== true) proposals = proposals.filter((proposal) => proposal.sessionId === String(args.session));
       if (args.query && args.query !== true) {
         const needle = String(args.query).toLowerCase();
