@@ -9251,3 +9251,15 @@ test("local proposal creation works without Git and uses the accepted review bas
   assert.equal(fs.readFileSync(path.join(draft.editRoot, "docs/guide.md"), "utf8"), "Accepted guide\n");
   assert.equal(fs.readFileSync(path.join(root, "docs/guide.md"), "utf8"), "Unaccepted outside edit\n");
 });
+
+test("initializeContextRoomProject refuses allowedPaths '.' and './' instead of saving an index that matches nothing", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-allow-dot-"));
+  try {
+    fs.mkdirSync(path.join(project, "docs"));
+    fs.writeFileSync(path.join(project, "docs/a.md"), "# a\n");
+    for (const value of [".", "./", ".//"]) {
+      assert.throws(() => initializeContextRoomProject(project, { title: "Dot", allowedPaths: [value] }), /allowedPaths cannot be/);
+    }
+    assert.equal(fs.existsSync(path.join(project, ".context-room/config.json")), false, "nothing is saved");
+  } finally { fs.rmSync(project, { recursive: true, force: true }); }
+});

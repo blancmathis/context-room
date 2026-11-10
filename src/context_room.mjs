@@ -14243,6 +14243,9 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
     skillDocumentationFiles: [],
   } : inferProjectDocumentationSetup(projectRoot);
   const title = options.title || existing.title || path.basename(projectRoot) || "Context Room";
+  // "." and "./" match no file (an empty or dead entry, so an empty document index): refuse them instead of saving them.
+  const wholeProject = (options.allowedPaths || []).find((item) => /^\.\/*$/.test(String(item).trim()));
+  if (wholeProject !== undefined) throw new Error(`allowedPaths cannot be "${wholeProject}": name the folders or files to allow, for example docs/ or README.md.`);
   const allowedPaths = sanitizePathList(options.allowedPaths?.length ? options.allowedPaths : configExists ? existing.allowedPaths : inferred.allowedPaths);
   const inferredWatchAllow = inferred.watchAllow.filter((relPath) => allowedPaths.some((allowedPath) => pathMatchesSetting(relPath, allowedPath)));
   const watchAllow = sanitizePathList(options.watchAllow?.length ? options.watchAllow : configExists ? existing.watchAllow : inferredWatchAllow);
