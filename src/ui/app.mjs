@@ -1482,6 +1482,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .confirm-dialog [data-confirm-error] { margin-top: 14px; color: var(--danger-fg); }
 	    .confirm-option { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; color: var(--text); font-size: 13px; line-height: 1.35; }
 	    .confirm-option input { margin-top: 2px; accent-color: var(--accent); }
+	    .confirm-list { margin: 12px 0 0; padding: 8px 12px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; list-style: none; border: 1px solid var(--line); border-radius: 10px; color: var(--text); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+	    .confirm-list li { overflow-wrap: anywhere; }
 	    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
     @media (max-width: 1279px) { .review-workspace { grid-template-columns: 1fr; } .diff-code, .doc-content { max-height: none; } }
     .viewer a.path-link { color: var(--file-list); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--file-list) 36%, transparent); cursor: inherit; }
@@ -7532,7 +7534,11 @@ function renderExplorerViewPanel() {
       if (event.target.closest("[data-notebook-space-new]")) createSpaceNotebook().catch((error) => setStatus(error.message));
       else if (event.target.closest("[data-explorer-home]")) setHomeExplorer(false);
       else if (event.target.closest("[data-context-hub-project-goto]")) openContextHubProjectPicker(null, { purpose: "open" });
-      else {
+      else if (event.target.closest("[data-trust-current]")) {
+        const trigger = event.target.closest("[data-trust-current]");
+        const project = (state.contextHub?.projects || []).find((item) => item.projectKey === trigger.dataset.projectKey);
+        if (project) void showTrustCurrentVersionsDialog(worktreeId(project), project.title, { trigger });
+      } else {
         const button = event.target.closest("[data-context-hub-project-destination]");
         if (button) openContextHubProjectDestination(button.dataset.projectKey, button.dataset.contextHubProjectDestination).catch((error) => setStatus(error.message));
       }
@@ -8265,7 +8271,8 @@ function reviewHistoryWhen(iso) {
 }
 
 function reviewHistoryLabel(receipt) {
-  if (receipt.action === "undo") return "Acceptance undone";
+  if (receipt.action === "trust-current") return "Trusted " + (receipt.count || 0) + " current version" + (receipt.count === 1 ? "" : "s");
+  if (receipt.action === "undo") return receipt.count ? "Trust undone · " + receipt.count + " file" + (receipt.count === 1 ? "" : "s") + " back to review" : "Acceptance undone";
   return receipt.status === "verified" ? "Accepted" : receipt.status === "snoozed" ? "Later" : "Changes requested";
 }
 
@@ -8311,10 +8318,10 @@ function renderReviewHistoryPanel() {
     + (receipts.length ? "" : '<p class="review-history-hint">No decisions yet. Files you accept or send back appear here.</p>')
     + '<ul class="review-history-list">' + receipts.map((receipt) => {
       const reason = receipt.action === "accept" && receipt.status === "verified" && !receipt.undo?.available ? REVIEW_HISTORY_REASONS[receipt.undo?.reason] || "" : "";
-      return '<li><div class="review-history-what"><strong>' + escapeHtml(receipt.path) + '</strong>'
+      return '<li><div class="review-history-what"><strong>' + escapeHtml(receipt.path || (receipt.count ? receipt.count + " files" : "")) + '</strong>'
         + '<span>' + escapeHtml([receipt.projectTitle, reviewHistoryLabel(receipt), reviewHistoryWhen(receipt.committedAt)].filter(Boolean).join(" · ")) + '</span>'
         + (reason ? '<span>' + escapeHtml(reason) + '</span>' : "") + '</div>'
-        + (receipt.undo?.available ? '<button type="button" class="file-action" data-review-undo="' + escapeHtml(receipt.id) + '">Undo this acceptance</button>' : "")
+        + (receipt.undo?.available ? '<button type="button" class="file-action" data-review-undo="' + escapeHtml(receipt.id) + '">' + (receipt.action === "trust-current" ? "Undo this trust" : "Undo this acceptance") + '</button>' : "")
         + '</li>';
     }).join("") + '</ul>';
   if (panel.__reviewHistoryMarkup === markup) return;
@@ -8326,6 +8333,29 @@ function confirmReviewUndo(receiptId) {
   const receipt = (state.reviewHistory || []).find((entry) => entry.id === receiptId);
   if (!receipt) return;
   const requestId = crypto.randomUUID();
+  if (receipt.action === "trust-current") {
+    showConfirmDialog({
+      title: "Undo this trust?",
+      body: "The " + receipt.count + " files trusted" + (receipt.projectTitle ? " in " + receipt.projectTitle : "") + " lose their accepted version. The files are not changed: they go back to review, and agents stop getting them.",
+      confirmLabel: "Undo trust",
+      confirmPendingLabel: "Undoing…",
+      confirmVariant: "primary",
+      onConfirm: async () => {
+        await settleReviewFlowSavesBeforeBulkReview();
+        await api("/api/context-hub/review-undo", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId: receipt.projectId, receiptId, requestId }),
+        });
+        state.reviewHistoryStale = true;
+        setStatus("Trust undone · " + receipt.count + " files are back in review");
+        explorerViewController?.invalidate();
+        refreshReviewCachesAfterBulkReview(receipt.projectId);
+        await refreshContextHubReviewQueueAfterUndo();
+      },
+    });
+    return;
+  }
   showConfirmDialog({
     title: "Undo this acceptance?",
     body: "The acceptance of " + receipt.path + (receipt.projectTitle ? " in " + receipt.projectTitle : "") + " is removed. The file is not restored: it goes back to review against the previous accepted version.",
@@ -8340,6 +8370,112 @@ function confirmReviewUndo(receiptId) {
       });
       state.reviewHistoryStale = true;
       setStatus("Acceptance undone · " + receipt.path + " is back in review");
+      await refreshContextHubReviewQueueAfterUndo();
+    },
+  });
+}
+
+// "Trust the current versions" (docs/features/review-authority.md): one explicit, undoable human
+// gesture for a project with no accepted version yet. The person sees the exact list first; the
+// server refuses the gesture if any file changed since this list (nothing is written then).
+// Trust and its undo change many acceptances at once. Queued flow decisions
+// (and their outbox records) land first; afterwards the flow and the report
+// cached for that project are dropped or read again, so neither shows a file
+// in its old review state.
+// A stuck Hub must not hold "Trusting…" forever: wait about 10 s, as openReviewFlowItem does.
+// A save that lands later meets the server checks under the review lock.
+async function settleReviewFlowSavesBeforeBulkReview() {
+  await Promise.race([reviewFlowSaves.chain.catch(() => {}), new Promise((resolve) => window.setTimeout(resolve, 10000))]);
+}
+
+// Only this project's items leave an open flow; items of other projects keep their place.
+function dropProjectFromReviewFlow(projectId) {
+  const flow = currentReviewFlow();
+  if (!flow || flow.done || !flow.items.some((item) => item.projectId === projectId)) return;
+  const kept = flow.items.filter((item) => item.projectId !== projectId);
+  if (!kept.length) {
+    closeReviewFlow();
+    return;
+  }
+  const shown = flow.items[flow.index];
+  const index = flow.items.slice(0, flow.index).filter((item) => item.projectId !== projectId).length;
+  for (const item of flow.items) if (item.projectId === projectId) delete flow.results[item.id];
+  flow.items = kept;
+  flow.index = index;
+  if (index >= kept.length) {
+    finishReviewFlow();
+    return;
+  }
+  saveReviewFlow();
+  renderReviewFlowBar();
+  renderReviewFlowPanel();
+  if (shown?.projectId === projectId) openReviewFlowItem().catch((error) => setStatus(error.message));
+}
+
+function refreshReviewCachesAfterBulkReview(projectId) {
+  dropProjectFromReviewFlow(projectId);
+  if (!projectId || state.activeProjectLocationId !== projectId) return;
+  api("/api/docqa").then((docqa) => {
+    if (state.activeProjectLocationId !== projectId) return;
+    state.docqa = docqa;
+    renderReviewFlowBar();
+  }).catch(() => {});
+}
+
+async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { afterAdd = false, trigger = null } = {}) {
+  if (!projectId || IS_HOSTED_CONTEXT_ROOM) return;
+  if (trigger?.getAttribute("aria-busy") === "true") return;
+  // Listing a large project takes seconds: the button says so and cannot be pressed twice.
+  const triggerLabel = trigger?.textContent || "";
+  if (trigger) { trigger.disabled = true; trigger.setAttribute("aria-busy", "true"); trigger.textContent = "Listing files…"; }
+  let preview;
+  try {
+    preview = await api("/api/context-hub/trust-current?projectId=" + encodeURIComponent(projectId));
+  } catch (error) {
+    if (!afterAdd) setStatus(error.message || "The list of files could not be read.");
+    return;
+  } finally {
+    if (trigger?.isConnected) { trigger.disabled = false; trigger.removeAttribute("aria-busy"); trigger.textContent = triggerLabel; }
+  }
+  if (preview?.reason === "too_many_files") {
+    setStatus("This project has " + preview.count + " files waiting, more than the " + preview.maxFiles + " one trust can take. Register a smaller folder, or review the files one by one.");
+    return;
+  }
+  if (!preview?.offered || !preview.items?.length) {
+    if (!afterAdd) setStatus(preview?.reason === "has_accepted_versions" ? "This project already has accepted versions. Review its files one by one." : "No file is waiting for a first acceptance.");
+    return;
+  }
+  const count = preview.items.length;
+  const plural = count === 1 ? "" : "s";
+  const requestId = crypto.randomUUID();
+  showConfirmDialog({
+    title: "Trust the current versions?",
+    body: (afterAdd ? "Project added. " : "") + count + " file" + plural + (projectTitle ? " in " + projectTitle : "") + (count === 1 ? " has" : " have") + " no accepted version yet, so agents get none of them. "
+      + "Trusting accepts each file below exactly as it is now. One receipt records it, and you can undo it from Recent decisions for 30 days. "
+      + "Later changes still go to review." + (preview.excluded?.length ? " " + preview.excluded.length + " file(s) with different staged content are left for review." : ""),
+    listItems: preview.items.map((item) => item.path),
+    listLabel: count + " file" + plural + " to trust",
+    confirmLabel: "Trust " + count + " file" + plural,
+    confirmPendingLabel: "Trusting…",
+    confirmVariant: "primary",
+    focusCancel: true,
+    onConfirm: async () => {
+      await settleReviewFlowSavesBeforeBulkReview();
+      try {
+        await api("/api/context-hub/trust-current", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, items: preview.items, requestId }),
+        });
+      } catch (error) {
+        if (error?.code === "trust_current_stale") throw new Error("Files changed since this list was shown. Nothing was trusted. Cancel, then open it again to see the new list.");
+        if (error?.code === "review_control_file_too_large") throw new Error("This project has too many files to trust in one step. Nothing was trusted. Review its files one by one, or register a smaller folder.");
+        throw error;
+      }
+      state.reviewHistoryStale = true;
+      setStatus("Trusted " + count + " current version" + plural + " · undo from Recent decisions");
+      explorerViewController?.invalidate();
+      refreshReviewCachesAfterBulkReview(projectId);
       await refreshContextHubReviewQueueAfterUndo();
     },
   });
@@ -25438,7 +25574,7 @@ function promptRevertCurrentDiff() {
   });
 }
 
-function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, onConfirm }) {
+function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, listItems = null, listLabel = "", focusCancel = false, onConfirm }) {
   state.activeModalClose?.({ restoreFocus: false });
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const backdrop = document.createElement("div");
@@ -25450,6 +25586,7 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
   backdrop.innerHTML = '<section class="confirm-dialog" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">' +
     '<strong>' + escapeHtml(title) + '</strong>' +
     '<p>' + escapeHtml(body) + '</p>' +
+    (Array.isArray(listItems) && listItems.length ? '<ul class="confirm-list" tabindex="0" aria-label="' + escapeHtml(listLabel || "Files") + '">' + listItems.map((item) => '<li>' + escapeHtml(item) + '</li>').join("") + '</ul>' : "") +
     checkboxMarkup +
     '<p data-confirm-status role="status" aria-live="polite" hidden></p>' +
     '<p data-confirm-error role="alert" hidden></p>' +
@@ -25480,7 +25617,7 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
     setBusy(false);
     errorMessage.textContent = error?.message || "This action could not be completed.";
     errorMessage.hidden = false;
-    (checkbox || confirmButton).focus();
+    (focusCancel ? cancelButton : checkbox || confirmButton).focus();
   };
   const close = ({ restoreFocus = true } = {}) => {
     if (closed) return;
@@ -25546,7 +25683,8 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
   document.body.appendChild(backdrop);
   releaseBackgroundIsolation = isolateContextRoomModalBackground(backdrop);
   state.activeModalClose = close;
-  backdrop.querySelector(checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
+  // focusCancel: a broad gesture never sits one Enter/Space away (trust of many files).
+  backdrop.querySelector(focusCancel ? "[data-confirm-cancel]" : checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
 }
 
 function showContextHubCreationDialog({ title, body, submitLabel, fields = [], onSubmit }) {
@@ -25846,6 +25984,8 @@ function showContextHubAddProjectDialog() {
         await openGlobalProjectExplorer(project);
       }
       setStatus(result.alreadyRegistered ? "Already in your projects" : "Added " + (project?.title || result.project?.title || "project"));
+      // A new project has no accepted version: offer the explicit gesture, never apply it silently.
+      if (!result.alreadyRegistered && entryId) void showTrustCurrentVersionsDialog(entryId, project?.title || result.project?.title || "", { afterAdd: true });
     } catch (error) {
       if (closed || error?.name === "AbortError") return;
       submit.disabled = false;

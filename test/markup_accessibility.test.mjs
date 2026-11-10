@@ -476,7 +476,7 @@ test("Settings drafts and modal boundaries survive asynchronous UI work", () => 
   assert.match(confirmSource, /state\.activeModalClose\?\.\(\{ restoreFocus: false \}\)/);
   assert.match(confirmSource, /releaseBackgroundIsolation = isolateContextRoomModalBackground\(backdrop\)/);
   assert.match(confirmSource, /if \(checkbox\) checkbox\.checked = false;\s*setBusy\(false\)/);
-  assert.match(confirmSource, /\(checkbox \|\| confirmButton\)\.focus\(\)/);
+  assert.match(confirmSource, /\(focusCancel \? cancelButton : checkbox \|\| confirmButton\)\.focus\(\)/);
   assert.doesNotMatch(confirmSource, /querySelector\("\.confirm-backdrop"\)\?\.remove/);
   assert.match(creationSource, /requestController = new AbortController\(\)/);
   assert.match(creationSource, /onSubmit\(values, \{ signal: requestController\.signal, isCurrent \}\)/);

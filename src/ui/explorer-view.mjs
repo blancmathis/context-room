@@ -85,7 +85,10 @@ export function summarizeInspection(data) {
   const stale = Number(graph.stale || 0) + Number(docqa.changedDocs || 0);
   const review = Number(docqa.needsReview || 0);
   const tokens = Number(data.effectiveContext?.cost?.startup?.tokens || 0);
-  return { names: [...new Set(names)], tokens, total, stale, review, state: data.effectiveContext?.freshness?.state || '' };
+  // No accepted version yet: the person may trust the current versions in one undoable gesture.
+  // No count here: the dialog shows the exact list and its count (the same list the server accepts).
+  const trust = docqa.trustCurrent?.offered === true;
+  return { names: [...new Set(names)], tokens, total, stale, review, trust, state: data.effectiveContext?.freshness?.state || '' };
 }
 
 export function formatBytes(bytes) {
@@ -315,8 +318,11 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     else if (item?.summary) {
       const sm = item.summary;
       context = sm.names.length ? `<span>${esc(sm.names.slice(0, 3).join(', '))}${sm.names.length > 3 ? ' +' + (sm.names.length - 3) : ''}${sm.tokens ? ' · ' + formatTokens(sm.tokens) : ''}</span>` : '<span>No startup file yet</span>';
+      // The counters must agree with the Reviews column: "all up to date" only when nothing waits.
       docs = !sm.total ? '<span>No tracked document yet</span>'
+        : sm.trust ? `<span>${sm.total} tracked · none accepted yet</span><button type="button" data-trust-current data-project-key="${esc(project.projectKey)}" aria-label="${esc('Trust the current versions · ' + project.title)}">Trust the current versions</button>`
         : sm.stale ? `<span class="hl-warn">${sm.stale} stale · changed since review</span><span>${sm.total} tracked</span>`
+        : sm.review ? `<span>${sm.total} tracked · ${sm.review} to review</span>`
         : `<span>${sm.total} tracked · all up to date</span>`;
     }
     return `<div class="hl-agent" role="group" aria-label="What helps agents in ${esc(project.title)}"><div><b>Agent context</b>${context}</div><div><b>Documents</b>${docs}</div><div><b>Reviews</b>${reviews}</div></div>`;
