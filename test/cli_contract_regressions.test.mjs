@@ -1129,3 +1129,21 @@ test("project register on a fresh folder points to init, never to itself, and ig
   result = runCli(["project", "register", `--project=${title}`, "--format=json"], env, base);
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
+
+test("proposal list on a local project lists local proposals and never advises a missing command", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const os = await import("node:os"), fs = await import("node:fs"), path = await import("node:path");
+  const { initializeContextRoomProject, createLocalDocumentationProposal } = await import("../src/context_room.mjs");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "cr-proplist-")), root = path.join(temp, "project");
+  const env = { ...process.env }; for (const n of ["CONTEXT_ROOM_HUB_HOME", "CONTEXT_ROOM_SHARED_HOME", "CONTEXT_ROOM_REVIEW_AUTHORITY_HOME"]) { env[n] = path.join(temp, n); process.env[n] = env[n]; }
+  try {
+    fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+    initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+    const draft = createLocalDocumentationProposal(root, { title: "Local idea" });
+    const run = spawnSync(process.execPath, [path.resolve("bin/context-room.mjs"), "proposal", "list", "--root", root, "--format", "json"], { encoding: "utf8", env });
+    assert.equal(run.status, 0, run.stderr + run.stdout);
+    assert.doesNotMatch(run.stdout + run.stderr, /shared setup/);
+    assert.match(run.stdout, new RegExp(draft.id));
+    assert.match(run.stdout, /Local idea/);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});

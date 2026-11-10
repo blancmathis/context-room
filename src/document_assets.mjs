@@ -20,8 +20,11 @@ const revision = (value) => hash(JSON.stringify(value));
 const fail = (message) => { const error = new Error(message); error.code = "asset_revision_conflict"; error.statusCode = 409; throw error; };
 export const isDocumentAssetPath = (rel) => DOCUMENT_ASSET_FORMATS.has(path.extname(String(rel)).slice(1).toLowerCase());
 
-function safe(root, rel) {
+function canonical(rel) {
   if (!rel || path.isAbsolute(rel) || rel.includes("\\") || rel.includes("\0") || rel.split("/").some((part) => !part || part === "." || part === "..")) fail("A canonical relative document path is required.");
+}
+function safe(root, rel) {
+  canonical(rel);
   let target = fs.realpathSync(root);
   for (const part of rel.split("/")) {
     target = path.join(target, part);
@@ -63,19 +66,40 @@ function base(root, state, rel) {
 }
 function inScope(rel, scopes) { return !rel.split("/").some((part) => part.startsWith(".") || part === "node_modules") && scopes.some((scope) => rel === scope || rel.startsWith(scope.replace(/\/$/, "") + "/")); }
 
+// Inspection is a read: links are counted and never followed. Only mutations (safe) refuse them.
+function linkState(root, rel) {
+  canonical(rel);
+  let target = fs.realpathSync(root);
+  const parts = rel.split("/");
+  for (const [index, part] of parts.entries()) {
+    target = path.join(target, part);
+    let entry; try { entry = fs.lstatSync(target); } catch (error) { if (error.code === "ENOENT") return { entry: null }; throw error; }
+    if (entry.isSymbolicLink()) { let broken = false; try { fs.statSync(target); } catch { broken = true; } return { link: { path: rel, broken } }; }
+    if (index === parts.length - 1) return { entry, target };
+  }
+  return { entry: null };
+}
+
 export function listDocumentAssets(root, { allowedPaths = [], canRead = () => true, acceptedOnly = false } = {}) {
-  const state = ledger(root), paths = new Set(Object.keys(state));
+  const state = ledger(root), paths = new Set(Object.keys(state)), links = [];
   const visit = (rel) => {
-    let entry; try { entry = fs.lstatSync(safe(root, rel)); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    const found = linkState(root, rel);
+    if (found.link) { links.push(found.link); return; }
+    const entry = found.entry; if (!entry) return;
     if (entry.isDirectory()) {
-      for (const child of fs.readdirSync(safe(root, rel), { withFileTypes: true })) {
-        if (child.name.startsWith(".") || child.name === "node_modules" || child.isSymbolicLink()) continue;
+      for (const child of fs.readdirSync(found.target, { withFileTypes: true })) {
+        if (child.name.startsWith(".") || child.name === "node_modules") continue;
+        if (child.isSymbolicLink()) { let broken = false; try { fs.statSync(path.join(found.target, child.name)); } catch { broken = true; } links.push({ path: `${rel}/${child.name}`, broken }); continue; }
         visit(`${rel}/${child.name}`);
       }
     } else if (entry.isFile() && isDocumentAssetPath(rel)) paths.add(rel);
   };
+  // An accepted path under a folder that became a link is reported as a link, not read.
+  for (const rel of Object.keys(state)) { if (linkState(root, rel).link) { links.push({ path: rel, broken: false }); paths.delete(rel); } }
   if (!acceptedOnly) for (const scope of allowedPaths) { const rel = scope.replace(/\/$/, ""); if (rel && !rel.startsWith("~") && !path.isAbsolute(rel)) visit(rel); }
-  return [...paths].filter((rel) => inScope(rel, allowedPaths) && canRead(rel)).sort().map((rel) => acceptedOnly ? { path: rel, mimeType: DOCUMENT_ASSET_FORMATS.get(path.extname(rel).slice(1).toLowerCase()), before: base(root, state, rel) } : readDocumentAssetReview(root, rel, state));
+  const result = [...paths].filter((rel) => inScope(rel, allowedPaths) && canRead(rel)).sort().map((rel) => acceptedOnly ? { path: rel, mimeType: DOCUMENT_ASSET_FORMATS.get(path.extname(rel).slice(1).toLowerCase()), before: base(root, state, rel) } : readDocumentAssetReview(root, rel, state));
+  Object.defineProperty(result, "symbolicLinks", { value: { count: links.length, broken: links.filter((link) => link.broken).length, paths: links.map((link) => link.path) } });
+  return result;
 }
 
 export function readDocumentAssetReview(root, rel, state = ledger(root)) {

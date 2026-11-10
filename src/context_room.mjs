@@ -17329,11 +17329,14 @@ function contextHubStateWithAttention(state = {}) {
   const visitedRoots = new Set();
   const projects = (state.projects || []).map((project) => {
     let localProposalError = "";
+    const symbolicLinks = { count: 0, broken: 0 };
     for (const location of project.worktrees?.length ? project.worktrees : [project]) {
       if (!location.available || !location.root || visitedRoots.has(location.root) || location.mode === "shared") continue;
       visitedRoots.add(location.root);
       try {
-        for (const asset of readProjectDocumentAssets(location.root).filter((asset) => asset.pending)) {
+        const assets = readProjectDocumentAssets(location.root);
+        symbolicLinks.count += assets.symbolicLinks?.count || 0; symbolicLinks.broken += assets.symbolicLinks?.broken || 0;
+        for (const asset of assets.filter((asset) => asset.pending)) {
           proposalItems.push({ id: `local-asset:${location.id}:${asset.path}`, type: "local-asset", projectId: location.id,
             projectKey: project.projectKey, projectTitle: project.title, title: asset.path, assetPath: asset.path,
             files: [asset.path], fileCount: 1, revisionToken: asset.revision, reviewStatus: "submitted" });
@@ -17356,7 +17359,7 @@ function contextHubStateWithAttention(state = {}) {
         }
       } catch (error) { localProposalError = error.message; }
     }
-    return { ...project, ...(localProposalError ? { localReviewError: localProposalError } : {}) };
+    return { ...project, ...(symbolicLinks.count ? { symbolicLinks } : {}), ...(localProposalError ? { localReviewError: localProposalError } : {}) };
   });
   return {
     ...state,

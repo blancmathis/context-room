@@ -212,10 +212,22 @@ function claudeCodeVersion() {
   return { version: "", source: "" };
 }
 
+/** Claude Code reads CLAUDE_CONFIG_DIR in place of ~/.claude. */
+function claudeHome() {
+  const configured = process.env.CLAUDE_CONFIG_DIR;
+  return configured ? path.resolve(expandHome(configured)) : path.join(os.homedir(), ".claude");
+}
+
+function expandProviderPath(value, provider) {
+  const text = String(value || "");
+  if (provider === "claude-code" && (text === "~/.claude" || text.startsWith("~/.claude/"))) return path.join(claudeHome(), text.slice("~/.claude".length));
+  return expandHome(text);
+}
+
 /** Claude Code settings layers, lowest to highest precedence. */
 function claudeSettingsFiles(root) {
   const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json";
-  return [expandHome("~/.claude/settings.json"), path.join(root, ".claude", "settings.json"), path.join(root, ".claude", "settings.local.json"), managed];
+  return [path.join(claudeHome(), "settings.json"), path.join(root, ".claude", "settings.json"), path.join(root, ".claude", "settings.local.json"), managed];
 }
 
 function claudeInstructionRuntime(root) {
@@ -268,14 +280,17 @@ function ancestorsAboveRoot(root) {
   return directories;
 }
 
+// "all" is the union of what each agent loads; shared files are deduplicated by the caller.
+const CONCRETE_PROVIDERS = ["codex", "claude-code", "opencode"];
+
 function defaultListProviderInstructions(root, folder, provider, runtime = {}) {
-  if (provider === "all") return [];
+  if (provider === "all") return CONCRETE_PROVIDERS.flatMap((each) => defaultListProviderInstructions(root, folder, each, defaultReadProviderRuntime(each, root) || {}));
   const profile = contextProviderProfile(provider);
   const chain = folderChain(root, folder);
   const globalRoot = provider === "codex"
     ? expandHome(process.env.CODEX_HOME || "~/.codex")
     : provider === "claude-code"
-      ? expandHome("~/.claude")
+      ? claudeHome()
       : expandHome("~/.config/opencode");
   const discovered = [];
   const add = (absolutePath, source, order, evidence, extra = {}) => {
@@ -309,7 +324,7 @@ function defaultListProviderInstructions(root, folder, provider, runtime = {}) {
   if (provider !== "claude-code") return discovered;
   const rules = profile.instructions.rules;
   for (const [owner, source] of [[expandHome("~"), "global"], ...chain.map((item) => [item, "provider-profile"])]) {
-    for (const absolutePath of markdownFilesBelow(path.join(owner, source === "global" ? rules.global.slice(2) : rules.project))) {
+    for (const absolutePath of markdownFilesBelow(source === "global" ? path.join(claudeHome(), "rules") : path.join(owner, rules.project))) {
       const conditional = hasConditionalPaths(absolutePath);
       add(absolutePath, source, order++, { profile: provider, discovery: "claude-rules", directory: stablePath(owner) }, conditional
         ? { activationProven: false, uncertainReason: "Rule has paths frontmatter: Claude Code loads it only when matching files are read." }
@@ -336,7 +351,7 @@ function defaultListProviderInstructions(root, folder, provider, runtime = {}) {
 function exactProviderSkillLocations(provider, root, folder) {
   const chain = folderChain(root, folder);
   const profile = contextProviderProfile(provider);
-  const global = [...(Array.isArray(profile.skills?.global) ? profile.skills.global : [profile.skills?.global].filter(Boolean)), ...(Array.isArray(profile.skills?.admin) ? profile.skills.admin : [profile.skills?.admin].filter(Boolean))].map(expandHome);
+  const global = [...(Array.isArray(profile.skills?.global) ? profile.skills.global : [profile.skills?.global].filter(Boolean)), ...(Array.isArray(profile.skills?.admin) ? profile.skills.admin : [profile.skills?.admin].filter(Boolean))].map((item) => expandProviderPath(item, provider));
   const projectLocations = Array.isArray(profile.skills?.project) ? profile.skills.project : [profile.skills?.project].filter(Boolean);
   return {
     global,
@@ -345,7 +360,7 @@ function exactProviderSkillLocations(provider, root, folder) {
 }
 
 function defaultListProviderSkillFolders(root, folder, provider) {
-  if (provider === "all") return [];
+  if (provider === "all") return CONCRETE_PROVIDERS.flatMap((each) => defaultListProviderSkillFolders(root, folder, each));
   const locations = exactProviderSkillLocations(provider, root, folder);
   const candidates = [
     ...locations.global.map((absolutePath, index) => ({ absolutePath, scope: "device", subtree: ".", precedence: index })),
@@ -392,14 +407,14 @@ function objectHasConfiguredHooks(value) {
 }
 
 function defaultListProviderHookSources(root, _folder, provider) {
-  if (provider === "all") return [];
+  if (provider === "all") return CONCRETE_PROVIDERS.flatMap((each) => defaultListProviderHookSources(root, _folder, each));
   const profile = contextProviderProfile(provider);
   const seen = new Set();
   const results = [];
   const configuredSources = Array.isArray(profile.hooks) ? profile.hooks : (profile.hooks?.sources || []);
   for (const configuredSource of configuredSources) {
     const [configuredPath, virtualSource = ""] = String(configuredSource).split(":", 2);
-    const absolutePath = configuredPath.startsWith("~") ? expandHome(configuredPath) : path.join(root, configuredPath);
+    const absolutePath = configuredPath.startsWith("~") ? expandProviderPath(configuredPath, provider) : path.join(root, configuredPath);
     let stats;
     try { stats = fs.statSync(absolutePath); } catch { continue; }
     if (virtualSource) {
@@ -550,7 +565,7 @@ function addResource(inventory, resource, application = null) {
 
 /** Origin by install location only: the project and agent settings folders are the user's, provider-managed folders are the agent's. */
 function classifyResourceOrigins(inventory, target) {
-  const homes = [process.env.CODEX_HOME || "~/.codex", "~/.claude", "~/.agents", "~/.config/opencode"].map((home) => stablePath(expandHome(home)));
+  const homes = [process.env.CODEX_HOME || "~/.codex", "~/.claude", claudeHome(), "~/.agents", "~/.config/opencode"].map((home) => stablePath(expandHome(home)));
   for (const resource of inventory.resources) {
     if (!["instruction", "skill", "hook"].includes(resource.kind) || String(resource.source || "").startsWith("shared")) continue;
     const absolutePath = resource.metadata?.absolutePath ? stablePath(resource.metadata.absolutePath) : "";
@@ -801,7 +816,7 @@ function claudeProjectMcpApproval(root) {
 
 /** MCP servers are listed by name only; their tool definitions reach the agent at runtime and their size stays unknown. */
 function defaultListProviderMcpServers(root, provider) {
-  if (provider === "all") return [];
+  if (provider === "all") return CONCRETE_PROVIDERS.flatMap((each) => defaultListProviderMcpServers(root, each));
   const profile = contextProviderProfile(provider);
   const servers = [];
   for (const source of profile.mcp || []) {
