@@ -38,7 +38,7 @@ import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal
 import { documentsLinkingTo, planDocumentMove, suggestNotebookDestination } from "./doc_move.mjs";
 import { documentationDrift } from "./doc_drift.mjs";
 import { claudeCodeUsage } from "./agent_usage.mjs";
-import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap, inspectLocalProposal } from "./local_proposals.mjs";
+import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, rebaseLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap, inspectLocalProposal } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -519,6 +519,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/doctor/ack",
   "/api/docqa/review",
   "/api/docqa/local-proposal-decision",
+  "/api/docqa/local-proposal-rebase",
   "/api/docqa/asset-decision",
   "/api/docqa/shared-asset-decision",
   "/api/review-cleanup/apply",
@@ -18300,6 +18301,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/docqa/review",
     "POST /api/context-hub/review-undo",
     "POST /api/docqa/local-proposal-decision",
+    "POST /api/docqa/local-proposal-rebase",
     "POST /api/docqa/local-draft",
     "POST /api/docqa/local-draft-submit",
     "POST /api/docqa/asset-decision",
@@ -24998,6 +25000,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!/\.(?:png|jpe?g|webp|gif|avif|svg|css)$/i.test(rel)) throw sharedRequestError("This resource format is not rendered inline.", 400, "asset_format");
     const bytes = readLocalProposalResource(root, url.searchParams.get("proposal"), rel, { side: url.searchParams.get("side"), expectedRevision: url.searchParams.get("revision") });
     sendJson(res, 200, { mimeType: /\.css$/i.test(rel) ? "text/css" : projectVisualAssetMimeType(rel), data: bytes.toString("base64") }); return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/docqa/local-proposal-rebase") {
+    const body = await readJsonBody(req);
+    const result = withDocReviewEvidenceLock(root, () => rebaseLocalProposalFile(root, body.proposal, { path: body.path, expectedRevision: body.expectedRevision }), { expectedRootIdentity });
+    sendJson(res, 200, { id: result.id, status: result.status, revision: result.submittedRevision, changes: result.changes });
+    return;
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/local-proposal-decision") {
     const body = await readJsonBody(req, { maxBytes: 30 * 1024 * 1024 });

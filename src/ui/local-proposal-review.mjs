@@ -216,7 +216,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   }
 
   // Identical blocks stay folded; only removed and new or rewritten blocks need reading.
-  const blockMap = item.type === "local-proposal" && item.proposalId
+  let blockMap = item.type === "local-proposal" && item.proposalId
     ? request(`/api/docqa/local-proposal-blocks?proposal=${encodeURIComponent(item.proposalId)}`).catch(() => null)
     : Promise.resolve(null);
   function renderBlocks(map, file) {
@@ -275,7 +275,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       const file = await request(item.type === "shared-asset" ? `/api/docqa/shared-asset-file?path=${encodeURIComponent(filePath)}` : item.type === "local-asset" ? `/api/docqa/asset-file?path=${encodeURIComponent(filePath)}` : `/api/docqa/local-proposal-file?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(filePath)}`);
       if (serial !== requestId || !dialog.isConnected) return;
       cleanupUrls();
-      versions.replaceChildren(renderVersion("Accepted", bytesOf(file.beforeBase64), file, false), renderVersion("Proposed", bytesOf(file.afterBase64), file, true));
+      versions.replaceChildren(renderVersion(file.unseen ? "Current project file" : "Accepted", bytesOf(file.beforeBase64), file, false), renderVersion("Proposed", bytesOf(file.afterBase64), file, true));
       const map = await blockMap;
       if (serial !== requestId || !dialog.isConnected) return;
       renderBlocks(map, file);
@@ -313,7 +313,22 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
           await onChange(result);
           if (!files.length) { dialog.close(); return; }
           await openFile(files[0]);
-        } catch (error) { status.textContent = error.message; }
+        } catch (error) {
+          status.textContent = error.message;
+          // The project file moved since the proposal: never overwrite it, offer a fresh comparison instead.
+          if (error.code === "local_proposal_conflict" && item.type === "local-proposal" && !isDirty()) {
+            const compare = element("button", "Compare with current file", "quiet-button"); compare.type = "button";
+            compare.addEventListener("click", async () => {
+              compare.disabled = true;
+              try {
+                await request("/api/docqa/local-proposal-rebase", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ proposal: item.proposalId, path: file.path, expectedRevision: file.revision }) });
+                blockMap = request(`/api/docqa/local-proposal-blocks?proposal=${encodeURIComponent(item.proposalId)}`).catch(() => null);
+                await openFile(file.path);
+              } catch (rebaseError) { compare.disabled = false; status.textContent = rebaseError.message; }
+            });
+            footer.prepend(compare);
+          }
+        }
         finally { busy = false; [accept, reject, undo, reload, close].forEach((button) => { button.disabled = false; }); renderNavigation(); }
       }
       accept.addEventListener("click", () => decide("accepted"));
@@ -367,7 +382,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
           status.textContent = `Snapshot r${snapshot.boardRevision} at the original PNG bounds. Inspect it before deciding. All editable objects, including those outside this crop, remain in ${snapshot.path}.`;
         }));
       }
-      status.textContent = file.kind === "deleted" ? "Accepting removes this file. Its accepted content stays available for recovery." : "Only this file will receive your decision.";
+      status.textContent = file.unseen ? "The agent did not have this file in its working copy. Left: the project file today; right: the agent's version." : file.kind === "deleted" ? "Accepting removes this file. Its accepted content stays available for recovery." : "Only this file will receive your decision.";
     } finally { busy = false; renderNavigation(); }
   }
   dialog.showModal();
