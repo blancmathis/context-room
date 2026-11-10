@@ -188,13 +188,14 @@ function beforeVersion(proposal, rel) {
 
 // Against the current project file, the agent's version keeps that file's permissions unless the
 // agent itself changed them: a mode different from the one it received or, for a file it never
-// received, a mode other than the default of a new file (0644). The review shows that as a permissions change.
-const NEW_FILE_MODE = 0o644;
+// received, an executable bit that differs from the project file (Git tracks only that; a 664 made by umask 002
+// is not a change). The review shows that as a permissions change.
+const EXEC_BITS = 0o111;
 function afterVersion(proposal, rel) {
   const after = proposal.submitted[rel] || null, observed = proposal.observed?.[rel];
   if (!after || !observed || !proposal.observed || !Object.hasOwn(proposal.observed, rel)) return after;
   const received = proposal.base[rel];
-  const agentSetMode = received ? received.mode !== after.mode : (after.mode & 0o777) !== NEW_FILE_MODE;
+  const agentSetMode = received ? received.mode !== after.mode : (after.mode & EXEC_BITS) !== 0 && (after.mode & EXEC_BITS) !== (observed.mode & EXEC_BITS);
   return agentSetMode ? after : { ...after, mode: observed.mode };
 }
 

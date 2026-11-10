@@ -8,7 +8,7 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWeba
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
   createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks, localProposalFileDocumentChecks, withReviewDocumentChecks, readReviewBaseFile } from "../src/context_room.mjs";
-import { refreshReviewDocumentIndexes, reviewDocumentIndexStats } from "../src/context_room.mjs";
+import { backgroundWorkerGroupsForRoot, refreshReviewDocumentIndexes, reviewDocumentIndexStats } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal, readLocalProposalBlockMap, readLocalProposalFile } from "../src/local_proposals.mjs";
@@ -506,10 +506,12 @@ test("documentation checks run in the checks worker, never on the Hub main threa
   assert.deepEqual(reviewDocumentIndexStats(), mainThread, "the Hub main thread never listed or indexed documents");
 });
 
-test("the review index keeps its list until a Hub write or a folder change, and re-reads a replaced file", (t) => {
+test("the review index keeps its list until a document is added, removed or renamed, and re-reads a replaced file", (t) => {
   const root = fixture(t);
   const article = duplicateArticle();
   fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  fs.mkdirSync(path.join(root, "docs/img"));
+  fs.writeFileSync(path.join(root, "docs/img/diagram.png"), "png");
   const review = { available: true, path: "docs/new.md", changeKind: "added", baseContent: "", currentContent: "# New\n\n" + article + "\n" };
   const duplicates = (generation) => withReviewDocumentChecks(root, review, { generation }).documentChecks.filter((item) => item.type === "duplicate_doc").map((item) => item.evidence);
   const lists = () => reviewDocumentIndexStats(root).lists;
@@ -519,7 +521,10 @@ test("the review index keeps its list until a Hub write or a folder change, and 
   assert.equal(lists() - start, 1, "a second open reuses the list, with no time-based expiry");
   assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), false, "the background refresh lists nothing when no folder changed");
   duplicates(1);
-  assert.equal(lists() - start, 2, "a Hub write (new generation) lists again");
+  assert.equal(lists() - start, 1, "a Hub write that adds, removes or renames no document (new generation, same folders) keeps the list");
+  fs.writeFileSync(path.join(root, "docs/created.md"), "# Created\n");
+  duplicates(2);
+  assert.equal(lists() - start, 2, "a Hub write that adds a document lists again");
   fs.writeFileSync(path.join(root, "docs/added.md"), "# Added\n");
   assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), true, "a folder change is listed again in the background");
   assert.equal(lists() - start, 3);
@@ -532,4 +537,62 @@ test("the review index keeps its list until a Hub write or a folder change, and 
   fs.utimesSync(target, stats.atime, stats.mtime);
   assert.equal(fs.statSync(target).size, stats.size);
   assert.deepEqual(duplicates(1), [], "the replaced file is read again");
+  // A folder that held no listed document (images only) is watched too.
+  const before = lists();
+  fs.writeFileSync(path.join(root, "docs/img/copy.md"), "# Copy\n\n" + article + "\n");
+  assert.deepEqual(duplicates(3), ["docs/img/copy.md"], "a document added in a folder with no listed document is seen at the next Hub write");
+  assert.equal(lists() - before, 1);
+  fs.writeFileSync(path.join(root, "docs/img/other.md"), "# Other\n");
+  assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), true, "and at the next background refresh");
+});
+
+function withTestEnv(t, values) {
+  const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, values);
+  t.after(() => { for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
+}
+
+async function documentChecksServer(t, root) {
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return async (url) => { const response = await fetch(base + url); const body = await response.json(); assert.equal(response.status, 200, JSON.stringify(body)); return body; };
+}
+
+test("documentation checks drop a run the reviewer moved past, time out a hung worker, and close an idle one", async (t) => {
+  const root = fixture(t);
+  for (const name of ["c", "d"]) fs.writeFileSync(path.join(root, `docs/${name}.md`), `# ${name}\n`);
+  for (const name of ["a", "b", "c", "d"]) fs.appendFileSync(path.join(root, `docs/${name}.md`), "\nSee [gone](gone.md).\n");
+  withTestEnv(t, { CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_HANG_MS: "1000", CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_TIMEOUT_MS: "8000", CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_IDLE_MS: "300" });
+  const get = await documentChecksServer(t, root);
+  const kinds = (body) => body.documentChecks.map((item) => item.type);
+
+  // a runs (1 s), b waits, c arrives: b is dropped at once, c runs after a.
+  const a = get("/api/docqa/document-checks?path=docs/a.md");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const b = get("/api/docqa/document-checks?path=docs/b.md");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const c = get("/api/docqa/document-checks?path=docs/c.md");
+  const dropped = await b;
+  assert.equal(dropped.documentChecksSuperseded, true, JSON.stringify(dropped));
+  assert.deepEqual(kinds(await a), ["dead_link"]);
+  assert.deepEqual(kinds(await c), ["dead_link"]);
+
+  // Idle: the checks worker is closed once no run is left.
+  assert.ok(backgroundWorkerGroupsForRoot(fs.realpathSync(root)).includes("checks"));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.deepEqual(backgroundWorkerGroupsForRoot(fs.realpathSync(root)).filter((group) => group === "checks"), [], "an idle checks worker is closed");
+
+  // Hung: the run ends as unavailable in time, and the next run works on a new worker.
+  process.env.CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_HANG_MS = "60000";
+  process.env.CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_TIMEOUT_MS = "300";
+  const started = Date.now();
+  const hung = await get("/api/docqa/document-checks?path=docs/d.md");
+  assert.ok(Date.now() - started < 5000, "a hung worker never holds the checks");
+  assert.equal(hung.documentChecksUnavailable, true);
+  assert.deepEqual(kinds(hung), ["checks_unavailable"]);
+  process.env.CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_HANG_MS = "0";
+  process.env.CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_TIMEOUT_MS = "8000";
+  assert.deepEqual(kinds(await get("/api/docqa/document-checks?path=docs/d.md")), ["dead_link"]);
 });

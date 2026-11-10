@@ -1004,6 +1004,7 @@ export function listMemoryFiles(root = process.cwd(), {
   readOnly = false,
   expectedRootIdentity = null,
   metadataOnly = false,
+  walkedDirectories = null,
 } = {}) {
   const baseSettings = providedSettings || effectiveMemoryWebappSettings(root, { readOnly, expectedRootIdentity });
   const activeRepoRoots = sanitizePathList((externalRoots || []).filter((item) => !normalizeRelPath(String(item || "")).startsWith("~")))
@@ -1072,7 +1073,7 @@ export function listMemoryFiles(root = process.cwd(), {
     if (!fs.existsSync(absPath)) continue;
     if (settings.projectOnly && !projectPathIsContained(root, absPath)) continue;
     const stats = fs.statSync(absPath);
-    const found = stats.isDirectory() ? walkTextFiles(absPath, root, settings) : [clean];
+    const found = stats.isDirectory() ? walkTextFiles(absPath, root, settings, walkedDirectories) : [clean];
     for (const rel of found) {
       if (byPath.has(rel)) continue;
       byPath.set(rel, {
@@ -8494,8 +8495,10 @@ export function localProposalDocumentChecks(root, id) {
 // Word 3-grams of the project's Markdown documents as they are on disk, for advisory review checks.
 // Runs only in the "checks" background worker (never on the Hub main thread): one index per project
 // root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list of documents is kept
-// until something changes: a Hub write (a new generation from the main thread) or the background
-// refresh (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
+// until a walked folder changes (a document added, removed or renamed): checked on the first call after
+// a Hub write (a new generation from the main thread) and by the background refresh
+// (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
+// A Hub write that only changes a document's content (or the review state) keeps the list.
 // On every call each listed document is checked with one stat and read and hashed again only when its
 // size, modification time, change time or inode changed.
 // Memory: one sorted Uint32Array per document of at most REVIEW_CHECK_MAX_BYTES, at most REVIEW_INDEX_MAX_DOCS documents.
@@ -8505,8 +8508,14 @@ const REVIEW_INDEX_ROOTS = 4;
 const REVIEW_INDEX_FULL_MS = 5 * 60_000;
 const reviewDocumentIndexes = new Map();
 const reviewDocumentIndexCounters = { lists: 0 };
-function folderTimes(root, paths) {
+function folderTimes(root, paths, walked = []) {
   const folders = new Map();
+  for (const folder of walked) {
+    if (folders.has(folder)) continue;
+    let mtimeMs = null;
+    try { mtimeMs = fs.statSync(path.join(root, folder)).mtimeMs; } catch {}
+    folders.set(folder, mtimeMs);
+  }
   for (const rel of paths) {
     for (let folder = path.posix.dirname(rel); ; folder = path.posix.dirname(folder)) {
       if (folders.has(folder)) break;
@@ -8522,14 +8531,25 @@ function folderTimes(root, paths) {
 function listReviewDocuments(root, index) {
   reviewDocumentIndexCounters.lists += 1;
   index.lists = (index.lists || 0) + 1;
-  const listed = listMemoryFiles(root, { readOnly: true, metadataOnly: true })
+  // Every walked folder is watched, not only the folders of listed docs: a doc added
+  // in a folder that held none (images only, say) changes that folder's time.
+  const walkedDirectories = new Set();
+  const listed = listMemoryFiles(root, { readOnly: true, metadataOnly: true, walkedDirectories })
     .filter((file) => /\.md$/i.test(file.path || "") && file.exists && !resolveExternalPath(file.path));
   index.total = listed.length;
   index.paths = listed.slice(0, REVIEW_INDEX_MAX_DOCS).map((file) => file.path);
-  index.folders = folderTimes(root, index.paths);
+  index.folders = folderTimes(root, index.paths, walkedDirectories);
   index.listedAt = Date.now();
   const kept = new Set(index.paths);
   for (const rel of index.files.keys()) if (!kept.has(rel)) index.files.delete(rel);
+}
+function reviewIndexFoldersChanged(index) {
+  for (const [folder, mtimeMs] of index.folders) {
+    let current = null;
+    try { current = fs.statSync(path.join(index.root, folder)).mtimeMs; } catch {}
+    if (current !== mtimeMs) return true;
+  }
+  return false;
 }
 function reviewDocumentIndex(root, { generation } = {}) {
   const key = path.resolve(root);
@@ -8537,10 +8557,10 @@ function reviewDocumentIndex(root, { generation } = {}) {
   reviewDocumentIndexes.delete(key);
   reviewDocumentIndexes.set(key, index);
   while (reviewDocumentIndexes.size > REVIEW_INDEX_ROOTS) reviewDocumentIndexes.delete(reviewDocumentIndexes.keys().next().value);
-  if (!index.listedAt || (generation !== undefined && generation !== index.generation)) {
+  if (!index.listedAt || (generation !== undefined && generation !== index.generation && reviewIndexFoldersChanged(index))) {
     listReviewDocuments(root, index);
-    if (generation !== undefined) index.generation = generation;
   }
+  if (generation !== undefined) index.generation = generation;
   for (const rel of index.paths) {
     let stats = null;
     try { stats = fs.statSync(path.join(root, rel)); } catch {}
@@ -8564,13 +8584,7 @@ export function refreshReviewDocumentIndexes({ now = Date.now() } = {}) {
   const relisted = [];
   for (const [key, index] of [...reviewDocumentIndexes]) {
     if (!fs.existsSync(index.root)) { reviewDocumentIndexes.delete(key); continue; }
-    let changed = now - index.listedAt >= REVIEW_INDEX_FULL_MS;
-    for (const [folder, mtimeMs] of changed ? [] : index.folders) {
-      let current = null;
-      try { current = fs.statSync(path.join(index.root, folder)).mtimeMs; } catch {}
-      if (current !== mtimeMs) { changed = true; break; }
-    }
-    if (!changed) continue;
+    if (now - index.listedAt < REVIEW_INDEX_FULL_MS && !reviewIndexFoldersChanged(index)) continue;
     try { listReviewDocuments(index.root, index); relisted.push(index.root); } catch {}
   }
   return relisted;
@@ -11125,7 +11139,13 @@ export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false }
   return {
     generatedAt: report.generatedAt,
     summary: report.summary,
-    queue: report.queue.map((item) => ({
+    queue: agentReviewQueueItems(report.queue),
+    note: "Read-only queue. Human verification must happen in the Context Room webapp.",
+  };
+}
+
+function agentReviewQueueItems(queue = []) {
+  return queue.map((item) => ({
       path: item.path,
       oldPath: item.oldPath || null,
       label: item.label,
@@ -11141,9 +11161,7 @@ export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false }
       currentHash: item.currentHash || "",
       dependencyVersions: item.dependencyVersions || {},
       dependencyChanges: item.dependencyChanges || [],
-    })),
-    note: "Read-only queue. Human verification must happen in the Context Room webapp.",
-  };
+  }));
 }
 
 function defaultCollaborationSessionState(root) {
@@ -14348,6 +14366,9 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
     skillDocumentationFiles: [],
   } : inferProjectDocumentationSetup(projectRoot);
   const title = options.title || existing.title || path.basename(projectRoot) || "Context Room";
+  // "." and "./" match no file (an empty or dead entry, so an empty document index): refuse them instead of saving them.
+  const wholeProject = (options.allowedPaths || []).find((item) => /^\.\/*$/.test(String(item).trim()));
+  if (wholeProject !== undefined) throw new Error(`allowedPaths cannot be "${wholeProject}": name the folders or files to allow, for example docs/ or README.md.`);
   const allowedPaths = sanitizePathList(options.allowedPaths?.length ? options.allowedPaths : configExists ? existing.allowedPaths : inferred.allowedPaths);
   const inferredWatchAllow = inferred.watchAllow.filter((relPath) => allowedPaths.some((allowedPath) => pathMatchesSetting(relPath, allowedPath)));
   const watchAllow = sanitizePathList(options.watchAllow?.length ? options.watchAllow : configExists ? existing.watchAllow : inferredWatchAllow);
@@ -16990,24 +17011,80 @@ function readBackgroundFileTask(task, root, payload = {}, { expectedRootIdentity
 // documentChecksPending and the page asks /api/docqa/document-checks, which waits for the same run.
 const DOCUMENT_CHECK_TASKS = new Set(["review-checks", "local-proposal-checks"]);
 const DOCUMENT_CHECKS_GRACE_MS = 0;
+// A hung run must not freeze a project's checks: past the timeout the run says "unavailable" and the
+// checks worker is closed (the next run starts a new one). Per project and kind one run at a time; a
+// run still waiting when a newer file asks is dropped (the reviewer moved on). An idle worker is closed.
+function documentChecksTestMs(name, fallback) {
+  const value = Number(process.env.NODE_TEST_CONTEXT && process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.max(20, value) : fallback;
+}
 const reviewIndexGenerations = new Map();
 const documentChecksRuns = new Map();
+const documentChecksLanes = new Map();
+const documentChecksIdleTimers = new Map();
 function documentChecksRun(root, { path: rel = "", proposal = "" } = {}) {
   const rootKey = path.resolve(root);
   const task = proposal ? "local-proposal-checks" : "review-checks";
   const generation = reviewIndexGenerations.get(rootKey) || 0;
   const key = `${rootKey}\0${task}\0${proposal}\0${normalizeRelPath(rel)}\0${generation}`;
   if (documentChecksRuns.has(key)) return documentChecksRuns.get(key);
-  const run = Promise.resolve().then(() => runBackgroundTask(task, rootKey, { path: rel, proposal, generation }))
-    .then((checks) => Array.isArray(checks) ? checks : [], () => [])
-    .finally(() => documentChecksRuns.delete(key));
+  const laneKey = `${rootKey}\0${task}`;
+  const lane = documentChecksLanes.get(laneKey) || { busy: false, waiting: null };
+  documentChecksLanes.set(laneKey, lane);
+  const run = new Promise((resolve) => {
+    const start = () => {
+      lane.busy = true;
+      clearTimeout(documentChecksIdleTimers.get(rootKey));
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error("Documentation checks timed out"), { code: "document_checks_timeout" })),
+          documentChecksTestMs("CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_TIMEOUT_MS", 20_000));
+        timer.unref?.();
+      });
+      Promise.race([Promise.resolve().then(() => runBackgroundTask(task, rootKey, { path: rel, proposal, generation })), timeout])
+        .then((checks) => ({ documentChecks: Array.isArray(checks) ? checks : [] }), (error) => {
+          if (error?.code === "document_checks_timeout") closeBackgroundWorkerByKey(backgroundWorkerKey(rootKey, "checks"), "Documentation checks timed out");
+          return { documentChecksUnavailable: true, documentChecks: [{ type: "checks_unavailable", path: normalizeRelPath(rel), line: 1,
+            message: "Documentation checks are unavailable: they did not finish. Open the file again to retry." }] };
+        })
+        .then((result) => {
+          clearTimeout(timer);
+          resolve(result);
+          lane.busy = false;
+          const next = lane.waiting;
+          lane.waiting = null;
+          if (next) next.start();
+          else scheduleDocumentChecksIdleClose(rootKey);
+        });
+    };
+    if (!lane.busy) start();
+    else {
+      lane.waiting?.drop();
+      lane.waiting = { start, drop: () => resolve({ documentChecks: [], documentChecksSuperseded: true }) };
+    }
+  }).finally(() => documentChecksRuns.delete(key));
   documentChecksRuns.set(key, run);
   return run;
+}
+// Test seam: the background worker groups alive for a project.
+export function backgroundWorkerGroupsForRoot(root) {
+  const prefix = `${path.resolve(root)}\0`;
+  return [...backgroundWorkerPools.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
+}
+function scheduleDocumentChecksIdleClose(rootKey) {
+  clearTimeout(documentChecksIdleTimers.get(rootKey));
+  const timer = setTimeout(() => {
+    documentChecksIdleTimers.delete(rootKey);
+    const workerKey = backgroundWorkerKey(rootKey, "checks");
+    if (backgroundWorkerPools.get(workerKey)?.pending.size === 0) closeBackgroundWorkerByKey(workerKey, "Documentation checks idle");
+  }, documentChecksTestMs("CONTEXT_ROOM_TEST_DOCUMENT_CHECKS_IDLE_MS", 10 * 60_000));
+  timer.unref?.();
+  documentChecksIdleTimers.set(rootKey, timer);
 }
 async function documentChecksWithinGrace(run) {
   let timer = null;
   const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), DOCUMENT_CHECKS_GRACE_MS); timer.unref?.(); });
-  const ready = await Promise.race([run.then((documentChecks) => ({ documentChecks })), late]);
+  const ready = await Promise.race([run, late]);
   clearTimeout(timer);
   return ready || { documentChecks: [], documentChecksPending: true };
 }
@@ -18475,9 +18552,25 @@ export function contextHubAttentionItems(root, requestedId = "") {
   let healthIssues = [];
   let freshness = [];
   if (selection.worktree?.root && selection.worktree.available !== false) {
-    const report = buildContextRoomDoctorReport(selection.worktree.root, { readOnly: true });
-    healthIssues = report.issues || [];
-    freshness = (buildAgentReviewQueue(selection.worktree.root, { readOnly: true }).queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    const worktreeRoot = selection.worktree.root;
+    // One snapshot (Git HEAD read in one batch) serves the health check and the
+    // freshness queue, as in the reports: no `git show` per modified file, twice.
+    let snapshot = null;
+    try {
+      snapshot = readDocQaSnapshot(worktreeRoot, { readOnly: true });
+    } catch {}
+    if (snapshot) {
+      const { settings, files, gitEntries, startupFiles } = snapshot;
+      const docqa = buildDocQaReportFromSnapshot(worktreeRoot, snapshot, { readOnly: true });
+      const gitStatuses = new Map([...gitEntries.entries()].map(([rel, entry]) => [rel, entry.status]));
+      const startupHooks = listStartupHookFiles(worktreeRoot, settings);
+      const graph = buildDocumentationGraph(worktreeRoot, { settings, files, gitStatuses, startupFiles, startupHooks, readOnly: true });
+      healthIssues = buildContextRoomDoctorReport(worktreeRoot, { settings, graph, docqa, readOnly: true }).issues || [];
+      freshness = agentReviewQueueItems(docqa.queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    } else {
+      healthIssues = buildContextRoomDoctorReport(worktreeRoot, { readOnly: true }).issues || [];
+      freshness = (buildAgentReviewQueue(worktreeRoot, { readOnly: true }).queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    }
   }
   const decisions = (state.proposals || []).filter((proposal) => (
     (!selection.project || contextHubProposalMatchesProject(proposal, selection.project))
@@ -25843,7 +25936,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const relPath = url.searchParams.get("path") || "";
     if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
     assertManagedProjectRootIdentity(path.resolve(root), expectedRootIdentity);
-    sendJson(res, 200, { path: relPath, documentChecks: await documentChecksRun(root, { path: relPath, proposal: url.searchParams.get("proposal") || "" }) });
+    sendJson(res, 200, { path: relPath, ...await documentChecksRun(root, { path: relPath, proposal: url.searchParams.get("proposal") || "" }) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/file/revert") {
@@ -26102,14 +26195,16 @@ function hasUnresolvedConflictMarkers(content) {
   return /^(<<<<<<<|=======|>>>>>>>)/m.test(String(content || ""));
 }
 
-function walkTextFiles(dir, root, settings = defaultMemoryWebappSettings()) {
+// `directories` (optional Set) receives every folder walked, relative to root ("." for root).
+function walkTextFiles(dir, root, settings = defaultMemoryWebappSettings(), directories = null) {
   const results = [];
   if (settings.projectOnly && !projectPathIsContained(root, dir)) return results;
+  directories?.add(path.relative(root, dir).replaceAll(path.sep, "/") || ".");
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
     const abs = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walkTextFiles(abs, root, settings));
+      results.push(...walkTextFiles(abs, root, settings, directories));
     } else if (entry.isFile()) {
       const rel = path.relative(root, abs).replaceAll(path.sep, "/");
       if (isAllowedMemoryPath(rel, settings)) results.push(rel);
