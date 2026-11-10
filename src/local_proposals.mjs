@@ -186,6 +186,25 @@ function beforeVersion(proposal, rel) {
   return proposal.observed && Object.hasOwn(proposal.observed, rel) ? proposal.observed[rel] : proposal.base[rel] || null;
 }
 
+// Against the current project file, the agent's version keeps that file's permissions unless the
+// agent itself changed them (a mode different from the one it received). A file it never received
+// keeps the project's permissions.
+function afterVersion(proposal, rel) {
+  const after = proposal.submitted[rel] || null, observed = proposal.observed?.[rel];
+  if (!after || !observed || !proposal.observed || !Object.hasOwn(proposal.observed, rel)) return after;
+  const received = proposal.base[rel];
+  return received && received.mode !== after.mode ? after : { ...after, mode: observed.mode };
+}
+
+// One project file read for comparison: bounded like an initial working file, refused with a clear reason.
+const PROJECT_FILE_MAX_BYTES = 32 * 1024 * 1024;
+function readProjectFile(ctx, rel) {
+  try { return readBytes(ctx.root, rel, PROJECT_FILE_MAX_BYTES); } catch (error) {
+    if (error.code === "local_proposal_size") fail("local_proposal_size", `${rel} in the project is larger than 32 MiB, the limit for a proposal file. Nothing was submitted or changed. Make the project file smaller, or leave it out of this proposal.`);
+    throw error;
+  }
+}
+
 function workspaceManifest(ctx, proposal, { store = true, maxFiles = Infinity, maxBytes = Infinity } = {}) {
   const workspace = safePath(ctx.root, proposal.workspace);
   const result = Object.create(null);
@@ -216,12 +235,13 @@ function sameVersion(a, b) {
 function changesFor(proposal) {
   if (!proposal.submitted) return [];
   return [...new Set([...Object.keys(proposal.base), ...Object.keys(proposal.observed || {}), ...Object.keys(proposal.submitted)])].sort()
-    .filter((rel) => !sameVersion(beforeVersion(proposal, rel), proposal.submitted[rel]))
+    .filter((rel) => !sameVersion(beforeVersion(proposal, rel), afterVersion(proposal, rel)))
     .map((rel) => {
-      const before = beforeVersion(proposal, rel);
+      const before = beforeVersion(proposal, rel), current = proposal.observed && Object.hasOwn(proposal.observed, rel);
       return { path: rel, kind: !before ? "added" : !proposal.submitted[rel] ? "deleted" : "modified",
-        before, after: proposal.submitted[rel] || null, decision: proposal.decisions[rel] || null,
-        ...(proposal.observed && Object.hasOwn(proposal.observed, rel) ? { unseen: true } : {}) };
+        before, after: afterVersion(proposal, rel), decision: proposal.decisions[rel] || null,
+        // unseen: the agent never received this file. rebased: compared with the project file the human changed since.
+        ...(current ? proposal.base[rel] ? { rebased: true } : { unseen: true } : {}) };
     });
 }
 
@@ -371,7 +391,7 @@ export function submitLocalProposal(projectRoot, id, { canWrite = () => true, ex
     const observed = Object.create(null);
     for (const rel of Object.keys(submitted)) {
       if (Object.hasOwn(proposal.base, rel)) continue;
-      const current = readBytes(ctx.root, rel);
+      const current = readProjectFile(ctx, rel);
       if (current) observed[rel] = { hash: storeBlob(ctx, current.bytes), mode: current.mode };
     }
     if (Object.keys(observed).length) proposal.observed = observed;
@@ -466,13 +486,20 @@ export function rebaseLocalProposalFile(projectRoot, id, { path: rel, expectedRe
     const change = changesFor(proposal).find((entry) => entry.path === relative(rel));
     if (!change) fail("local_proposal_change", "This file has no submitted change.");
     if (change.decision) fail("local_proposal_closed", "This file already has a decision.");
-    const current = readBytes(ctx.root, rel);
+    const current = readProjectFile(ctx, change.path);
     if (sameVersion(current, change.before)) fail("local_proposal_stale", `${rel} is unchanged in the project. Reload the review.`);
-    proposal.observed = { ...(proposal.observed || {}), [rel]: current ? { hash: storeBlob(ctx, current.bytes), mode: current.mode } : null };
+    proposal.observed = { ...(proposal.observed || {}), [change.path]: current ? { hash: storeBlob(ctx, current.bytes), mode: current.mode } : null };
     proposal.submittedRevision = submissionRevision(proposal, proposal.submitted);
+    // The project file may already hold the agent's version: nothing is left to decide for it.
+    const remaining = changesFor(proposal);
+    const settled = !remaining.some((entry) => entry.path === change.path);
+    if (settled) {
+      if (remaining.length) updateStatus(proposal);
+      else proposal.status = "resolved";
+    }
     proposal.updatedAt = new Date().toISOString();
     saveProposal(ctx, proposal);
-    return publicProposal(ctx, proposal);
+    return { ...publicProposal(ctx, proposal), settled };
   });
 }
 

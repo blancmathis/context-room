@@ -114,7 +114,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
-import { analyzeDocumentTidiness, readGitDocumentHistory, preReviewDocumentChecks, reviewVersionChecks } from "./doc_tidy.mjs";
+import { analyzeDocumentTidiness, documentShingles, readGitDocumentHistory, preReviewDocumentChecks, reviewVersionChecks } from "./doc_tidy.mjs";
 import { TIDY_SKILLS, tidyOrder } from "./doc_tidy_orders.mjs";
 import {
   assertFreshGitHubAppCredential,
@@ -8309,21 +8309,49 @@ export function localProposalDocumentChecks(root, id) {
     readText: (rel) => fs.readFileSync(source(rel), "utf8") });
 }
 
-// Markdown documents of the project as they are on disk, for advisory review checks.
-// overrides: Map(path → content, or null for a document that the reviewed version removes).
+// Word 3-grams of the project's Markdown documents as they are on disk, for advisory review checks.
+// One index per project root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list
+// of documents is rebuilt at most every REVIEW_INDEX_LIST_MS; on every call each listed document is
+// checked with one stat and read and hashed again only when its size or modification time changed.
+// Memory: one sorted Uint32Array per document of at most REVIEW_CHECK_MAX_BYTES, at most REVIEW_INDEX_MAX_DOCS documents.
 const REVIEW_CHECK_MAX_BYTES = 512 * 1024;
-function reviewDocumentCorpus(root, overrides = new Map()) {
-  const docs = [];
-  for (const file of listMemoryFiles(root, { readOnly: true, metadataOnly: true })) {
-    if (!/\.md$/i.test(file.path || "") || resolveExternalPath(file.path) || overrides.has(file.path)) continue;
-    try {
-      const absolutePath = path.join(root, file.path);
-      const stats = fs.statSync(absolutePath);
-      if (stats.isFile() && stats.size <= REVIEW_CHECK_MAX_BYTES) docs.push({ path: file.path, content: fs.readFileSync(absolutePath, "utf8") });
-    } catch {}
+const REVIEW_INDEX_MAX_DOCS = 20_000;
+const REVIEW_INDEX_ROOTS = 4;
+const REVIEW_INDEX_LIST_MS = 10_000;
+const reviewDocumentIndexes = new Map();
+function reviewDocumentIndex(root) {
+  const key = path.resolve(root);
+  const index = reviewDocumentIndexes.get(key) || { listedAt: 0, paths: [], files: new Map() };
+  reviewDocumentIndexes.delete(key);
+  reviewDocumentIndexes.set(key, index);
+  while (reviewDocumentIndexes.size > REVIEW_INDEX_ROOTS) reviewDocumentIndexes.delete(reviewDocumentIndexes.keys().next().value);
+  if (Date.now() - index.listedAt >= REVIEW_INDEX_LIST_MS) {
+    index.paths = listMemoryFiles(root, { readOnly: true, metadataOnly: true })
+      .filter((file) => /\.md$/i.test(file.path || "") && file.exists && !resolveExternalPath(file.path))
+      .slice(0, REVIEW_INDEX_MAX_DOCS).map((file) => file.path);
+    index.listedAt = Date.now();
+    const listed = new Set(index.paths);
+    for (const rel of index.files.keys()) if (!listed.has(rel)) index.files.delete(rel);
   }
-  for (const [rel, content] of overrides) if (typeof content === "string") docs.push({ path: rel, content });
-  return docs;
+  for (const rel of index.paths) {
+    let stats = null;
+    try { stats = fs.statSync(path.join(root, rel)); } catch {}
+    if (!stats?.isFile() || stats.size > REVIEW_CHECK_MAX_BYTES) { index.files.delete(rel); continue; }
+    const entry = index.files.get(rel);
+    if (entry && entry.size === stats.size && entry.mtimeMs === stats.mtimeMs) continue;
+    try {
+      index.files.set(rel, { path: rel, size: stats.size, mtimeMs: stats.mtimeMs, hashes: documentShingles(fs.readFileSync(path.join(root, rel), "utf8")) });
+    } catch {
+      index.files.delete(rel);
+    }
+  }
+  return index.files;
+}
+
+// The indexed documents, with overrides (Map path → content, or null for a removed document) in place of the disk.
+function* reviewDocumentCorpus(root, overrides = new Map()) {
+  for (const entry of reviewDocumentIndex(root).values()) if (!overrides.has(entry.path)) yield entry;
+  for (const [rel, content] of overrides) if (typeof content === "string") yield { path: rel, content };
 }
 
 // While a human reviews one changed file: dead links this version adds, and a likely duplicate.
@@ -25052,7 +25080,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "POST" && url.pathname === "/api/docqa/local-proposal-rebase") {
     const body = await readJsonBody(req);
     const result = withDocReviewEvidenceLock(root, () => rebaseLocalProposalFile(root, body.proposal, { path: body.path, expectedRevision: body.expectedRevision }), { expectedRootIdentity });
-    sendJson(res, 200, { id: result.id, status: result.status, revision: result.submittedRevision, changes: result.changes });
+    sendJson(res, 200, { id: result.id, status: result.status, revision: result.submittedRevision, changes: result.changes, settled: result.settled === true });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/local-proposal-decision") {
