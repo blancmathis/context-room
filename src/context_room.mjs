@@ -6414,7 +6414,7 @@ function gitIndexStateForReviewPath(root, relPath) {
       unavailable.cause = error;
       throw unavailable;
     }
-    const unavailable = sharedRequestError("Git index is temporarily unavailable; review state cannot be trusted", 503, "git_index_unavailable", { path: normalized });
+    const unavailable = sharedRequestError(`Git could not read the index of this file (${gitFailureReason(error)}); review state cannot be trusted`, 503, "git_index_unavailable", { path: normalized });
     unavailable.cause = error;
     throw unavailable;
   }
@@ -6427,12 +6427,15 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null, { readCo
   const treePaths = new Map(normalizedPaths.map((relPath) => [gitTreePathForRootRelative(root, relPath), relPath]));
   const pathspecs = [...treePaths.keys()].map(gitLiteralPathspec);
   try {
-    const indexOutput = execFileSync("git", ["ls-files", "--stage", "-z", "--", ...pathspecs], {
+    // This Git has no --pathspec-from-file for ls-files / ls-tree: split the paths so that
+    // one command line stays far under the OS argument limit (about 1 MiB on macOS).
+    const pathspecChunks = gitPathspecChunks(pathspecs);
+    const indexOutput = Buffer.concat(pathspecChunks.map((chunk) => execFileSync("git", ["ls-files", "--stage", "-z", "--", ...chunk], {
       cwd: repositoryRoot,
       encoding: null,
       stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: Math.max(1_000_000, pathspecs.length * 512),
-    });
+      maxBuffer: Math.max(1_000_000, chunk.length * 512),
+    })));
     const indexByPath = new Map(normalizedPaths.map((relPath) => [relPath, []]));
     for (const record of decodeGitUtf8(indexOutput, "git ls-files").split("\0").filter(Boolean)) {
       const separator = record.indexOf("\t");
@@ -6441,38 +6444,42 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null, { readCo
       if (!match || !relPath) throw new Error("Git index returned an unexpected batch path entry");
       indexByPath.get(relPath).push({ mode: match[1], oid: match[2], stage: Number(match[3]) });
     }
-    let headOutput = Buffer.alloc(0);
-    try {
-      headOutput = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", ...pathspecs], {
-        cwd: repositoryRoot,
-        encoding: null,
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: Math.max(1_000_000, pathspecs.length * 512),
-      });
-    } catch (error) {
-      if (error?.status !== 128) throw error;
-      let headRef = "";
+    const readHeadTree = (chunk) => {
+      let headOutput = Buffer.alloc(0);
       try {
-        headRef = execFileSync("git", ["symbolic-ref", "-q", "HEAD"], {
+        headOutput = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", ...chunk], {
           cwd: repositoryRoot,
-          encoding: "utf8",
+          encoding: null,
           stdio: ["ignore", "pipe", "pipe"],
-          maxBuffer: 1_000_000,
-        }).trim();
-      } catch {
-        throw error;
-      }
-      try {
-        execFileSync("git", ["show-ref", "--verify", "--quiet", headRef], {
-          cwd: repositoryRoot,
-          stdio: ["ignore", "ignore", "pipe"],
-          maxBuffer: 1_000_000,
+          maxBuffer: Math.max(1_000_000, chunk.length * 512),
         });
-        throw error;
-      } catch (refError) {
-        if (refError === error || refError?.status !== 1) throw error;
+      } catch (error) {
+        if (error?.status !== 128) throw error;
+        let headRef = "";
+        try {
+          headRef = execFileSync("git", ["symbolic-ref", "-q", "HEAD"], {
+            cwd: repositoryRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            maxBuffer: 1_000_000,
+          }).trim();
+        } catch {
+          throw error;
+        }
+        try {
+          execFileSync("git", ["show-ref", "--verify", "--quiet", headRef], {
+            cwd: repositoryRoot,
+            stdio: ["ignore", "ignore", "pipe"],
+            maxBuffer: 1_000_000,
+          });
+          throw error;
+        } catch (refError) {
+          if (refError === error || refError?.status !== 1) throw error;
+        }
       }
-    }
+      return headOutput;
+    };
+    const headOutput = Buffer.concat(pathspecChunks.map(readHeadTree));
     const headByPath = new Map();
     for (const record of decodeGitUtf8(headOutput, "git ls-tree").split("\0").filter(Boolean)) {
       const separator = record.indexOf("\t");
@@ -6519,10 +6526,42 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null, { readCo
       unavailable.cause = error;
       throw unavailable;
     }
-    const unavailable = sharedRequestError("Git index is temporarily unavailable; review state cannot be trusted", 503, "git_index_unavailable");
+    const unavailable = sharedRequestError(`Git could not read the index of these files (${gitFailureReason(error)}); review state cannot be trusted`, 503, "git_index_unavailable");
     unavailable.cause = error;
     throw unavailable;
   }
+}
+
+const GIT_PATHSPEC_CHUNK_BYTES = 128 * 1024;
+
+function gitPathspecChunks(pathspecs, maxBytes = GIT_PATHSPEC_CHUNK_BYTES) {
+  const chunks = [];
+  let chunk = [];
+  let bytes = 0;
+  for (const pathspec of pathspecs) {
+    const size = Buffer.byteLength(pathspec) + 1;
+    if (chunk.length && bytes + size > maxBytes) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(pathspec);
+    bytes += size;
+  }
+  if (chunk.length || !chunks.length) chunks.push(chunk);
+  return chunks;
+}
+
+// The real cause, short: the first line Git wrote on stderr, else the system error.
+function gitFailureReason(error) {
+  const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr || "");
+  const line = stderr.split(/\r?\n/).map((item) => item.trim()).find(Boolean);
+  if (line) return shortString(line, 200);
+  if (error?.code === "E2BIG") return "the path list is too long for one Git command";
+  if (error?.code === "ENOENT") return "git is not installed";
+  if (error?.code === "ETIMEDOUT") return "git timed out";
+  if (typeof error?.code === "string" && error.code) return shortString(`${error.code}: ${error.message || ""}`, 200);
+  return shortString(error?.message || "unknown Git error", 200);
 }
 
 // A review snapshot (docqa report, documentation navigation) checks the Git
@@ -7683,6 +7722,29 @@ function prepareDocReviewBaselineBundle(root, files, { partBytes = REVIEW_BASELI
     return { entries: part.entries, content, relPath, absolutePath };
   });
   return { entries, parts };
+}
+
+// A writer that died while writing a part leaves its temporary file (up to 4 MB). Every
+// write in .bundles holds the review lock, so under the lock no such file is still in use.
+function removeStaleDocReviewBundleTemporaries(root) {
+  assertDocReviewEvidenceLockHeld(root);
+  const directory = path.join(path.resolve(root), DOCQA_REVIEW_BASELINE_BUNDLES);
+  let names = [];
+  try {
+    assertManagedProjectPath(root, directory, DOCQA_REVIEW_BASELINE_BUNDLES);
+    names = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!/^\.context-room-review-\d+-[0-9a-f]{24}\.tmp$/.test(name)) continue;
+    const relPath = path.posix.join(DOCQA_REVIEW_BASELINE_BUNDLES, name);
+    const absolute = path.join(directory, name);
+    try {
+      assertManagedProjectPath(root, absolute, relPath);
+      if (fs.lstatSync(absolute).isFile()) fs.unlinkSync(absolute);
+    } catch {}
+  }
 }
 
 function writePreparedDocReviewBaselineBundleUnderLock(root, prepared) {
@@ -9460,6 +9522,7 @@ export function trustCurrentDocVersions(root, { items, requestId = null, expecte
     for (const part of bundle.parts) {
       if (fs.existsSync(part.absolutePath) && !docReviewBaselineReferenced(state.reviews, part.relPath)) removeDocReviewControlFile(resolvedRoot, part.relPath);
     }
+    removeStaleDocReviewBundleTemporaries(resolvedRoot);
     const controlFiles = [path.join(resolvedRoot, DOCQA_REVIEW_STATE), globalReviewLedgerPath(resolvedRoot), ...bundle.parts.map((part) => part.absolutePath)];
     return withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-trust-rollback", () => {
       const batchControl = { state, ledger, ledgerChanged: false, gitIndexStates: current.gitIndexStates, baselines: writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, bundle) };
@@ -11222,6 +11285,85 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, number));
 }
 
+// A writable report mirrors each current local acceptance into the global ledger, and
+// migrates old local entries to the current fields. It used to open one transaction (lock,
+// journal, fresh state and ledger parse) per file, on every call (audit 2026-11-10: 139 s
+// after a trust of 2 000 files). Inside a batch, the report collects the changes and
+// applies them at its end: no write when nothing differs, else one transaction.
+let currentReviewPersistBatch = null;
+
+function withCurrentReviewPersistBatch(root, fn) {
+  if (currentReviewPersistBatch) return fn();
+  const batch = { root: path.resolve(root), entries: new Map() };
+  currentReviewPersistBatch = batch;
+  let result;
+  try {
+    result = fn();
+  } finally {
+    if (currentReviewPersistBatch === batch) currentReviewPersistBatch = null;
+  }
+  flushCurrentReviewPersist(root, batch.entries);
+  return result;
+}
+
+function queueCurrentReviewPersist(root, reviews, relPath, review, nextLocal, content, resourceState, { updateState = false } = {}) {
+  const batch = currentReviewPersistBatch;
+  if (!batch || batch.root !== path.resolve(root)) {
+    flushCurrentReviewPersist(root, new Map([[relPath, { reviews, relPath, review, nextLocal, content, resourceState, updateState }]]));
+    return;
+  }
+  // In a batch, `reviews` gets the migrated entry now (below), so the flush need not set it again.
+  const entry = { reviews: null, relPath, review, nextLocal, content, resourceState, updateState };
+  const previous = batch.entries.get(relPath);
+  // Same file seen twice in one report: the first read of the stored review is the one to check.
+  batch.entries.set(relPath, previous ? { ...entry, review: previous.review, updateState: previous.updateState || updateState } : entry);
+  // The rest of the report sees the migrated entry at once, as when each file wrote it at once.
+  if (updateState) reviews[relPath] = migratedCurrentReview(review, nextLocal, resourceState);
+}
+
+function migratedCurrentReview(review, nextLocal, resourceState) {
+  const { contentHash, reviewHash, baselineReviewHash, resourceVersion, resourceMode, gitIndexVersion } = nextLocal;
+  return { ...review, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion, resourceMode, gitIndexVersion };
+}
+
+function flushCurrentReviewPersist(root, entries) {
+  if (!entries.size) return;
+  try {
+    withDocReviewEvidenceLock(root, () => {
+      const freshState = readDocReviewState(root);
+      const ledger = readGlobalReviewLedger(root);
+      preflightDocReviewMutationPaths(root, "", { globalLedger: true });
+      const migrated = [];
+      let stateChanged = false;
+      let ledgerChanged = false;
+      for (const { reviews, relPath, review, nextLocal, content, resourceState, updateState } of entries.values()) {
+        const freshReview = freshState.reviews?.[relPath] || null;
+        if (JSON.stringify(freshReview) !== JSON.stringify(review)) continue;
+        try {
+          const result = applyGlobalReviewDecision(ledger, root, relPath, { content, exists: resourceState === "present" }, nextLocal);
+          if (result.changed) ledgerChanged = true;
+        } catch {
+          continue;
+        }
+        if (updateState) {
+          const migratedReview = migratedCurrentReview(freshReview, nextLocal, resourceState);
+          freshState.reviews[relPath] = migratedReview;
+          if (reviews) migrated.push([reviews, relPath, migratedReview]);
+          stateChanged = true;
+        }
+      }
+      if (!stateChanged && !ledgerChanged) return;
+      const controlFiles = [globalReviewLedgerPath(root)];
+      if (stateChanged) controlFiles.push(path.join(path.resolve(root), DOCQA_REVIEW_STATE));
+      withDocReviewControlRollback(root, controlFiles, "context-room-review-current-migration-rollback", () => {
+        if (stateChanged) writeDocReviewState(root, freshState);
+        if (ledgerChanged) writeGlobalReviewLedger(root, ledger);
+      });
+      for (const [reviews, relPath, migratedReview] of migrated) reviews[relPath] = migratedReview;
+    });
+  } catch {}
+}
+
 function currentReviewFor(root, reviews, relPath, content, resourceState = "present", resourceVersion = null, globalReviewLedger = null, { persist = true } = {}) {
   const review = reviews[relPath] || null;
   const contentHash = hashContent(content);
@@ -11248,36 +11390,12 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
     };
     if (local.current && local.status !== "verified") return local;
     if (local.current && local.status === "verified") {
-      const persistCurrentReview = (nextLocal, { updateState = false } = {}) => withDocReviewEvidenceLock(root, () => {
-        const freshState = readDocReviewState(root);
-        const freshReview = freshState.reviews?.[relPath] || null;
-        if (JSON.stringify(freshReview) !== JSON.stringify(review)) return false;
-        preflightDocReviewMutationPaths(root, relPath, { globalLedger: true });
-        const controlFiles = [globalReviewLedgerPath(root)];
-        if (updateState) controlFiles.push(path.join(path.resolve(root), DOCQA_REVIEW_STATE));
-        let migratedReview = null;
-        const persisted = withDocReviewControlRollback(root, controlFiles, "context-room-review-current-migration-rollback", () => {
-          if (updateState) {
-            migratedReview = { ...freshReview, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion, resourceMode, gitIndexVersion };
-            freshState.reviews[relPath] = migratedReview;
-            writeDocReviewState(root, freshState);
-          }
-          writeGlobalReviewDecisionUnderLock(root, relPath, { content, exists: resourceState === "present" }, nextLocal);
-          return true;
-        });
-        if (migratedReview) reviews[relPath] = migratedReview;
-        return persisted;
-      });
       if (review.status === "verified" && (review.contentHash !== contentHash || review.reviewHash !== reviewHash || review.baselineReviewHash !== baselineReviewHash || review.resourceState !== resourceState || review.resourceVersion !== resourceVersion || review.resourceMode !== resourceMode || review.gitIndexVersion !== gitIndexVersion)) {
         local = { ...local, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion, resourceMode, gitIndexVersion };
-        if (persist) {
-          try { persistCurrentReview(local, { updateState: true }); } catch {}
-        }
+        if (persist) queueCurrentReviewPersist(root, reviews, relPath, review, local, content, resourceState, { updateState: true });
         return local;
       }
-      if (persist) {
-        try { persistCurrentReview(local); } catch {}
-      }
+      if (persist) queueCurrentReviewPersist(root, reviews, relPath, review, local, content, resourceState);
       return local;
     }
   }
@@ -13043,8 +13161,13 @@ function reviewReasonFor({ gitStatus = "", resourceState = "present" } = {}) {
 }
 
 function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
+  if (options.readOnly === true) return buildDocQaReportUnderLockInBatch(root, options);
+  assertDocReviewEvidenceLockHeld(root);
+  return withCurrentReviewPersistBatch(root, () => buildDocQaReportUnderLockInBatch(root, options));
+}
+
+function buildDocQaReportUnderLockInBatch(root, options) {
   const readOnly = options.readOnly === true;
-  if (!readOnly) assertDocReviewEvidenceLockHeld(root);
   const gitStatuses = options.gitStatuses || readGitStatusEntries(root);
   const gitHeadContents = options.gitHeadContents || null;
   const reviewState = options.reviewState || readDocReviewState(root, { readOnly });
