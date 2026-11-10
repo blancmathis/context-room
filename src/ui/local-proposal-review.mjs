@@ -46,6 +46,8 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     .local-proposal-review footer { justify-content: flex-end; margin-top: 20px; position: sticky; bottom: 0; z-index: 1; padding-block: 10px; background: var(--surface-floating, #252526); }
     .local-proposal-review [role=status] { min-height: 24px; margin-top: 12px; color: var(--muted, #9a9a9a); }
     .local-proposal-review .local-proposal-blocks { margin-bottom: 20px; }
+    .local-proposal-review .local-proposal-checks { margin-bottom: 20px; padding: 12px 16px; border: 2px solid currentColor; border-radius: 12px; }
+    .local-proposal-review .local-proposal-checks ul { margin: 8px 0 0; padding-left: 20px; }
     .local-proposal-review .local-proposal-blocks p { margin: 0 0 8px; color: var(--muted, #9a9a9a); }
     .local-proposal-review .local-proposal-blocks h4 { margin: 12px 0 8px; font-size: 14px; }
     .local-proposal-review .local-proposal-blocks pre { min-height: 0; max-height: 30dvh; margin-bottom: 8px; border-left: 4px solid var(--muted, #9a9a9a); }
@@ -61,11 +63,29 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   const blocksPanel = element("section", "", "local-proposal-blocks");
   blocksPanel.setAttribute("aria-label", "Block check");
   blocksPanel.hidden = true;
+  // Documentation warnings for the proposed version (added dead links, likely duplicate). Never a block.
+  const checksPanel = element("section", "", "local-proposal-checks");
+  checksPanel.setAttribute("aria-label", "Documentation checks");
+  checksPanel.hidden = true;
   const versions = element("div", "", "local-proposal-versions");
   const status = element("div");
   status.setAttribute("role", "status");
   const footer = element("footer");
-  dialog.append(header, nav, blocksPanel, versions, status, footer);
+  // Files closed by "Compare with current file" without a decision: who, when and why stay visible.
+  const settledPanel = element("section", "", "local-proposal-settled");
+  settledPanel.setAttribute("aria-label", "Files closed without a decision");
+  const renderSettled = (entries) => {
+    const list = (Array.isArray(entries) ? entries : Object.entries(entries || {}).map(([rel, entry]) => ({ ...entry, path: rel })))
+      .filter((entry) => entry?.path);
+    settledPanel.replaceChildren();
+    settledPanel.hidden = !list.length;
+    if (!list.length) return;
+    const items = element("ul");
+    items.append(...list.map((entry) => element("li", `${entry.path}: ${entry.reason === "deleted-both-sides" ? "deleted on both sides" : "already in the project"}. Closed without a decision by you (Compare with current file)${entry.at ? `, ${new Date(entry.at).toLocaleString()}` : ""}. No file was written.`)));
+    settledPanel.append(element("h3", "Closed without a decision"), items);
+  };
+  renderSettled(item.settledFiles);
+  dialog.append(header, nav, checksPanel, settledPanel, blocksPanel, versions, status, footer);
   document.body.append(dialog);
   let objectUrls = [];
   let viewers = [];
@@ -96,7 +116,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   function renderVersion(label, bytes, file, editable) {
     const section = element("section");
     section.append(element("h3", label));
-    if (bytes === null) { section.append(element("p", label === "Accepted" ? "New document" : "Document removed")); return section; }
+    if (bytes === null) { section.append(element("p", label === "Accepted" ? "New document" : label === "Current project file" ? "No file in the project" : "Document removed")); return section; }
     const extension = file.path.split(".").pop().toLowerCase();
     if (["html", "htm"].includes(extension)) {
       const frame = element("iframe");
@@ -216,7 +236,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   }
 
   // Identical blocks stay folded; only removed and new or rewritten blocks need reading.
-  const blockMap = item.type === "local-proposal" && item.proposalId
+  let blockMap = item.type === "local-proposal" && item.proposalId
     ? request(`/api/docqa/local-proposal-blocks?proposal=${encodeURIComponent(item.proposalId)}`).catch(() => null)
     : Promise.resolve(null);
   function renderBlocks(map, file) {
@@ -243,6 +263,16 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       for (const block of list) holder.append(element("pre", block.text));
       blocksPanel.append(holder);
     }
+  }
+
+  function renderChecks(checks) {
+    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc", "duplicate_partial"].includes(check?.type)) : [];
+    checksPanel.replaceChildren();
+    checksPanel.hidden = !list.length;
+    if (!list.length) return;
+    const items = element("ul");
+    items.append(...list.slice(0, 8).map((check) => element("li", check.type === "dead_link" ? `Line ${check.line}: ${check.message}` : check.message)));
+    checksPanel.append(element("h3", "Documentation checks"), items, element("p", "A warning: you can still accept."));
   }
 
   function renderNavigation() {
@@ -275,10 +305,14 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       const file = await request(item.type === "shared-asset" ? `/api/docqa/shared-asset-file?path=${encodeURIComponent(filePath)}` : item.type === "local-asset" ? `/api/docqa/asset-file?path=${encodeURIComponent(filePath)}` : `/api/docqa/local-proposal-file?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(filePath)}`);
       if (serial !== requestId || !dialog.isConnected) return;
       cleanupUrls();
-      versions.replaceChildren(renderVersion("Accepted", bytesOf(file.beforeBase64), file, false), renderVersion("Proposed", bytesOf(file.afterBase64), file, true));
+      versions.replaceChildren(renderVersion(file.unseen || file.rebased ? "Current project file" : "Accepted", bytesOf(file.beforeBase64), file, false), renderVersion("Proposed", bytesOf(file.afterBase64), file, true));
       const map = await blockMap;
       if (serial !== requestId || !dialog.isConnected) return;
       renderBlocks(map, file);
+      renderChecks(file.documentChecks);
+      // Checks still running: the file opens now, the box fills in when they finish.
+      if (file.documentChecksPending) request(`/api/docqa/document-checks?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(file.path)}`)
+        .then((result) => { if (serial === requestId && dialog.isConnected) renderChecks(result.documentChecks); }).catch(() => {});
       const accept = element("button", "Accept file", "file-action primary");
       const reject = element("button", "Reject file", "file-action danger-action");
       const undo = element("button", "Undo correction", "quiet-button");
@@ -313,7 +347,31 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
           await onChange(result);
           if (!files.length) { dialog.close(); return; }
           await openFile(files[0]);
-        } catch (error) { status.textContent = error.message; }
+        } catch (error) {
+          status.textContent = error.message;
+          // The project file moved since the proposal: never overwrite it, offer a fresh comparison instead.
+          if (error.code === "local_proposal_conflict" && error.details?.action === "compare-current" && item.type === "local-proposal" && !isDirty()) {
+            const compare = element("button", "Compare with current file", "quiet-button"); compare.type = "button";
+            compare.addEventListener("click", async () => {
+              compare.disabled = true;
+              try {
+                const rebased = await request("/api/docqa/local-proposal-rebase", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ proposal: item.proposalId, path: file.path, expectedRevision: file.revision }) });
+                blockMap = request(`/api/docqa/local-proposal-blocks?proposal=${encodeURIComponent(item.proposalId)}`).catch(() => null);
+                if (!rebased.settled) { await openFile(file.path); return; }
+                // The project file already holds the agent's version: this change is closed, nothing was written.
+                const settledText = `${file.path} in the project already matches the agent's version. Nothing is left to decide for this file; no file was written.`;
+                files = rebased.changes.filter((change) => !change.decision).map((change) => change.path);
+                renderSettled(rebased.settledFiles);
+                await onChange(rebased);
+                if (files.length) { await openFile(files[0]); status.textContent = `${settledText} ${status.textContent}`; return; }
+                versions.replaceChildren(); checksPanel.hidden = true; blocksPanel.hidden = true;
+                footer.replaceChildren(close); close.disabled = false; renderNavigation();
+                status.textContent = `${settledText} This proposal has no other file to review.`;
+              } catch (rebaseError) { compare.disabled = false; status.textContent = rebaseError.message; }
+            });
+            footer.prepend(compare);
+          }
+        }
         finally { busy = false; [accept, reject, undo, reload, close].forEach((button) => { button.disabled = false; }); renderNavigation(); }
       }
       accept.addEventListener("click", () => decide("accepted"));
@@ -367,7 +425,11 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
           status.textContent = `Snapshot r${snapshot.boardRevision} at the original PNG bounds. Inspect it before deciding. All editable objects, including those outside this crop, remain in ${snapshot.path}.`;
         }));
       }
-      status.textContent = file.kind === "deleted" ? "Accepting removes this file. Its accepted content stays available for recovery." : "Only this file will receive your decision.";
+      const permissions = file.before && file.after && file.before.mode !== file.after.mode
+        ? ` Permissions change: ${(file.before.mode & 0o777).toString(8)} → ${(file.after.mode & 0o777).toString(8)}.` : "";
+      status.textContent = (file.unseen ? "The agent did not have this file in its working copy. Left: the project file today; right: the agent's version."
+        : file.rebased ? "The project file changed after the agent received it. Left: the project file today; right: the agent's version."
+        : file.kind === "deleted" ? "Accepting removes this file. Its accepted content stays available for recovery." : "Only this file will receive your decision.") + permissions;
     } finally { busy = false; renderNavigation(); }
   }
   dialog.showModal();

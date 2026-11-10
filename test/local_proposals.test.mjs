@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   beginLocalProposal, listLocalProposals, submitLocalProposal, inspectLocalProposal,
-  decideLocalProposalFile, readLocalProposalFile, readAcceptedLocalProposalFile,
+  decideLocalProposalFile, readLocalProposalFile, readAcceptedLocalProposalFile, rebaseLocalProposalFile,
 } from "../src/local_proposals.mjs";
 
 function fixture(t) {
@@ -176,4 +176,173 @@ test("the review revision binds accepted bases as well as proposed bytes", (t) =
   fs.writeFileSync(manifest, JSON.stringify(changed));
   assert.throws(() => decide(proposal, "docs/a.md"), { code: "local_proposal_corrupt" });
   assert.equal(read("docs/a.md"), "accepted A\n");
+});
+
+test("a file absent from the agent working copy is reviewed and accepted against the real project file", (t) => {
+  const { root, begin, edit, read, decide } = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/readme.md"), "real unaccepted readme\n");
+  let proposal = begin();
+  assert.equal(fs.existsSync(path.join(proposal.editRoot, "docs/readme.md")), false);
+  edit(proposal, "docs/readme.md", "agent readme\n");
+  proposal = submitLocalProposal(root, proposal.id);
+  const change = proposal.changes.find((entry) => entry.path === "docs/readme.md");
+  assert.equal(change.kind, "modified");
+  assert.equal(change.unseen, true);
+  assert.equal(readLocalProposalFile(root, proposal.id, "docs/readme.md").beforeBytes.toString(), "real unaccepted readme\n");
+  decide(proposal, "docs/readme.md");
+  assert.equal(read("docs/readme.md"), "agent readme\n");
+});
+
+test("a target changed after submission is refused with a precise message and can be compared again", (t) => {
+  const { root, begin, edit, read, decide } = fixture(t);
+  let proposal = begin();
+  edit(proposal, "docs/new.md", "agent new\n");
+  proposal = submitLocalProposal(root, proposal.id);
+  fs.writeFileSync(path.join(root, "docs/new.md"), "created by a human after submission\n");
+  assert.throws(() => decide(proposal, "docs/new.md"), (error) => error.code === "local_proposal_conflict"
+    && /docs\/new\.md now exists in the project/.test(error.message) && /Compare with current file/.test(error.message)
+    && error.details?.expected === "absent" && error.details?.current === "present");
+  assert.equal(read("docs/new.md"), "created by a human after submission\n");
+  assert.throws(() => rebaseLocalProposalFile(root, proposal.id, { path: "docs/new.md", expectedRevision: "stale" }), { code: "local_proposal_stale" });
+  const rebased = rebaseLocalProposalFile(root, proposal.id, { path: "docs/new.md", expectedRevision: proposal.submittedRevision });
+  assert.notEqual(rebased.submittedRevision, proposal.submittedRevision);
+  assert.throws(() => decide(proposal, "docs/new.md"), { code: "local_proposal_stale" });
+  const file = readLocalProposalFile(root, proposal.id, "docs/new.md");
+  assert.equal(file.kind, "modified");
+  assert.equal(file.beforeBytes.toString(), "created by a human after submission\n");
+  decide(rebased, "docs/new.md");
+  assert.equal(read("docs/new.md"), "agent new\n");
+
+  let edited = begin();
+  edit(edited, "docs/b.md", "agent B\n");
+  edited = submitLocalProposal(root, edited.id);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "human B\n");
+  assert.throws(() => decide(edited, "docs/b.md"), /docs\/b\.md was edited in the project after this proposal was made/);
+  assert.equal(inspectLocalProposal(root, edited.id).submittedRevision, edited.submittedRevision);
+  assert.equal(read("docs/b.md"), "human B\n");
+});
+
+test("a compare that finds the agent's version already in the project closes that change without a decision", (t) => {
+  const { root, begin, edit, read, decide } = fixture(t);
+  let proposal = begin();
+  edit(proposal, "docs/a.md", "agent A\n");
+  edit(proposal, "docs/b.md", "agent B\n");
+  proposal = submitLocalProposal(root, proposal.id);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "agent B\n");
+  assert.throws(() => decide(proposal, "docs/b.md"), (error) => error.code === "local_proposal_conflict" && error.details?.action === "compare-current");
+  const settled = rebaseLocalProposalFile(root, proposal.id, { path: "docs/b.md", expectedRevision: proposal.submittedRevision });
+  assert.equal(settled.settled, true);
+  assert.deepEqual(settled.changes.map((change) => change.path), ["docs/a.md"]);
+  assert.equal(settled.status, "submitted");
+  decide(settled, "docs/a.md");
+  const kept = inspectLocalProposal(root, proposal.id);
+  assert.equal(kept.status, "accepted");
+  assert.deepEqual(Object.keys(kept.decisions), ["docs/a.md"], "a settled file never gets a decision");
+  assert.equal(kept.settledFiles["docs/b.md"].reason, "already-in-project", "the settled file stays recorded");
+  assert.equal(kept.settledFiles["docs/b.md"].by, "human");
+  assert.ok(Date.parse(kept.settledFiles["docs/b.md"].at));
+  assert.equal(read("docs/b.md"), "agent B\n");
+
+  let only = begin();
+  edit(only, "docs/b.md", "second agent B\n");
+  only = submitLocalProposal(root, only.id);
+  fs.rmSync(path.join(root, "docs/b.md"));
+  fs.writeFileSync(path.join(root, "docs/b.md"), "second agent B\n");
+  const closed = rebaseLocalProposalFile(root, only.id, { path: "docs/b.md", expectedRevision: only.submittedRevision });
+  assert.equal(closed.settled, true);
+  assert.deepEqual(closed.changes, []);
+  assert.equal(closed.status, "settled", "no decision was made: the status never claims one");
+  assert.deepEqual(closed.decisions, {});
+  assert.equal(listLocalProposals(root, { readyOnly: true }).some((entry) => entry.id === only.id), false);
+  assert.throws(() => submitLocalProposal(root, only.id), (error) => error.code === "local_proposal_closed");
+
+  let gone = begin();
+  fs.rmSync(path.join(gone.editRoot, "docs/a.md"));
+  gone = submitLocalProposal(root, gone.id);
+  fs.rmSync(path.join(root, "docs/a.md"));
+  const both = rebaseLocalProposalFile(root, gone.id, { path: "docs/a.md", expectedRevision: gone.submittedRevision });
+  assert.equal(both.settled, true);
+  assert.equal(both.status, "settled");
+  assert.equal(both.settledFiles["docs/a.md"].reason, "deleted-both-sides");
+});
+
+test("a mode the agent set on a file it never received is kept and shown as a permissions change", (t) => {
+  const { root, begin, edit, decide } = fixture(t);
+  for (const name of ["run.md", "same.md"]) fs.writeFileSync(path.join(root, "docs", name), "project " + name + "\n", { mode: 0o644 });
+  fs.chmodSync(path.join(root, "docs/run.md"), 0o644);
+  fs.chmodSync(path.join(root, "docs/same.md"), 0o644);
+  fs.writeFileSync(path.join(root, "docs/tool.md"), "project tool\n");
+  fs.chmodSync(path.join(root, "docs/tool.md"), 0o755);
+  let proposal = begin();
+  edit(proposal, "docs/run.md", "agent run\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/run.md"), 0o755);
+  edit(proposal, "docs/same.md", "project same.md\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/same.md"), 0o755);
+  edit(proposal, "docs/tool.md", "agent tool\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/tool.md"), 0o644);
+  proposal = submitLocalProposal(root, proposal.id);
+  const change = (rel) => proposal.changes.find((entry) => entry.path === rel);
+  assert.equal(change("docs/run.md").unseen, true);
+  assert.equal(change("docs/run.md").after.mode & 0o777, 0o755);
+  assert.equal(change("docs/run.md").before.mode & 0o777, 0o644);
+  assert.ok(change("docs/same.md"), "a mode-only change is still a change");
+  assert.equal(change("docs/same.md").after.mode & 0o777, 0o755);
+  assert.equal(change("docs/tool.md").after.mode & 0o777, 0o755, "a new file's default mode keeps the project's permissions");
+  decide(proposal, "docs/run.md");
+  assert.equal(fs.statSync(path.join(root, "docs/run.md")).mode & 0o777, 0o755);
+});
+
+test("a rebased file the agent had is not described as unseen", (t) => {
+  const { root, begin, edit } = fixture(t);
+  let proposal = begin();
+  edit(proposal, "docs/b.md", "agent B\n");
+  proposal = submitLocalProposal(root, proposal.id);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "human B\n");
+  rebaseLocalProposalFile(root, proposal.id, { path: "docs/b.md", expectedRevision: proposal.submittedRevision });
+  const file = readLocalProposalFile(root, proposal.id, "docs/b.md");
+  assert.equal(file.unseen, undefined);
+  assert.equal(file.rebased, true);
+  assert.equal(file.beforeBytes.toString(), "human B\n");
+});
+
+test("accept after a compare keeps a permission change made by the human unless the agent changed it", (t) => {
+  const { root, begin, edit, read, decide } = fixture(t);
+  let proposal = begin();
+  edit(proposal, "docs/b.md", "agent B\n");
+  proposal = submitLocalProposal(root, proposal.id);
+  fs.chmodSync(path.join(root, "docs/b.md"), 0o755);
+  assert.throws(() => decide(proposal, "docs/b.md"), /changed permissions in the project/);
+  const rebased = rebaseLocalProposalFile(root, proposal.id, { path: "docs/b.md", expectedRevision: proposal.submittedRevision });
+  const file = readLocalProposalFile(root, proposal.id, "docs/b.md");
+  assert.equal(file.before.mode & 0o777, 0o755);
+  assert.equal(file.after.mode & 0o777, 0o755, "the review shows the mode that Accept writes");
+  decide(rebased, "docs/b.md");
+  assert.equal(read("docs/b.md"), "agent B\n");
+  assert.equal(fs.statSync(path.join(root, "docs/b.md")).mode & 0o777, 0o755);
+
+  let chmod = begin();
+  edit(chmod, "docs/a.md", "agent A\n");
+  fs.chmodSync(path.join(chmod.editRoot, "docs/a.md"), 0o600);
+  chmod = submitLocalProposal(root, chmod.id);
+  fs.writeFileSync(path.join(root, "docs/a.md"), "human A\n");
+  const again = rebaseLocalProposalFile(root, chmod.id, { path: "docs/a.md", expectedRevision: chmod.submittedRevision });
+  assert.equal(readLocalProposalFile(root, chmod.id, "docs/a.md").after.mode & 0o777, 0o600);
+  decide(again, "docs/a.md");
+  assert.equal(fs.statSync(path.join(root, "docs/a.md")).mode & 0o777, 0o600, "the agent's own mode change is kept");
+});
+
+test("submit refuses a project file over the proposal file limit with a clear message", (t) => {
+  const { root, begin, edit } = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/huge.md"), Buffer.alloc(32 * 1024 * 1024 + 1, 0x61));
+  const proposal = begin();
+  edit(proposal, "docs/huge.md", "agent summary\n");
+  assert.throws(() => submitLocalProposal(root, proposal.id), (error) => error.code === "local_proposal_size"
+    && /docs\/huge\.md in the project is larger than 32 MiB/.test(error.message));
+  assert.equal(inspectLocalProposal(root, proposal.id).status, "editing");
+});
+
+test("the review offers Compare with current file only for a conflict that asks for it", () => {
+  const source = fs.readFileSync(new URL("../src/ui/local-proposal-review.mjs", import.meta.url), "utf8");
+  assert.match(source, /error\.details\?\.action === "compare-current"/);
+  assert.doesNotMatch(source, /\/Compare with current file\/\.test\(/);
 });

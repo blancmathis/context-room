@@ -7,10 +7,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks, localProposalFileDocumentChecks, withReviewDocumentChecks, readReviewBaseFile } from "../src/context_room.mjs";
+import { refreshReviewDocumentIndexes, reviewDocumentIndexStats } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
-import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
+import { inspectLocalProposal, readLocalProposalBlockMap, readLocalProposalFile } from "../src/local_proposals.mjs";
 import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation, readDocumentation, estimateTokens } from "../src/documentation.mjs";
 import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
 import { DOC_TIDY_RULES } from "../src/doc_tidy.mjs";
@@ -255,7 +256,7 @@ test("block map shows only removed and rewritten blocks when a status file is sp
 });
 
 test("docs tidy turns each finding into a short deterministic order for the user's agent", (t) => {
-  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", log_in_state_doc: "git", missing_summary: "first block" };
+  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", duplicate_doc: "docs/owner.md", log_in_state_doc: "git", missing_summary: "first block" };
   for (const type of Object.keys(DOC_TIDY_RULES)) {
     const order = tidyOrder({ type, path: "docs/state.md", line: 3, rule: DOC_TIDY_RULES[type], evidence: evidence[type], message: `${type} message` });
     const lines = order.text.split("\n");
@@ -441,4 +442,94 @@ test("the documentation navigation follows the accepted index and keeps other do
   assert.deepEqual(filed.unfiled, []);
   assert.equal(filed.sequence.at(-1).path, "docs/a.md");
   assert.ok(fs.existsSync(path.join(root, "docs/a.md")), "filing never moves the file");
+});
+
+test("review shows the dead links a version adds and a likely duplicate, as warnings only", (t) => {
+  const root = fixture(t);
+  let seed = 17;
+  const words = "agent backup branch cache check client commit config cursor deploy device disk draft error event field folder graph guard hash index issue journal label layer limit link lock merge model module node note offset owner page panel patch path policy port queue range record release report retry review route rule schema scope search server session skill state status store table task thread token trace update user value version view watch worker".split(" ");
+  const article = Array.from({ length: 10 }, () => Array.from({ length: 30 }, () => words[(seed = (seed * 1103515245 + 12345) >>> 0) % words.length]).join(" ") + ".").join("\n\n");
+  fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  writeDocReviewDecision(root, "docs/deploy.md", { status: "verified" });
+  const proposal = createLocalDocumentationProposal(root, { title: "Add a guide" });
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/guide.md"), "# Guide\n\n" + article + "\n\nSee [b](b.md).\n");
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/a.md"), "# a\n\nAccepted a. See [gone](gone.md) and [b](b.md#nowhere).\n");
+  submitLocalDocumentationProposal(root, proposal.id);
+  const checks = (rel) => localProposalFileDocumentChecks(root, proposal.id, readLocalProposalFile(root, proposal.id, rel)).map((item) => [item.type, item.evidence]);
+  assert.deepEqual(checks("docs/a.md"), [["dead_link", "gone.md"], ["dead_link", "b.md#nowhere"]]);
+  assert.deepEqual(checks("docs/guide.md"), [["duplicate_doc", "docs/deploy.md"]]);
+
+  // A direct edit in the project: links already dead before are not repeated.
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nAccepted b. New [missing](missing.md).\n");
+  const review = withReviewDocumentChecks(root, readReviewBaseFile(root, "docs/b.md", { readOnly: true }));
+  assert.equal(review.available, true);
+  assert.deepEqual(review.documentChecks.map((item) => [item.type, item.evidence]), [["dead_link", "missing.md"]]);
+  assert.equal(inspectLocalProposal(root, proposal.id).status, "submitted", "checks never decide");
+});
+
+function duplicateArticle() {
+  let seed = 23;
+  const words = "agent backup branch cache check client commit config cursor deploy device disk draft error event field folder graph guard hash index issue journal label layer limit link lock merge model module node note offset owner page panel patch path policy port queue range record release report retry review route rule schema scope search server session skill state status store table task thread token trace update user value version view watch worker".split(" ");
+  return Array.from({ length: 10 }, () => Array.from({ length: 30 }, () => words[(seed = (seed * 1103515245 + 12345) >>> 0) % words.length]).join(" ") + ".").join("\n\n");
+}
+
+test("documentation checks run in the checks worker, never on the Hub main thread, and never hold the review", async (t) => {
+  const root = fixture(t);
+  const previousCap = process.env.CONTEXT_ROOM_TEST_REVIEW_INDEX_MAX_DOCS;
+  process.env.CONTEXT_ROOM_TEST_REVIEW_INDEX_MAX_DOCS = "3";
+  t.after(() => { if (previousCap === undefined) delete process.env.CONTEXT_ROOM_TEST_REVIEW_INDEX_MAX_DOCS; else process.env.CONTEXT_ROOM_TEST_REVIEW_INDEX_MAX_DOCS = previousCap; });
+  const article = duplicateArticle();
+  fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  fs.writeFileSync(path.join(root, "docs/z.md"), "# Z\n\nLast.\n");
+  for (const rel of ["docs/deploy.md", "docs/z.md"]) writeDocReviewDecision(root, rel, { status: "verified" });
+  const proposal = createLocalDocumentationProposal(root, { title: "Add a guide" });
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/guide.md"), "# Guide\n\n" + article + "\n");
+  submitLocalDocumentationProposal(root, proposal.id);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nAccepted b. New [missing](missing.md).\n");
+  const mainThread = reviewDocumentIndexStats();
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const get = async (url) => { const response = await fetch(base + url); const body = await response.json(); assert.equal(response.status, 200, JSON.stringify(body)); return body; };
+  const kinds = (checks) => checks.map((item) => [item.type, item.evidence]);
+
+  const file = await get(`/api/docqa/local-proposal-file?proposal=${proposal.id}&path=docs/guide.md`);
+  assert.ok(file.afterBase64, "the file opens with its versions");
+  assert.ok(file.documentChecksPending === true || file.documentChecks.length, "ready checks are included, otherwise announced as pending");
+  const proposalChecks = await get(`/api/docqa/document-checks?proposal=${proposal.id}&path=docs/guide.md`);
+  assert.deepEqual(kinds(proposalChecks.documentChecks), [["duplicate_doc", "docs/deploy.md"], ["duplicate_partial", "4"]], "above the cap the box says the check is partial");
+  const review = await get("/api/file/review-base?path=docs/b.md");
+  assert.equal(review.available, true);
+  const reviewChecks = await get("/api/docqa/document-checks?path=docs/b.md");
+  assert.deepEqual(kinds(reviewChecks.documentChecks).filter(([type]) => type === "dead_link"), [["dead_link", "missing.md"]]);
+  assert.deepEqual(reviewDocumentIndexStats(), mainThread, "the Hub main thread never listed or indexed documents");
+});
+
+test("the review index keeps its list until a Hub write or a folder change, and re-reads a replaced file", (t) => {
+  const root = fixture(t);
+  const article = duplicateArticle();
+  fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  const review = { available: true, path: "docs/new.md", changeKind: "added", baseContent: "", currentContent: "# New\n\n" + article + "\n" };
+  const duplicates = (generation) => withReviewDocumentChecks(root, review, { generation }).documentChecks.filter((item) => item.type === "duplicate_doc").map((item) => item.evidence);
+  const lists = () => reviewDocumentIndexStats(root).lists;
+  const start = lists();
+  assert.deepEqual(duplicates(0), ["docs/deploy.md"]);
+  assert.deepEqual(duplicates(0), ["docs/deploy.md"]);
+  assert.equal(lists() - start, 1, "a second open reuses the list, with no time-based expiry");
+  assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), false, "the background refresh lists nothing when no folder changed");
+  duplicates(1);
+  assert.equal(lists() - start, 2, "a Hub write (new generation) lists again");
+  fs.writeFileSync(path.join(root, "docs/added.md"), "# Added\n");
+  assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), true, "a folder change is listed again in the background");
+  assert.equal(lists() - start, 3);
+  // Same size, same modification time, other words: inode and change time still reveal the replacement.
+  const target = path.join(root, "docs/deploy.md"), stats = fs.statSync(target);
+  const other = Buffer.alloc(stats.size, "x");
+  other.write("# Other\n\n");
+  fs.writeFileSync(target + ".tmp", other);
+  fs.renameSync(target + ".tmp", target);
+  fs.utimesSync(target, stats.atime, stats.mtime);
+  assert.equal(fs.statSync(target).size, stats.size);
+  assert.deepEqual(duplicates(1), [], "the replaced file is read again");
 });

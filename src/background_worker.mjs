@@ -3,9 +3,15 @@ import { parentPort, workerData } from "node:worker_threads";
 import {
   buildContextRoomReports,
   contextHubUiState,
+  localProposalFileDocumentChecks,
   readFileDiff,
   readReviewBaseFile,
+  refreshReviewDocumentIndexes,
+  withReviewDocumentChecks,
 } from "./context_room.mjs";
+import { readLocalProposalFile } from "./local_proposals.mjs";
+
+const REVIEW_INDEX_REFRESH_MS = 30_000;
 
 function runTask(task, root, payload = {}) {
   if (task === "reports") return buildContextRoomReports(root, { readOnly: true, sharedProfiles: payload.sharedProfiles });
@@ -19,6 +25,13 @@ function runTask(task, root, payload = {}) {
   }
   if (task === "file-diff") return readFileDiff(root, payload.path || "", { readOnly: true });
   if (task === "review-base") return readReviewBaseFile(root, payload.path || "", { readOnly: true });
+  // Advisory documentation checks: only the "checks" worker builds and keeps the document index.
+  if (task === "review-checks") {
+    return withReviewDocumentChecks(root, readReviewBaseFile(root, payload.path || "", { readOnly: true }), { generation: payload.generation })?.documentChecks || [];
+  }
+  if (task === "local-proposal-checks") {
+    return localProposalFileDocumentChecks(root, payload.proposal, readLocalProposalFile(root, payload.proposal, payload.path || ""), { generation: payload.generation });
+  }
   throw new Error(`Unknown background task: ${task}`);
 }
 
@@ -48,6 +61,7 @@ function taskResult(task, root, payload = {}) {
 }
 
 if (workerData?.persistent) {
+  if (workerData.group === "checks") setInterval(() => { try { refreshReviewDocumentIndexes(); } catch {} }, REVIEW_INDEX_REFRESH_MS).unref();
   parentPort.on("message", (message = {}) => {
     parentPort.postMessage({ id: message.id, ...taskResult(message.task, workerData.root, message.payload) });
   });

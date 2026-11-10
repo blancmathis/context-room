@@ -12,9 +12,10 @@ const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const revision = (value) => hash(JSON.stringify(value));
 const identity = (stats) => `${stats.dev}:${stats.ino}`;
 
-function fail(code, message) {
+function fail(code, message, details) {
   const error = new Error(message);
   error.code = code;
+  if (details) error.details = details;
   error.statusCode = code.includes("conflict") || code.includes("stale") ? 409 : 400;
   throw error;
 }
@@ -175,7 +176,35 @@ function manifestRevision(manifest) {
 
 function submissionRevision(proposal, submitted) {
   return revision({ id: proposal.id, rootIdentity: proposal.rootIdentity, allowedPaths: proposal.allowedPaths,
-    base: manifestRevision(proposal.base), submitted: manifestRevision(submitted) });
+    base: manifestRevision(proposal.base), submitted: manifestRevision(submitted),
+    ...(proposal.observed ? { observed: manifestRevision(proposal.observed) } : {}) });
+}
+
+// The version a change replaces: the accepted base, or the project file the agent did not
+// receive (recorded at submission, or later by the human "Compare with current file").
+function beforeVersion(proposal, rel) {
+  return proposal.observed && Object.hasOwn(proposal.observed, rel) ? proposal.observed[rel] : proposal.base[rel] || null;
+}
+
+// Against the current project file, the agent's version keeps that file's permissions unless the
+// agent itself changed them: a mode different from the one it received or, for a file it never
+// received, a mode other than the default of a new file (0644). The review shows that as a permissions change.
+const NEW_FILE_MODE = 0o644;
+function afterVersion(proposal, rel) {
+  const after = proposal.submitted[rel] || null, observed = proposal.observed?.[rel];
+  if (!after || !observed || !proposal.observed || !Object.hasOwn(proposal.observed, rel)) return after;
+  const received = proposal.base[rel];
+  const agentSetMode = received ? received.mode !== after.mode : (after.mode & 0o777) !== NEW_FILE_MODE;
+  return agentSetMode ? after : { ...after, mode: observed.mode };
+}
+
+// One project file read for comparison: bounded like an initial working file, refused with a clear reason.
+const PROJECT_FILE_MAX_BYTES = 32 * 1024 * 1024;
+function readProjectFile(ctx, rel) {
+  try { return readBytes(ctx.root, rel, PROJECT_FILE_MAX_BYTES); } catch (error) {
+    if (error.code === "local_proposal_size") fail("local_proposal_size", `${rel} in the project is larger than 32 MiB, the limit for a proposal file. Nothing was submitted or changed. Make the project file smaller, or leave it out of this proposal.`);
+    throw error;
+  }
 }
 
 function workspaceManifest(ctx, proposal, { store = true, maxFiles = Infinity, maxBytes = Infinity } = {}) {
@@ -207,11 +236,15 @@ function sameVersion(a, b) {
 
 function changesFor(proposal) {
   if (!proposal.submitted) return [];
-  return [...new Set([...Object.keys(proposal.base), ...Object.keys(proposal.submitted)])].sort()
-    .filter((rel) => !sameVersion(proposal.base[rel], proposal.submitted[rel]))
-    .map((rel) => ({ path: rel, kind: !proposal.base[rel] ? "added" : !proposal.submitted[rel] ? "deleted" : "modified",
-      before: proposal.base[rel] || null, after: proposal.submitted[rel] || null,
-      decision: proposal.decisions[rel] || null }));
+  return [...new Set([...Object.keys(proposal.base), ...Object.keys(proposal.observed || {}), ...Object.keys(proposal.submitted)])].sort()
+    .filter((rel) => !sameVersion(beforeVersion(proposal, rel), afterVersion(proposal, rel)))
+    .map((rel) => {
+      const before = beforeVersion(proposal, rel), current = proposal.observed && Object.hasOwn(proposal.observed, rel);
+      return { path: rel, kind: !before ? "added" : !proposal.submitted[rel] ? "deleted" : "modified",
+        before, after: afterVersion(proposal, rel), decision: proposal.decisions[rel] || null,
+        // unseen: the agent never received this file. rebased: compared with the project file the human changed since.
+        ...(current ? proposal.base[rel] ? { rebased: true } : { unseen: true } : {}) };
+    });
 }
 
 function publicProposal(ctx, proposal) {
@@ -344,7 +377,7 @@ export function submitLocalProposal(projectRoot, id, { canWrite = () => true, ex
   return locked(projectRoot, (ctx) => {
     const proposal = readProposal(ctx, id);
     if (expectedDraftRevision !== undefined && workingDraft(ctx, proposal, canWrite).revision !== expectedDraftRevision) fail('local_proposal_stale', 'The draft changed before submission. Reload its saved version.');
-    if (["accepted", "rejected", "resolved"].includes(proposal.status) || Object.keys(proposal.decisions).length) {
+    if (["accepted", "rejected", "resolved", "settled"].includes(proposal.status) || Object.keys(proposal.decisions).length) {
       fail("local_proposal_closed", "A reviewed proposal cannot be resubmitted. Create a new proposal for further changes.");
     }
     const submitted = workspaceManifest(ctx, proposal);
@@ -355,6 +388,16 @@ export function submitLocalProposal(projectRoot, id, { canWrite = () => true, ex
     if (manifestRevision(submitted) !== manifestRevision(workspaceManifest(ctx, proposal))) {
       fail("local_proposal_conflict", "The workspace changed during submission. Retry when edits are finished.");
     }
+    // A file the agent wrote without receiving it may still exist in the project. Record that
+    // exact version: the review compares with it and acceptance requires it unchanged.
+    const observed = Object.create(null);
+    for (const rel of Object.keys(submitted)) {
+      if (Object.hasOwn(proposal.base, rel)) continue;
+      const current = readProjectFile(ctx, rel);
+      if (current) observed[rel] = { hash: storeBlob(ctx, current.bytes), mode: current.mode };
+    }
+    if (Object.keys(observed).length) proposal.observed = observed;
+    else delete proposal.observed;
     proposal.submitted = submitted;
     proposal.submittedRevision = submissionRevision(proposal, submitted);
     proposal.status = "submitted";
@@ -386,7 +429,7 @@ export function readLocalProposalBlockMap(projectRoot, id) {
 export function readLocalProposalResource(projectRoot, id, rel, { side = "after", expectedRevision } = {}) {
   const ctx = context(projectRoot), proposal = readProposal(ctx, id);
   if (expectedRevision !== proposal.submittedRevision || !["before", "after"].includes(side)) fail("local_proposal_stale", "The rendered document revision changed.");
-  const file = (side === "before" ? proposal.base : proposal.submitted)?.[relative(rel)];
+  const file = side === "before" ? beforeVersion(proposal, relative(rel)) : proposal.submitted?.[relative(rel)];
   if (!file) fail("local_proposal_change", "The resource is absent from this version.");
   return readBlob(ctx, file.hash);
 }
@@ -427,6 +470,45 @@ function recover(ctx, proposal, onAccepted) {
   else fail("local_proposal_recovery_conflict", `Application was interrupted and ${journal.path} changed. Both stored versions are preserved.`);
 }
 
+// Say what changed in the project file, and the way forward. Never overwrite it.
+function targetChanged(rel, expected, current) {
+  const what = !expected ? `${rel} now exists in the project, but this proposal expects no file there.`
+    : !current ? `${rel} was removed from the project after this proposal was made.`
+    : expected.hash === current.hash ? `${rel} changed permissions in the project after this proposal was made.`
+    : `${rel} was edited in the project after this proposal was made.`;
+  fail("local_proposal_conflict", `${what} No file was overwritten. Choose Compare with current file to review this change against the project file, or reject it.`,
+    { path: rel, expected: expected ? "present" : "absent", current: current ? "present" : "absent", action: "compare-current" });
+}
+
+/** Human UI boundary only. Review one undecided change against the current project file. */
+export function rebaseLocalProposalFile(projectRoot, id, { path: rel, expectedRevision } = {}) {
+  return locked(projectRoot, (ctx) => {
+    const proposal = readProposal(ctx, id);
+    if (!expectedRevision || expectedRevision !== proposal.submittedRevision) fail("local_proposal_stale", "The submitted proposal changed. Reload its review.");
+    const change = changesFor(proposal).find((entry) => entry.path === relative(rel));
+    if (!change) fail("local_proposal_change", "This file has no submitted change.");
+    if (change.decision) fail("local_proposal_closed", "This file already has a decision.");
+    const current = readProjectFile(ctx, change.path);
+    if (sameVersion(current, change.before)) fail("local_proposal_stale", `${rel} is unchanged in the project. Reload the review.`);
+    proposal.observed = { ...(proposal.observed || {}), [change.path]: current ? { hash: storeBlob(ctx, current.bytes), mode: current.mode } : null };
+    proposal.submittedRevision = submissionRevision(proposal, proposal.submitted);
+    // The project file may already hold the agent's version: nothing is left to decide for it.
+    // Recorded (who, when, why) in settledFiles, never as a decision. All files settled: status "settled".
+    const remaining = changesFor(proposal);
+    const settled = !remaining.some((entry) => entry.path === change.path);
+    const at = new Date().toISOString();
+    if (settled) {
+      proposal.settledFiles = { ...(proposal.settledFiles || {}), [change.path]: { by: "human", via: "compare-current",
+        reason: current ? "already-in-project" : "deleted-both-sides", revision: expectedRevision, at } };
+      if (remaining.length) updateStatus(proposal);
+      else proposal.status = "settled";
+    }
+    proposal.updatedAt = at;
+    saveProposal(ctx, proposal);
+    return { ...publicProposal(ctx, proposal), settled };
+  });
+}
+
 /** Human UI boundary only. No agent-facing decision command. */
 export function decideLocalProposalFile(projectRoot, id, { path: rel, decision, expectedRevision, content } = {}, { canWrite = () => true, beforeApply, onAccepted } = {}) {
   return locked(projectRoot, (ctx) => {
@@ -451,7 +533,7 @@ export function decideLocalProposalFile(projectRoot, id, { path: rel, decision, 
       return publicProposal(ctx, proposal);
     }
     const current = readBytes(ctx.root, rel);
-    if (!sameVersion(current, change.before)) fail("local_proposal_conflict", `The original ${rel} changed. No file was overwritten.`);
+    if (!sameVersion(current, change.before)) targetChanged(rel, change.before, current);
     const after = content === undefined ? change.after : { hash: storeBlob(ctx, Buffer.from(content)), mode: change.after?.mode || change.before?.mode || 0o644 };
     if (beforeApply) beforeApply({ path: rel, bytes: after ? readBlob(ctx, after.hash) : null, mode: after?.mode || null });
     const claim = change.before ? `${STORE}/recovery/${randomUUID()}` : null;
@@ -459,7 +541,8 @@ export function decideLocalProposalFile(projectRoot, id, { path: rel, decision, 
       revision: expectedRevision, at: new Date().toISOString() };
     writeJson(ctx.root, `${STORE}/journal/${proposal.id}.json`, journal);
     // Recheck after preparing recovery evidence and immediately before touching the source.
-    if (!sameVersion(readBytes(ctx.root, rel), change.before)) fail("local_proposal_conflict", `The original ${rel} changed before application.`);
+    const applying = readBytes(ctx.root, rel);
+    if (!sameVersion(applying, change.before)) targetChanged(rel, change.before, applying);
     if (claim) {
       fs.mkdirSync(path.dirname(safePath(ctx.root, claim)), { recursive: true, mode: 0o700 });
       fs.renameSync(safePath(ctx.root, rel), safePath(ctx.root, claim));

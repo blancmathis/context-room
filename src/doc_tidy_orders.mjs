@@ -22,7 +22,7 @@ description: Split a documentation file that is too large for one agent read int
 `,
   merge: `---
 name: doc-merge
-description: Merge duplicated blocks so each text lives in one document and others link to it. Use for a Context Room duplicate_block finding.
+description: Merge duplicated blocks so each text lives in one document and others link to it. Use for a Context Room duplicate_block or duplicate_doc finding.
 ---
 
 # Merge duplicates
@@ -78,6 +78,12 @@ function steps(finding) {
         `Replace the copy in ${file} (from line ${line}) with a link to it.`,
       ], expected: `One copy; docs tidy reports no duplicate between ${file} and ${owner}.` };
     }
+    case "duplicate_doc":
+      return { skill: "merge", task: `Merge ${file} into ${evidence}`, files: [file, evidence, "docs/index.md"], steps: [
+        `Compare ${file} with ${evidence}. Keep the document that owns the topic; move any text found only in the other one into it.`,
+        `Replace the other document with one sentence and a link, or remove it and fix inbound links (context-room docs search).`,
+        "Keep one line for the kept document in docs/index.md.",
+      ], expected: `docs tidy reports no likely duplicate between ${file} and ${evidence}; 0 dead links.` };
     case "log_in_state_doc":
       return { skill: "archive", task: `Move the log out of ${file}`, files: [file, JOURNAL_PATH, "docs/index.md"], steps: [
         `Follow context-room docs tidy --skill archive: move dated entries from ${file} unchanged to ${JOURNAL_PATH}, one file per month.`,

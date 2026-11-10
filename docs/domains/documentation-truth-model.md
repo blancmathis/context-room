@@ -120,7 +120,7 @@ An HTML exploration coordinates several owners and links to them. It does not be
 
 ## Tidiness checks
 
-`doctor` and Context health run six deterministic checks on Markdown documents (`src/doc_tidy.mjs`). No model is called. Each finding names its rule, the exact source (path, line, and evidence), and one action.
+`doctor` and Context health run seven deterministic checks on Markdown documents (`src/doc_tidy.mjs`). No model is called. Each finding names its rule, the exact source (path, line, and evidence), and one action.
 
 | Finding | Rule |
 | --- | --- |
@@ -128,10 +128,13 @@ An HTML exploration coordinates several owners and links to them. It does not be
 | `doc_not_in_map` | A document under `docs/` is not listed in `docs/index.md`, directly or through a listed index. Checked only when `docs/index.md` exists. |
 | `dead_link` | A relative Markdown link points to a missing file, or its `#section` matches no heading. |
 | `duplicate_block` | A block of 280 or more characters also lives in another document. |
+| `duplicate_doc` | At least half of the distinct three-word sequences of two documents (each with 40 or more) are shared: one is likely a duplicate of the other. Reported once, on the smaller document; it replaces `duplicate_block` findings for that pair. |
 | `log_in_state_doc` | A state document of 32 KiB or more only grows: over its last 50 commits (at least 10), deleted lines stay under 1/8 of added lines. Paths named journal, log, history, archive, or changelog are exempt. Without git, the result is unknown (`—`). |
 | `missing_summary` | A document over 3,000 characters does not open with prose, after its title and at most one heading. |
 
 State is rewritten and a log is appended: they belong in different files.
+
+During review, the file and proposal views show two of these checks for the version under review: the dead links that this version adds (links already dead in the replaced version are not repeated) and a likely duplicate of another document. They are warnings; they never block or decide a review.
 
 ## Migration rule
 

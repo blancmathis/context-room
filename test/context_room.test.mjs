@@ -9217,6 +9217,26 @@ test("local proposal HTTP review stays human-owned and accepts only the correcte
   const asset = await fetch(base + "/assets/local-proposal-review.mjs");
   assert.equal(asset.status, 200);
   assert.match(asset.headers.get("content-type"), /javascript/);
+  // A project file edited after submission is never overwritten; the human compares again, then decides.
+  fs.writeFileSync(path.join(root, "docs/delete.md"), "# Edited by hand\n");
+  const owner = { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce };
+  const conflict = await fetch(base + "/api/docqa/local-proposal-decision", { method: "POST", headers: owner, body: JSON.stringify({ proposal: draft.id, path: "docs/delete.md", decision: "accepted", expectedRevision: result.revision ?? submitted.submittedRevision }) });
+  const conflictBody = await conflict.json();
+  assert.equal(conflictBody.code, "local_proposal_conflict", JSON.stringify(conflictBody));
+  assert.match(conflictBody.error || conflictBody.message, /edited in the project after this proposal was made/);
+  assert.equal(fs.readFileSync(path.join(root, "docs/delete.md"), "utf8"), "# Edited by hand\n");
+  const rebaseBody = { proposal: draft.id, path: "docs/delete.md", expectedRevision: submitted.submittedRevision };
+  const rebaseDenied = await fetch(base + "/api/docqa/local-proposal-rebase", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rebaseBody) });
+  assert.equal(rebaseDenied.status, 403);
+  const rebased = await fetch(base + "/api/docqa/local-proposal-rebase", { method: "POST", headers: owner, body: JSON.stringify(rebaseBody) });
+  const rebasedBody = await rebased.json();
+  assert.equal(rebased.status, 200, JSON.stringify(rebasedBody));
+  const fileView = await (await fetch(base + `/api/docqa/local-proposal-file?proposal=${draft.id}&path=docs/delete.md`)).json();
+  assert.equal(Buffer.from(fileView.beforeBase64, "base64").toString("utf8"), "# Edited by hand\n");
+  assert.deepEqual(fileView.documentChecks, []);
+  const accepted = await fetch(base + "/api/docqa/local-proposal-decision", { method: "POST", headers: owner, body: JSON.stringify({ proposal: draft.id, path: "docs/delete.md", decision: "accepted", expectedRevision: rebasedBody.revision }) });
+  assert.equal(accepted.status, 200, await accepted.text());
+  assert.equal(fs.readFileSync(path.join(root, "docs/delete.md"), "utf8"), "# Delete\nOther proposal.\n");
 });
 
 test("local proposal creation works without Git and uses the accepted review baseline", (t) => {
