@@ -6509,6 +6509,99 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
   }
 }
 
+// A review snapshot (docqa report, documentation navigation) checks the Git
+// index of every reviewed file. One `git ls-files` + `git ls-tree` per file
+// made each acceptance slow down the next one (B2, audit 2026-11-10). Inside
+// a scope, the first check reads the index entries of all reviewed paths in one
+// batch. Only plain cases are kept (no conflict, index equal to HEAD); any other
+// path, and any batch error, falls back to the exact per-path check. The scope
+// is synchronous, so it never spans another request.
+let gitIndexStateScope = null;
+const GIT_INDEX_BATCH_CHUNK = 500;
+
+function withGitIndexStateScope(root, fn) {
+  if (gitIndexStateScope) return fn();
+  const scope = { root: path.resolve(root), reviews: null, states: null };
+  gitIndexStateScope = scope;
+  try {
+    return fn();
+  } finally {
+    if (gitIndexStateScope === scope) gitIndexStateScope = null;
+  }
+}
+
+function plainGitIndexStatesForReviewPaths(root, relPaths) {
+  const repositoryRoot = gitTopLevelRoot(root);
+  if (!repositoryRoot) return null;
+  const treePaths = new Map();
+  for (const relPath of relPaths) {
+    const normalized = normalizeRelPath(relPath);
+    if (normalized) treePaths.set(gitTreePathForRootRelative(root, normalized), normalized);
+  }
+  const keys = [...treePaths.keys()];
+  const entriesByPath = new Map([...treePaths.values()].map((relPath) => [relPath, []]));
+  const headByPath = new Map();
+  for (let start = 0; start < keys.length; start += GIT_INDEX_BATCH_CHUNK) {
+    const pathspecs = keys.slice(start, start + GIT_INDEX_BATCH_CHUNK).map(gitLiteralPathspec);
+    const options = { cwd: repositoryRoot, encoding: null, stdio: ["ignore", "pipe", "pipe"], maxBuffer: Math.max(1_000_000, pathspecs.length * 512) };
+    const indexOutput = execFileSync("git", ["ls-files", "--stage", "-z", "--", ...pathspecs], options);
+    for (const record of decodeGitUtf8(indexOutput, "git ls-files").split("\0").filter(Boolean)) {
+      const separator = record.indexOf("\t");
+      const match = /^(100644|100755) ([0-9a-f]{40,64}) ([0-3])$/.exec(separator >= 0 ? record.slice(0, separator) : "");
+      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
+      if (!match || !relPath) throw new Error("Git index returned an unexpected batch path entry");
+      entriesByPath.get(relPath).push({ mode: match[1], oid: match[2], stage: Number(match[3]) });
+    }
+    // An unborn HEAD fails here: the whole batch falls back to the exact check.
+    const headOutput = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", ...pathspecs], options);
+    for (const record of decodeGitUtf8(headOutput, "git ls-tree").split("\0").filter(Boolean)) {
+      const separator = record.indexOf("\t");
+      const match = /^(100644|100755) blob ([0-9a-f]{40,64})$/.exec(separator >= 0 ? record.slice(0, separator) : "");
+      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
+      if (!relPath) throw new Error("Git tree returned an unexpected batch path entry");
+      if (match) headByPath.set(relPath, { mode: match[1], oid: match[2] });
+      else entriesByPath.set(relPath, null);
+    }
+  }
+  const states = new Map();
+  for (const [relPath, entries] of entriesByPath) {
+    if (!entries) continue;
+    const head = headByPath.get(relPath) || null;
+    const stageZero = entries.length === 1 && entries[0].stage === 0 ? entries[0] : null;
+    if (entries.length > 1 || (entries.length === 1 && !stageZero)) continue;
+    if (Boolean(stageZero) !== Boolean(head)) continue;
+    if (stageZero && (stageZero.mode !== head.mode || stageZero.oid !== head.oid)) continue;
+    states.set(relPath, {
+      version: `git-index:${hashContent(JSON.stringify(entries))}`,
+      entries,
+      head,
+      stageZero,
+      // The staged blob equals HEAD here, so the match never reads this hash.
+      stagedContentHash: null,
+      stagedAgainstHead: false,
+      unmerged: false,
+    });
+  }
+  return states;
+}
+
+function scopedGitIndexStateForReviewPath(root, reviews, relPath) {
+  const scope = gitIndexStateScope;
+  if (scope && scope.root === path.resolve(root) && reviews) {
+    if (scope.reviews !== reviews) {
+      scope.reviews = reviews;
+      try {
+        scope.states = plainGitIndexStatesForReviewPaths(root, Object.keys(reviews));
+      } catch {
+        scope.states = null;
+      }
+    }
+    const normalized = normalizeRelPath(relPath);
+    if (scope.states?.has(normalized)) return scope.states.get(normalized);
+  }
+  return gitIndexStateForReviewPath(root, relPath);
+}
+
 function gitIndexStateMatchesReviewedResource(indexState, { contentHash, resourceState, resourceMode }) {
   if (!indexState) return true;
   if (indexState.unmerged) return false;
@@ -10607,9 +10700,9 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
     const baseline = readDocReviewBaseline(root, relPath, review);
     const baselineReviewHash = review.baselineReviewHash || baseline?.reviewHash || null;
     const resourceMode = currentReviewResourceMode(root, relPath, resourceState);
-    const gitIndexState = gitIndexStateForReviewPath(root, relPath);
+    const gitIndexState = scopedGitIndexStateForReviewPath(root, reviews, relPath);
     const gitIndexVersion = gitIndexState?.version || null;
-    const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion)
+    const resourceCurrent =reviewResourceIdentityMatches(review, resourceState, resourceVersion)
       && reviewResourceModeMatches(review, resourceMode, { root, relPath, resourceState })
       && gitIndexStateMatchesReviewedResource(gitIndexState, { contentHash, resourceState, resourceMode });
     const explicitCurrent = resourceCurrent && review.contentHash === contentHash;
@@ -10662,6 +10755,10 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
 }
 
 export function buildReadOnlyDocumentationReviewSnapshot(root = process.cwd(), options = {}) {
+  return withGitIndexStateScope(root, () => buildReadOnlyDocumentationReviewSnapshotInScope(root, options));
+}
+
+function buildReadOnlyDocumentationReviewSnapshotInScope(root, options) {
   const settings = options.settings || effectiveMemoryWebappSettings(root, { readOnly: true });
   const files = options.files || listMemoryFiles(root, { includeContent: true, settings, readOnly: true });
   const reviewState = readDocReviewState(root, { readOnly: true });
@@ -12560,10 +12657,10 @@ function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
 }
 
 export function buildDocQaReport(root = process.cwd(), options = {}) {
-  if (options.readOnly === true) return buildDocQaReportUnderLock(root, options);
+  if (options.readOnly === true) return withGitIndexStateScope(root, () => buildDocQaReportUnderLock(root, options));
   return withDocReviewEvidenceLock(
     root,
-    () => buildDocQaReportUnderLock(root, options),
+    () => withGitIndexStateScope(root, () => buildDocQaReportUnderLock(root, options)),
     { expectedRootIdentity: options?.expectedRootIdentity || null },
   );
 }
