@@ -24195,10 +24195,11 @@ function reviewRiskNoticeMarkup(beforeText, afterText) {
 
 // Deterministic documentation warnings for this version: added dead links, likely duplicate. Never a block.
 function reviewDocumentChecksMarkup(checks) {
-  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc"].includes(item.type)) : [];
+  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc", "duplicate_partial"].includes(item.type)) : [];
   if (!list.length) return "";
   const links = list.filter((item) => item.type === "dead_link").length;
-  const summary = [links ? links + " new dead link" + (links === 1 ? "" : "s") : "", list.some((item) => item.type === "duplicate_doc") ? "likely duplicate" : ""].filter(Boolean).join(" · ");
+  const summary = [links ? links + " new dead link" + (links === 1 ? "" : "s") : "", list.some((item) => item.type === "duplicate_doc") ? "likely duplicate" : "",
+    list.some((item) => item.type === "duplicate_partial") ? "duplicate check partial" : ""].filter(Boolean).join(" · ");
   const rows = list.slice(0, 8).map((item) => '<li data-review-doc-check="' + escapeHtml(item.type) + '">' + (item.type === "dead_link" ? '<span>Line ' + escapeHtml(String(item.line)) + '</span> ' : '') + escapeHtml(item.message) + '</li>').join("");
   return '<details class="issue review-risk-notice" data-review-doc-checks open><summary><strong>Documentation checks</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + rows + '</ul><p class="muted">A warning: you can still accept.</p></details>';
 }
@@ -26095,6 +26096,15 @@ function selectedStartupContextReviewPath(path = state.selected) {
   return "";
 }
 
+// The review opens without waiting for documentation checks; the box fills in when they finish.
+function fillPendingReviewDocumentChecks(change) {
+  api("/api/docqa/document-checks?path=" + encodeURIComponent(change.path)).then((result) => {
+    if (state.externalChange !== change || !Array.isArray(result?.documentChecks) || !result.documentChecks.length) return;
+    change.documentChecks = result.documentChecks;
+    renderViewer();
+  }).catch(() => {});
+}
+
 function applyChangedFileInlineReview(path, diff, review, requestId = state.selectionRequest) {
   if (!path || state.reviewModePath !== path || !diff?.changed) return false;
   if (!isCurrentSelection(requestId, path) || !review?.available) return false;
@@ -26129,6 +26139,7 @@ function applyChangedFileInlineReview(path, diff, review, requestId = state.sele
     documentChecks: Array.isArray(review.documentChecks) ? review.documentChecks : [],
     reviewDecisions,
   };
+  if (review.documentChecksPending) fillPendingReviewDocumentChecks(state.externalChange);
   state.saved = state.externalChange.diskContent;
   state.savedHash = state.externalChange.diskHash || state.savedHash;
   state.dirty = false;

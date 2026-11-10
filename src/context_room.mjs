@@ -8366,64 +8366,124 @@ export function localProposalDocumentChecks(root, id) {
 }
 
 // Word 3-grams of the project's Markdown documents as they are on disk, for advisory review checks.
-// One index per project root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list
-// of documents is rebuilt at most every REVIEW_INDEX_LIST_MS; on every call each listed document is
-// checked with one stat and read and hashed again only when its size or modification time changed.
+// Runs only in the "checks" background worker (never on the Hub main thread): one index per project
+// root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list of documents is kept
+// until something changes: a Hub write (a new generation from the main thread) or the background
+// refresh (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
+// On every call each listed document is checked with one stat and read and hashed again only when its
+// size, modification time, change time or inode changed.
 // Memory: one sorted Uint32Array per document of at most REVIEW_CHECK_MAX_BYTES, at most REVIEW_INDEX_MAX_DOCS documents.
 const REVIEW_CHECK_MAX_BYTES = 512 * 1024;
-const REVIEW_INDEX_MAX_DOCS = 20_000;
+const REVIEW_INDEX_MAX_DOCS = Number(process.env.NODE_TEST_CONTEXT && process.env.CONTEXT_ROOM_TEST_REVIEW_INDEX_MAX_DOCS) || 20_000;
 const REVIEW_INDEX_ROOTS = 4;
-const REVIEW_INDEX_LIST_MS = 10_000;
+const REVIEW_INDEX_FULL_MS = 5 * 60_000;
 const reviewDocumentIndexes = new Map();
-function reviewDocumentIndex(root) {
+const reviewDocumentIndexCounters = { lists: 0 };
+function folderTimes(root, paths) {
+  const folders = new Map();
+  for (const rel of paths) {
+    for (let folder = path.posix.dirname(rel); ; folder = path.posix.dirname(folder)) {
+      if (folders.has(folder)) break;
+      let mtimeMs = null;
+      try { mtimeMs = fs.statSync(path.join(root, folder)).mtimeMs; } catch {}
+      folders.set(folder, mtimeMs);
+      if (folder === ".") break;
+    }
+  }
+  if (!folders.has(".")) { try { folders.set(".", fs.statSync(root).mtimeMs); } catch { folders.set(".", null); } }
+  return folders;
+}
+function listReviewDocuments(root, index) {
+  reviewDocumentIndexCounters.lists += 1;
+  index.lists = (index.lists || 0) + 1;
+  const listed = listMemoryFiles(root, { readOnly: true, metadataOnly: true })
+    .filter((file) => /\.md$/i.test(file.path || "") && file.exists && !resolveExternalPath(file.path));
+  index.total = listed.length;
+  index.paths = listed.slice(0, REVIEW_INDEX_MAX_DOCS).map((file) => file.path);
+  index.folders = folderTimes(root, index.paths);
+  index.listedAt = Date.now();
+  const kept = new Set(index.paths);
+  for (const rel of index.files.keys()) if (!kept.has(rel)) index.files.delete(rel);
+}
+function reviewDocumentIndex(root, { generation } = {}) {
   const key = path.resolve(root);
-  const index = reviewDocumentIndexes.get(key) || { listedAt: 0, paths: [], files: new Map() };
+  const index = reviewDocumentIndexes.get(key) || { root: key, listedAt: 0, generation: null, total: 0, paths: [], folders: new Map(), files: new Map() };
   reviewDocumentIndexes.delete(key);
   reviewDocumentIndexes.set(key, index);
   while (reviewDocumentIndexes.size > REVIEW_INDEX_ROOTS) reviewDocumentIndexes.delete(reviewDocumentIndexes.keys().next().value);
-  if (Date.now() - index.listedAt >= REVIEW_INDEX_LIST_MS) {
-    index.paths = listMemoryFiles(root, { readOnly: true, metadataOnly: true })
-      .filter((file) => /\.md$/i.test(file.path || "") && file.exists && !resolveExternalPath(file.path))
-      .slice(0, REVIEW_INDEX_MAX_DOCS).map((file) => file.path);
-    index.listedAt = Date.now();
-    const listed = new Set(index.paths);
-    for (const rel of index.files.keys()) if (!listed.has(rel)) index.files.delete(rel);
+  if (!index.listedAt || (generation !== undefined && generation !== index.generation)) {
+    listReviewDocuments(root, index);
+    if (generation !== undefined) index.generation = generation;
   }
   for (const rel of index.paths) {
     let stats = null;
     try { stats = fs.statSync(path.join(root, rel)); } catch {}
     if (!stats?.isFile() || stats.size > REVIEW_CHECK_MAX_BYTES) { index.files.delete(rel); continue; }
     const entry = index.files.get(rel);
-    if (entry && entry.size === stats.size && entry.mtimeMs === stats.mtimeMs) continue;
+    if (entry && entry.size === stats.size && entry.mtimeMs === stats.mtimeMs && entry.ctimeMs === stats.ctimeMs && entry.ino === stats.ino) continue;
     try {
-      index.files.set(rel, { path: rel, size: stats.size, mtimeMs: stats.mtimeMs, hashes: documentShingles(fs.readFileSync(path.join(root, rel), "utf8")) });
+      index.files.set(rel, { path: rel, size: stats.size, mtimeMs: stats.mtimeMs, ctimeMs: stats.ctimeMs, ino: stats.ino,
+        hashes: documentShingles(fs.readFileSync(path.join(root, rel), "utf8")) });
     } catch {
       index.files.delete(rel);
     }
   }
-  return index.files;
+  return index;
+}
+
+// Background refresh of the kept lists (worker timer, off the request path): a folder whose
+// modification time changed (a document added, removed or renamed) or an old list is listed again.
+// Returns the roots listed again; a root that no longer exists is dropped.
+export function refreshReviewDocumentIndexes({ now = Date.now() } = {}) {
+  const relisted = [];
+  for (const [key, index] of [...reviewDocumentIndexes]) {
+    if (!fs.existsSync(index.root)) { reviewDocumentIndexes.delete(key); continue; }
+    let changed = now - index.listedAt >= REVIEW_INDEX_FULL_MS;
+    for (const [folder, mtimeMs] of changed ? [] : index.folders) {
+      let current = null;
+      try { current = fs.statSync(path.join(index.root, folder)).mtimeMs; } catch {}
+      if (current !== mtimeMs) { changed = true; break; }
+    }
+    if (!changed) continue;
+    try { listReviewDocuments(index.root, index); relisted.push(index.root); } catch {}
+  }
+  return relisted;
+}
+
+// Test seam: how many lists this thread has built (in all, or for one root), and for how many roots it keeps an index.
+export function reviewDocumentIndexStats(root = "") {
+  if (root) return { lists: reviewDocumentIndexes.get(path.resolve(root))?.lists || 0 };
+  return { lists: reviewDocumentIndexCounters.lists, roots: reviewDocumentIndexes.size };
 }
 
 // The indexed documents, with overrides (Map path → content, or null for a removed document) in place of the disk.
-function* reviewDocumentCorpus(root, overrides = new Map()) {
-  for (const entry of reviewDocumentIndex(root).values()) if (!overrides.has(entry.path)) yield entry;
+function* reviewDocumentCorpus(index, overrides = new Map()) {
+  for (const entry of index.files.values()) if (!overrides.has(entry.path)) yield entry;
   for (const [rel, content] of overrides) if (typeof content === "string") yield { path: rel, content };
+}
+
+// Above the document cap, say that the duplicate check did not compare every document.
+function partialDuplicateCheck(index, rel) {
+  if (index.total <= index.paths.length) return [];
+  return [{ type: "duplicate_partial", path: rel, line: 1, evidence: String(index.total),
+    message: `Duplicate check is partial: only ${index.paths.length} of ${index.total} documents were compared.` }];
 }
 
 // While a human reviews one changed file: dead links this version adds, and a likely duplicate.
 // Warnings only; a failure here never hides or blocks the review.
-export function withReviewDocumentChecks(root, review) {
+export function withReviewDocumentChecks(root, review, { generation } = {}) {
   if (!review?.available || review.changeKind === "deleted" || !/\.md$/i.test(review.path || "")) return review;
   let documentChecks = [];
   try {
-    documentChecks = reviewVersionChecks({ root, path: review.path, before: review.changeKind === "added" ? null : review.baseContent,
-      after: review.currentContent, others: reviewDocumentCorpus(root) });
+    const index = reviewDocumentIndex(root, { generation });
+    documentChecks = [...reviewVersionChecks({ root, path: review.path, before: review.changeKind === "added" ? null : review.baseContent,
+      after: review.currentContent, others: reviewDocumentCorpus(index) }), ...partialDuplicateCheck(index, review.path)];
   } catch {}
   return { ...review, documentChecks };
 }
 
 // The same warnings for one file of a local proposal, with the proposal's other files as they would land.
-export function localProposalFileDocumentChecks(root, id, file) {
+export function localProposalFileDocumentChecks(root, id, file, { generation } = {}) {
   if (!/\.md$/i.test(file?.path || "") || !file.afterBytes) return [];
   try {
     const proposal = inspectLocalProposal(root, id);
@@ -8431,10 +8491,12 @@ export function localProposalFileDocumentChecks(root, id, file) {
     const inProposal = (rel) => path.join(proposal.editRoot, rel);
     const overrides = new Map(proposal.changes.filter((change) => /\.md$/i.test(change.path)).map((change) => [change.path,
       change.kind === "deleted" ? null : readLocalProposalFile(root, id, change.path).afterBytes.toString("utf8")]));
-    return reviewVersionChecks({ root, path: file.path, before: file.beforeBytes ? file.beforeBytes.toString("utf8") : null,
-      after: file.afterBytes.toString("utf8"), others: reviewDocumentCorpus(root, overrides),
+    const index = reviewDocumentIndex(root, { generation });
+    return [...reviewVersionChecks({ root, path: file.path, before: file.beforeBytes ? file.beforeBytes.toString("utf8") : null,
+      after: file.afterBytes.toString("utf8"), others: reviewDocumentCorpus(index, overrides),
       exists: (rel) => kinds.get(rel) !== "deleted" && (fs.existsSync(inProposal(rel)) || fs.existsSync(path.join(root, rel))),
-      readText: (rel) => fs.readFileSync(fs.existsSync(inProposal(rel)) ? inProposal(rel) : path.join(root, rel), "utf8") });
+      readText: (rel) => fs.readFileSync(fs.existsSync(inProposal(rel)) ? inProposal(rel) : path.join(root, rel), "utf8") }),
+      ...partialDuplicateCheck(index, file.path)];
   } catch {
     return [];
   }
@@ -15775,6 +15837,7 @@ function backgroundWorkerGroup(task, payload = {}) {
   if (task === "reports") return "reports";
   if (task === "context-hub") return "hub";
   if (task === "hosted-shared-repository") return hostedSharedBackgroundWorkerGroup(payload.repositoryId);
+  if (DOCUMENT_CHECK_TASKS.has(task)) return "checks";
   return "files";
 }
 
@@ -15809,7 +15872,7 @@ function ensureBackgroundWorker(root, group) {
   const worker = new Worker(new URL("./background_worker.mjs", import.meta.url), {
     env: backgroundTaskEnvironment(),
     execArgv: backgroundWorkerExecArgv(),
-    workerData: { persistent: true, root: path.resolve(root), filesystemLockOwner },
+    workerData: { persistent: true, root: path.resolve(root), group, filesystemLockOwner },
   });
   const entry = {
     key,
@@ -16385,6 +16448,33 @@ function readBackgroundFileTask(task, root, payload = {}, { expectedRootIdentity
   });
 }
 
+// Documentation checks while a human reviews a file: computed in the "checks" worker only. The run starts
+// with the file read; the review never waits for it: a run not finished when the file is ready opens with
+// documentChecksPending and the page asks /api/docqa/document-checks, which waits for the same run.
+const DOCUMENT_CHECK_TASKS = new Set(["review-checks", "local-proposal-checks"]);
+const DOCUMENT_CHECKS_GRACE_MS = 0;
+const reviewIndexGenerations = new Map();
+const documentChecksRuns = new Map();
+function documentChecksRun(root, { path: rel = "", proposal = "" } = {}) {
+  const rootKey = path.resolve(root);
+  const task = proposal ? "local-proposal-checks" : "review-checks";
+  const generation = reviewIndexGenerations.get(rootKey) || 0;
+  const key = `${rootKey}\0${task}\0${proposal}\0${normalizeRelPath(rel)}\0${generation}`;
+  if (documentChecksRuns.has(key)) return documentChecksRuns.get(key);
+  const run = Promise.resolve().then(() => runBackgroundTask(task, rootKey, { path: rel, proposal, generation }))
+    .then((checks) => Array.isArray(checks) ? checks : [], () => [])
+    .finally(() => documentChecksRuns.delete(key));
+  documentChecksRuns.set(key, run);
+  return run;
+}
+async function documentChecksWithinGrace(run) {
+  let timer = null;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), DOCUMENT_CHECKS_GRACE_MS); timer.unref?.(); });
+  const ready = await Promise.race([run.then((documentChecks) => ({ documentChecks })), late]);
+  clearTimeout(timer);
+  return ready || { documentChecks: [], documentChecksPending: true };
+}
+
 function invalidateBackgroundFileTasks(root) {
   const rootKey = path.resolve(root);
   const prefix = `${rootKey}\0`;
@@ -16409,7 +16499,10 @@ function invalidateDocumentGraphCache(root) {
 
 function invalidateBackgroundCaches(root, { explicit = false } = {}) {
   const key = path.resolve(root);
-  if (explicit) backgroundExplicitInvalidations.set(key, Date.now());
+  if (explicit) {
+    backgroundExplicitInvalidations.set(key, Date.now());
+    reviewIndexGenerations.set(key, (reviewIndexGenerations.get(key) || 0) + 1);
+  }
   invalidateBackgroundReports(key);
   invalidateBackgroundFileTasks(key);
   contextHubProjectSummaryCache.delete(key);
@@ -17215,6 +17308,7 @@ function contextHubStateWithAttention(state = {}) {
             proposalId: proposal.id, title: proposal.title, description: proposal.description,
             reviewStatus: "submitted", updatedAt: proposal.updatedAt, submittedAt: proposal.submittedAt, files: pending.map((entry) => entry.path),
             fileCount: pending.length, submittedRevision: proposal.submittedRevision,
+            ...(proposal.settledFiles ? { settledFiles: Object.entries(proposal.settledFiles).map(([rel, entry]) => ({ ...entry, path: rel })) } : {}),
             revisionToken: hashContent(JSON.stringify([proposal.submittedRevision, pending.map((entry) => entry.path)])) });
         }
       } catch (error) { localProposalError = error.message; }
@@ -25123,8 +25217,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-file") {
     const file = readLocalProposalFile(root, url.searchParams.get("proposal"), url.searchParams.get("path"));
     const { beforeBytes, afterBytes, ...metadata } = file;
-    sendJson(res, 200, { ...metadata, beforeBase64: beforeBytes?.toString("base64") ?? null, afterBase64: afterBytes?.toString("base64") ?? null,
-      documentChecks: localProposalFileDocumentChecks(root, url.searchParams.get("proposal"), file) });
+    const checks = /\.md$/i.test(file.path || "") && afterBytes
+      ? await documentChecksWithinGrace(documentChecksRun(root, { path: file.path, proposal: String(url.searchParams.get("proposal") || "") }))
+      : { documentChecks: [] };
+    sendJson(res, 200, { ...metadata, beforeBase64: beforeBytes?.toString("base64") ?? null, afterBase64: afterBytes?.toString("base64") ?? null, ...checks });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-blocks") {
@@ -25171,7 +25267,17 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/file/review-base") {
     const relPath = url.searchParams.get("path") || "";
     if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
-    sendJson(res, 200, await readBackgroundFileTask("review-base", root, { path: relPath }, { expectedRootIdentity }));
+    const checks = documentChecksRun(root, { path: relPath });
+    const review = await readBackgroundFileTask("review-base", root, { path: relPath }, { expectedRootIdentity });
+    const reviewable = review?.available && review.changeKind !== "deleted" && /\.md$/i.test(review.path || "");
+    sendJson(res, 200, reviewable ? { ...review, ...await documentChecksWithinGrace(checks) } : review);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/docqa/document-checks") {
+    const relPath = url.searchParams.get("path") || "";
+    if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
+    assertManagedProjectRootIdentity(path.resolve(root), expectedRootIdentity);
+    sendJson(res, 200, { path: relPath, documentChecks: await documentChecksRun(root, { path: relPath, proposal: url.searchParams.get("proposal") || "" }) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/file/revert") {

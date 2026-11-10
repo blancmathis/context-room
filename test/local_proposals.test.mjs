@@ -235,7 +235,12 @@ test("a compare that finds the agent's version already in the project closes tha
   assert.deepEqual(settled.changes.map((change) => change.path), ["docs/a.md"]);
   assert.equal(settled.status, "submitted");
   decide(settled, "docs/a.md");
-  assert.equal(inspectLocalProposal(root, proposal.id).status, "accepted");
+  const kept = inspectLocalProposal(root, proposal.id);
+  assert.equal(kept.status, "accepted");
+  assert.deepEqual(Object.keys(kept.decisions), ["docs/a.md"], "a settled file never gets a decision");
+  assert.equal(kept.settledFiles["docs/b.md"].reason, "already-in-project", "the settled file stays recorded");
+  assert.equal(kept.settledFiles["docs/b.md"].by, "human");
+  assert.ok(Date.parse(kept.settledFiles["docs/b.md"].at));
   assert.equal(read("docs/b.md"), "agent B\n");
 
   let only = begin();
@@ -246,8 +251,45 @@ test("a compare that finds the agent's version already in the project closes tha
   const closed = rebaseLocalProposalFile(root, only.id, { path: "docs/b.md", expectedRevision: only.submittedRevision });
   assert.equal(closed.settled, true);
   assert.deepEqual(closed.changes, []);
-  assert.equal(closed.status, "resolved");
+  assert.equal(closed.status, "settled", "no decision was made: the status never claims one");
+  assert.deepEqual(closed.decisions, {});
   assert.equal(listLocalProposals(root, { readyOnly: true }).some((entry) => entry.id === only.id), false);
+  assert.throws(() => submitLocalProposal(root, only.id), (error) => error.code === "local_proposal_closed");
+
+  let gone = begin();
+  fs.rmSync(path.join(gone.editRoot, "docs/a.md"));
+  gone = submitLocalProposal(root, gone.id);
+  fs.rmSync(path.join(root, "docs/a.md"));
+  const both = rebaseLocalProposalFile(root, gone.id, { path: "docs/a.md", expectedRevision: gone.submittedRevision });
+  assert.equal(both.settled, true);
+  assert.equal(both.status, "settled");
+  assert.equal(both.settledFiles["docs/a.md"].reason, "deleted-both-sides");
+});
+
+test("a mode the agent set on a file it never received is kept and shown as a permissions change", (t) => {
+  const { root, begin, edit, decide } = fixture(t);
+  for (const name of ["run.md", "same.md"]) fs.writeFileSync(path.join(root, "docs", name), "project " + name + "\n", { mode: 0o644 });
+  fs.chmodSync(path.join(root, "docs/run.md"), 0o644);
+  fs.chmodSync(path.join(root, "docs/same.md"), 0o644);
+  fs.writeFileSync(path.join(root, "docs/tool.md"), "project tool\n");
+  fs.chmodSync(path.join(root, "docs/tool.md"), 0o755);
+  let proposal = begin();
+  edit(proposal, "docs/run.md", "agent run\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/run.md"), 0o755);
+  edit(proposal, "docs/same.md", "project same.md\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/same.md"), 0o755);
+  edit(proposal, "docs/tool.md", "agent tool\n");
+  fs.chmodSync(path.join(proposal.editRoot, "docs/tool.md"), 0o644);
+  proposal = submitLocalProposal(root, proposal.id);
+  const change = (rel) => proposal.changes.find((entry) => entry.path === rel);
+  assert.equal(change("docs/run.md").unseen, true);
+  assert.equal(change("docs/run.md").after.mode & 0o777, 0o755);
+  assert.equal(change("docs/run.md").before.mode & 0o777, 0o644);
+  assert.ok(change("docs/same.md"), "a mode-only change is still a change");
+  assert.equal(change("docs/same.md").after.mode & 0o777, 0o755);
+  assert.equal(change("docs/tool.md").after.mode & 0o777, 0o755, "a new file's default mode keeps the project's permissions");
+  decide(proposal, "docs/run.md");
+  assert.equal(fs.statSync(path.join(root, "docs/run.md")).mode & 0o777, 0o755);
 });
 
 test("a rebased file the agent had is not described as unseen", (t) => {

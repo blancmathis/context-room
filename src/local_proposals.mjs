@@ -187,13 +187,15 @@ function beforeVersion(proposal, rel) {
 }
 
 // Against the current project file, the agent's version keeps that file's permissions unless the
-// agent itself changed them (a mode different from the one it received). A file it never received
-// keeps the project's permissions.
+// agent itself changed them: a mode different from the one it received or, for a file it never
+// received, a mode other than the default of a new file (0644). The review shows that as a permissions change.
+const NEW_FILE_MODE = 0o644;
 function afterVersion(proposal, rel) {
   const after = proposal.submitted[rel] || null, observed = proposal.observed?.[rel];
   if (!after || !observed || !proposal.observed || !Object.hasOwn(proposal.observed, rel)) return after;
   const received = proposal.base[rel];
-  return received && received.mode !== after.mode ? after : { ...after, mode: observed.mode };
+  const agentSetMode = received ? received.mode !== after.mode : (after.mode & 0o777) !== NEW_FILE_MODE;
+  return agentSetMode ? after : { ...after, mode: observed.mode };
 }
 
 // One project file read for comparison: bounded like an initial working file, refused with a clear reason.
@@ -375,7 +377,7 @@ export function submitLocalProposal(projectRoot, id, { canWrite = () => true, ex
   return locked(projectRoot, (ctx) => {
     const proposal = readProposal(ctx, id);
     if (expectedDraftRevision !== undefined && workingDraft(ctx, proposal, canWrite).revision !== expectedDraftRevision) fail('local_proposal_stale', 'The draft changed before submission. Reload its saved version.');
-    if (["accepted", "rejected", "resolved"].includes(proposal.status) || Object.keys(proposal.decisions).length) {
+    if (["accepted", "rejected", "resolved", "settled"].includes(proposal.status) || Object.keys(proposal.decisions).length) {
       fail("local_proposal_closed", "A reviewed proposal cannot be resubmitted. Create a new proposal for further changes.");
     }
     const submitted = workspaceManifest(ctx, proposal);
@@ -491,13 +493,17 @@ export function rebaseLocalProposalFile(projectRoot, id, { path: rel, expectedRe
     proposal.observed = { ...(proposal.observed || {}), [change.path]: current ? { hash: storeBlob(ctx, current.bytes), mode: current.mode } : null };
     proposal.submittedRevision = submissionRevision(proposal, proposal.submitted);
     // The project file may already hold the agent's version: nothing is left to decide for it.
+    // Recorded (who, when, why) in settledFiles, never as a decision. All files settled: status "settled".
     const remaining = changesFor(proposal);
     const settled = !remaining.some((entry) => entry.path === change.path);
+    const at = new Date().toISOString();
     if (settled) {
+      proposal.settledFiles = { ...(proposal.settledFiles || {}), [change.path]: { by: "human", via: "compare-current",
+        reason: current ? "already-in-project" : "deleted-both-sides", revision: expectedRevision, at } };
       if (remaining.length) updateStatus(proposal);
-      else proposal.status = "resolved";
+      else proposal.status = "settled";
     }
-    proposal.updatedAt = new Date().toISOString();
+    proposal.updatedAt = at;
     saveProposal(ctx, proposal);
     return { ...publicProposal(ctx, proposal), settled };
   });

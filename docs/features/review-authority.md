@@ -61,6 +61,8 @@ A changed hash, restored deletion, changed mode or changed proposal head invalid
 
 A review base write (`POST /api/docqa/review-baseline`) may carry `expectedContentHash`, the hash of the version the reviewer saw. When the file changed since, the write fails with 409 `review_revision_conflict` and the base stays as it was, so the newer change still shows in review. The review flow always sends it, because it saves decisions after the next file opens.
 
+A local proposal file closed by "Compare with current file" is not a decision. When the project file already holds the agent's version, or the file is deleted on both sides, nothing is left to decide: the proposal records the file in `settledFiles` (who: the human, via `compare-current`; when; why: `already-in-project` or `deleted-both-sides`), writes no file and no review evidence, and shows it in the proposal view. A proposal whose files were all closed this way gets the status `settled`, never `accepted`, `rejected` or `resolved`.
+
 ## Receipts and undo
 
 Each local file decision writes a signed receipt in the private review authority, outside the project. The receipt holds the exact version decided and the evidence it replaced. Writing the receipt index commits the decision. A decision interrupted before that point is undone by the next review writer. Until then, readers see the evidence from before the interrupted decision. A journal that cannot be verified closes review writes until it is repaired.

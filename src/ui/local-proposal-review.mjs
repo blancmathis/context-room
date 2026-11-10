@@ -71,7 +71,21 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   const status = element("div");
   status.setAttribute("role", "status");
   const footer = element("footer");
-  dialog.append(header, nav, checksPanel, blocksPanel, versions, status, footer);
+  // Files closed by "Compare with current file" without a decision: who, when and why stay visible.
+  const settledPanel = element("section", "", "local-proposal-settled");
+  settledPanel.setAttribute("aria-label", "Files closed without a decision");
+  const renderSettled = (entries) => {
+    const list = (Array.isArray(entries) ? entries : Object.entries(entries || {}).map(([rel, entry]) => ({ ...entry, path: rel })))
+      .filter((entry) => entry?.path);
+    settledPanel.replaceChildren();
+    settledPanel.hidden = !list.length;
+    if (!list.length) return;
+    const items = element("ul");
+    items.append(...list.map((entry) => element("li", `${entry.path}: ${entry.reason === "deleted-both-sides" ? "deleted on both sides" : "already in the project"}. Closed without a decision by you (Compare with current file)${entry.at ? `, ${new Date(entry.at).toLocaleString()}` : ""}. No file was written.`)));
+    settledPanel.append(element("h3", "Closed without a decision"), items);
+  };
+  renderSettled(item.settledFiles);
+  dialog.append(header, nav, checksPanel, settledPanel, blocksPanel, versions, status, footer);
   document.body.append(dialog);
   let objectUrls = [];
   let viewers = [];
@@ -252,7 +266,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   }
 
   function renderChecks(checks) {
-    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc"].includes(check?.type)) : [];
+    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc", "duplicate_partial"].includes(check?.type)) : [];
     checksPanel.replaceChildren();
     checksPanel.hidden = !list.length;
     if (!list.length) return;
@@ -296,6 +310,9 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       if (serial !== requestId || !dialog.isConnected) return;
       renderBlocks(map, file);
       renderChecks(file.documentChecks);
+      // Checks still running: the file opens now, the box fills in when they finish.
+      if (file.documentChecksPending) request(`/api/docqa/document-checks?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(file.path)}`)
+        .then((result) => { if (serial === requestId && dialog.isConnected) renderChecks(result.documentChecks); }).catch(() => {});
       const accept = element("button", "Accept file", "file-action primary");
       const reject = element("button", "Reject file", "file-action danger-action");
       const undo = element("button", "Undo correction", "quiet-button");
@@ -344,6 +361,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
                 // The project file already holds the agent's version: this change is closed, nothing was written.
                 const settledText = `${file.path} in the project already matches the agent's version. Nothing is left to decide for this file; no file was written.`;
                 files = rebased.changes.filter((change) => !change.decision).map((change) => change.path);
+                renderSettled(rebased.settledFiles);
                 await onChange(rebased);
                 if (files.length) { await openFile(files[0]); status.textContent = `${settledText} ${status.textContent}`; return; }
                 versions.replaceChildren(); checksPanel.hidden = true; blocksPanel.hidden = true;
