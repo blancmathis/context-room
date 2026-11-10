@@ -26251,12 +26251,20 @@ function selectedStartupContextReviewPath(path = state.selected) {
 }
 
 // The review opens without waiting for documentation checks; the box fills in when they finish.
-function fillPendingReviewDocumentChecks(change) {
+// A run dropped for a newer file (another tab, say) is asked once more, then shown as skipped.
+function fillPendingReviewDocumentChecks(change, retried = false) {
   api("/api/docqa/document-checks?path=" + encodeURIComponent(change.path)).then((result) => {
-    if (state.externalChange !== change || !Array.isArray(result?.documentChecks) || !result.documentChecks.length) return;
-    change.documentChecks = result.documentChecks;
+    if (state.externalChange !== change) return;
+    if (result?.documentChecksSuperseded && !retried) return fillPendingReviewDocumentChecks(change, true);
+    const checks = result?.documentChecksSuperseded ? [supersededDocumentCheck(change.path)] : result?.documentChecks;
+    if (!Array.isArray(checks) || !checks.length) return;
+    change.documentChecks = checks;
     renderViewer();
   }).catch(() => {});
+}
+
+function supersededDocumentCheck(path) {
+  return { type: "checks_unavailable", path, line: 1, message: "Documentation checks were skipped: another file was checked first. Open the file again to retry." };
 }
 
 function applyChangedFileInlineReview(path, diff, review, requestId = state.selectionRequest) {

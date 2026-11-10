@@ -1004,6 +1004,7 @@ export function listMemoryFiles(root = process.cwd(), {
   readOnly = false,
   expectedRootIdentity = null,
   metadataOnly = false,
+  walkedDirectories = null,
 } = {}) {
   const baseSettings = providedSettings || effectiveMemoryWebappSettings(root, { readOnly, expectedRootIdentity });
   const activeRepoRoots = sanitizePathList((externalRoots || []).filter((item) => !normalizeRelPath(String(item || "")).startsWith("~")))
@@ -1072,7 +1073,7 @@ export function listMemoryFiles(root = process.cwd(), {
     if (!fs.existsSync(absPath)) continue;
     if (settings.projectOnly && !projectPathIsContained(root, absPath)) continue;
     const stats = fs.statSync(absPath);
-    const found = stats.isDirectory() ? walkTextFiles(absPath, root, settings) : [clean];
+    const found = stats.isDirectory() ? walkTextFiles(absPath, root, settings, walkedDirectories) : [clean];
     for (const rel of found) {
       if (byPath.has(rel)) continue;
       byPath.set(rel, {
@@ -8432,7 +8433,7 @@ export function localProposalDocumentChecks(root, id) {
 // Word 3-grams of the project's Markdown documents as they are on disk, for advisory review checks.
 // Runs only in the "checks" background worker (never on the Hub main thread): one index per project
 // root (at most REVIEW_INDEX_ROOTS, least recently used dropped first). The list of documents is kept
-// until a listed folder changes (a document added, removed or renamed): checked on the first call after
+// until a walked folder changes (a document added, removed or renamed): checked on the first call after
 // a Hub write (a new generation from the main thread) and by the background refresh
 // (refreshReviewDocumentIndexes: one stat per listed folder, a full list every REVIEW_INDEX_FULL_MS).
 // A Hub write that only changes a document's content (or the review state) keeps the list.
@@ -8445,8 +8446,14 @@ const REVIEW_INDEX_ROOTS = 4;
 const REVIEW_INDEX_FULL_MS = 5 * 60_000;
 const reviewDocumentIndexes = new Map();
 const reviewDocumentIndexCounters = { lists: 0 };
-function folderTimes(root, paths) {
+function folderTimes(root, paths, walked = []) {
   const folders = new Map();
+  for (const folder of walked) {
+    if (folders.has(folder)) continue;
+    let mtimeMs = null;
+    try { mtimeMs = fs.statSync(path.join(root, folder)).mtimeMs; } catch {}
+    folders.set(folder, mtimeMs);
+  }
   for (const rel of paths) {
     for (let folder = path.posix.dirname(rel); ; folder = path.posix.dirname(folder)) {
       if (folders.has(folder)) break;
@@ -8462,11 +8469,14 @@ function folderTimes(root, paths) {
 function listReviewDocuments(root, index) {
   reviewDocumentIndexCounters.lists += 1;
   index.lists = (index.lists || 0) + 1;
-  const listed = listMemoryFiles(root, { readOnly: true, metadataOnly: true })
+  // Every walked folder is watched, not only the folders of listed docs: a doc added
+  // in a folder that held none (images only, say) changes that folder's time.
+  const walkedDirectories = new Set();
+  const listed = listMemoryFiles(root, { readOnly: true, metadataOnly: true, walkedDirectories })
     .filter((file) => /\.md$/i.test(file.path || "") && file.exists && !resolveExternalPath(file.path));
   index.total = listed.length;
   index.paths = listed.slice(0, REVIEW_INDEX_MAX_DOCS).map((file) => file.path);
-  index.folders = folderTimes(root, index.paths);
+  index.folders = folderTimes(root, index.paths, walkedDirectories);
   index.listedAt = Date.now();
   const kept = new Set(index.paths);
   for (const rel of index.files.keys()) if (!kept.has(rel)) index.files.delete(rel);
@@ -26059,14 +26069,16 @@ function hasUnresolvedConflictMarkers(content) {
   return /^(<<<<<<<|=======|>>>>>>>)/m.test(String(content || ""));
 }
 
-function walkTextFiles(dir, root, settings = defaultMemoryWebappSettings()) {
+// `directories` (optional Set) receives every folder walked, relative to root ("." for root).
+function walkTextFiles(dir, root, settings = defaultMemoryWebappSettings(), directories = null) {
   const results = [];
   if (settings.projectOnly && !projectPathIsContained(root, dir)) return results;
+  directories?.add(path.relative(root, dir).replaceAll(path.sep, "/") || ".");
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
     const abs = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walkTextFiles(abs, root, settings));
+      results.push(...walkTextFiles(abs, root, settings, directories));
     } else if (entry.isFile()) {
       const rel = path.relative(root, abs).replaceAll(path.sep, "/");
       if (isAllowedMemoryPath(rel, settings)) results.push(rel);

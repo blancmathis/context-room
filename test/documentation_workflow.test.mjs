@@ -510,6 +510,8 @@ test("the review index keeps its list until a document is added, removed or rena
   const root = fixture(t);
   const article = duplicateArticle();
   fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  fs.mkdirSync(path.join(root, "docs/img"));
+  fs.writeFileSync(path.join(root, "docs/img/diagram.png"), "png");
   const review = { available: true, path: "docs/new.md", changeKind: "added", baseContent: "", currentContent: "# New\n\n" + article + "\n" };
   const duplicates = (generation) => withReviewDocumentChecks(root, review, { generation }).documentChecks.filter((item) => item.type === "duplicate_doc").map((item) => item.evidence);
   const lists = () => reviewDocumentIndexStats(root).lists;
@@ -535,6 +537,13 @@ test("the review index keeps its list until a document is added, removed or rena
   fs.utimesSync(target, stats.atime, stats.mtime);
   assert.equal(fs.statSync(target).size, stats.size);
   assert.deepEqual(duplicates(1), [], "the replaced file is read again");
+  // A folder that held no listed document (images only) is watched too.
+  const before = lists();
+  fs.writeFileSync(path.join(root, "docs/img/copy.md"), "# Copy\n\n" + article + "\n");
+  assert.deepEqual(duplicates(3), ["docs/img/copy.md"], "a document added in a folder with no listed document is seen at the next Hub write");
+  assert.equal(lists() - before, 1);
+  fs.writeFileSync(path.join(root, "docs/img/other.md"), "# Other\n");
+  assert.equal(refreshReviewDocumentIndexes().includes(path.resolve(root)), true, "and at the next background refresh");
 });
 
 function withTestEnv(t, values) {

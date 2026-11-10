@@ -1149,6 +1149,37 @@ test("Context Hub attention reads Git HEAD in one batch, not once per modified f
   assert.ok(reviewPaths.length >= 12, JSON.stringify(body.items).slice(0, 2000));
 });
 
+// Attention reads the snapshot's effective settings, as the in-room Context
+// Health does. AGENTS.md is watched by default even when watchAllow names only
+// docs/, so attention no longer lists it as "editable but not watched".
+test("Context Hub attention agrees with Context Health on a startup file watched by default", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-attention-startup-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = path.join(base, "Startup");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  writeHubFile(root, "docs/a.md", "# A\n");
+  writeHubFile(root, "AGENTS.md", "# Agents\n\nRead [a](docs/a.md).\n");
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "hub@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Hub Test"], { cwd: root, stdio: "ignore" });
+  initializeContextRoomProject(root, { title: "Startup", allowedPaths: ["docs/", "AGENTS.md"], watchAllow: ["docs/"] });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initial"], { cwd: root, stdio: "ignore" });
+  writeHubFile(root, "AGENTS.md", "# Agents\n\nRead [a](docs/a.md) first.\n");
+  const project = registerContextHubProject(root);
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const response = await fetch(origin + "/api/context-hub/attention?projectId=" + encodeURIComponent(project.id));
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  const health = await (await fetch(origin + "/api/reports", { headers: { "x-context-room-project": room.projectId } })).json();
+  assert.ok(Array.isArray(health.doctor?.issues), JSON.stringify(health).slice(0, 500));
+  assert.doesNotMatch(JSON.stringify(health.doctor.issues), /startup_not_watched/);
+  assert.doesNotMatch(JSON.stringify(body.items), /startup_not_watched|not watched: AGENTS\.md/);
+});
+
 test("Context Hub rejects ambiguous project aliases but keeps exact project IDs deterministic", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-project-ambiguity-"));
   withHubHome(t, path.join(base, "hub"));

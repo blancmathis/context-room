@@ -310,9 +310,16 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       if (serial !== requestId || !dialog.isConnected) return;
       renderBlocks(map, file);
       renderChecks(file.documentChecks);
-      // Checks still running: the file opens now, the box fills in when they finish.
-      if (file.documentChecksPending) request(`/api/docqa/document-checks?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(file.path)}`)
-        .then((result) => { if (serial === requestId && dialog.isConnected) renderChecks(result.documentChecks); }).catch(() => {});
+      // Checks still running: the file opens now, the box fills in when they finish. A run dropped
+      // for a newer file is asked once more, then shown as skipped (never an empty box).
+      const askChecks = (retried) => request(`/api/docqa/document-checks?proposal=${encodeURIComponent(item.proposalId)}&path=${encodeURIComponent(file.path)}`)
+        .then((result) => {
+          if (serial !== requestId || !dialog.isConnected) return;
+          if (result.documentChecksSuperseded && !retried) return askChecks(true);
+          renderChecks(result.documentChecksSuperseded ? [{ type: "checks_unavailable", path: file.path, line: 1,
+            message: "Documentation checks were skipped: another file was checked first. Open the file again to retry." }] : result.documentChecks);
+        }).catch(() => {});
+      if (file.documentChecksPending) askChecks(false);
       const accept = element("button", "Accept file", "file-action primary");
       const reject = element("button", "Reject file", "file-action danger-action");
       const undo = element("button", "Undo correction", "quiet-button");
