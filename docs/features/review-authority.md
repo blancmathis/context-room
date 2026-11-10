@@ -59,6 +59,8 @@ Trusted evidence binds to exact resource state, including canonical path, conten
 
 A changed hash, restored deletion, changed mode or changed proposal head invalidates the old decision. Dependency links provide navigation; unchanged dependent documents are not added to review.
 
+A review base write (`POST /api/docqa/review-baseline`) may carry `expectedContentHash`, the hash of the version the reviewer saw. When the file changed since, the write fails with 409 `review_revision_conflict` and the base stays as it was, so the newer change still shows in review. The review flow always sends it, because it saves decisions after the next file opens.
+
 ## Receipts and undo
 
 Each local file decision writes a signed receipt in the private review authority, outside the project. The receipt holds the exact version decided and the evidence it replaced. Writing the receipt index commits the decision. A decision interrupted before that point is undone by the next review writer. Until then, readers see the evidence from before the interrupted decision. A journal that cannot be verified closes review writes until it is repaired.

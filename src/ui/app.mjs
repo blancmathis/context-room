@@ -1866,6 +1866,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-flow-where { font-size: 13px; }
     .review-flow-why, .review-flow-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .review-flow-note { color: var(--text); }
+    .review-flow-failures summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+    .review-flow-failures ul { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
     .review-flow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .review-flow-actions button { min-height: 40px; padding: 0 14px; }
     .review-flow-actions kbd { margin-left: 6px; font-size: 11px; color: var(--muted); }
@@ -5050,9 +5052,12 @@ async function api(path, options) {
     && !requestPathname.startsWith("/api/codex-prompts")
     && !requestPathname.startsWith("/api/context/")
     && requestPathname !== "/api/health";
-  const localTargetProject = state.activeProjectLocationId && !String(state.activeProjectLocationId).startsWith("shared:");
+  // A queued write (review in flow) keeps the project it was decided in.
+  const targetLocationId = requestOptions.targetProjectId ?? state.activeProjectLocationId;
+  delete requestOptions.targetProjectId;
+  const localTargetProject = targetLocationId && !String(targetLocationId).startsWith("shared:");
   if (!IS_HOSTED_CONTEXT_ROOM && IS_GLOBAL_CONTEXT_ROOM && localTargetProject && projectScoped) {
-    headers.set("x-context-room-target-project", state.activeProjectLocationId);
+    headers.set("x-context-room-target-project", targetLocationId);
   }
   const requestMethod = String(requestOptions.method || "GET").toUpperCase();
   if (!["GET", "HEAD", "OPTIONS"].includes(requestMethod) && state.ownerMutationNonce) {
@@ -7779,6 +7784,8 @@ async function openReviewFlowItem() {
     await openContextHubLocalReview(item.review);
     return;
   }
+  // Opening another project reloads the page: let the queued saves end first.
+  await reviewFlowSaves.chain;
   await openContextHubProject(item.projectId, item.review.startupContext ? { reviewTarget: item.review } : { filePath: item.path });
 }
 
@@ -7827,6 +7834,26 @@ async function decideReviewFlow(action) {
     return;
   }
   if (action === "changes" && !secondaryReviewActionForSelectedFile()) return;
+  const change = activeExternalChange();
+  const onExternalChange = Boolean(change && change.path === state.selected);
+  const quickExternalAccept = onExternalChange && action === "accept" && externalChangeAcceptKeepsDisk(change);
+  if (!onExternalChange || quickExternalAccept) {
+    const status = quickExternalAccept ? "verified" : action === "accept" ? reviewActionForSelectedFile()?.status : "needs_changes";
+    if (!status) throw new Error("Nothing to accept here · press L to move on");
+    const decision = reviewFlowDecisionFor(item, status, quickExternalAccept ? change : null);
+    if (quickExternalAccept) resetExternalChangeState({ discardReview: true });
+    flow.results[item.id] = "saving";
+    flow.index += 1;
+    // Leaving the project reloads the page: that open waits for the saves
+    // (openReviewFlowItem), so this save must not wait for that open.
+    const next = flow.items[flow.index];
+    const leavesProject = Boolean(next && next.projectId !== state.activeProjectLocationId);
+    if (leavesProject) queueReviewFlowDecision(decision);
+    const opened = openReviewFlowItem();
+    if (!leavesProject) queueReviewFlowDecision(decision, opened);
+    await opened;
+    return;
+  }
   flow.busy = true;
   renderReviewFlowBar();
   try {
@@ -7838,7 +7865,246 @@ async function decideReviewFlow(action) {
   }
 }
 
-// Every decision path ends in applyReviewDecision; the flow moves on once the caller has finished.
+// Accept and Request changes in flow never wait for the server write (about
+// 0.5 s): the decision on the shown version is queued and the next file opens
+// at once. A save starts once that file is shown, so the write never competes
+// with opening it. Saves run one after another, each once (own requestId, no
+// retry); a page closed before a save starts sends it on pagehide. A failed
+// save stays in the bar and in the summary; the file stays pending.
+const reviewFlowSaves = { chain: Promise.resolve(), pending: 0, settleTimer: 0, unsent: new Set(), sending: new Map() };
+// Decisions not yet confirmed by the server. They outlive the page, so a page
+// closed or reloaded mid-save shows the outcome the next time it opens.
+const REVIEW_FLOW_OUTBOX_KEY = "context-room:review-flow-outbox:v1";
+
+// Accepting every block of a review change keeps the disk as it is: the same
+// two writes as the inline path (review base, then decision) are queued, with
+// the expected versions read now, so nothing is written to the file.
+function externalChangeAcceptKeepsDisk(change) {
+  if (change.source !== "review" || change.changeKind === "added" || change.changeKind === "deleted") return false;
+  if (state.selectedStartupContext || state.selectedReadOnly) return false;
+  const diskContent = change.diskContent || "";
+  const accepted = { ...(change.reviewDecisions || {}) };
+  const baseContent = externalReviewBaseContent(change);
+  for (const block of buildExternalReviewBlocks(baseContent, diskContent, accepted)) {
+    if (block.kind === "change" && !block.decision) accepted[block.id] = "accept";
+  }
+  return computeExternalReviewContent(buildExternalReviewBlocks(baseContent, diskContent, accepted), baseContent, diskContent) === diskContent;
+}
+
+function reviewFlowDecisionFor(item, status, externalChange = null) {
+  const path = state.selected;
+  const reviewItem = reviewQueueItemForPath(path);
+  const expectedContentHash = (externalChange && externalChange.diskHash) || state.savedHash || reviewItem?.currentHash;
+  if (!expectedContentHash) throw new Error("Refresh this review before deciding it.");
+  return {
+    itemId: item.id,
+    projectId: state.activeProjectLocationId || "",
+    path,
+    status,
+    flowStartedAt: currentReviewFlow()?.startedAt || "",
+    // The base becomes the version shown, or the write fails with a 409.
+    baseline: externalChange ? { path, note: "inline review applied", expectedContentHash } : null,
+    body: {
+      path,
+      status,
+      note: status === "verified" ? "verified from Context Room review queue" : "needs changes from Context Room review queue",
+      expectedContentHash,
+      expectedResourceState: reviewItem?.resourceState || null,
+      expectedResourceVersion: reviewItem?.resourceVersion || null,
+      expectedDependencyVersions: reviewItem?.dependencyVersions || {},
+      requestId: crypto.randomUUID(),
+    },
+  };
+}
+
+function readReviewFlowOutbox() {
+  try {
+    const records = JSON.parse(window.localStorage?.getItem(REVIEW_FLOW_OUTBOX_KEY) || "[]");
+    return Array.isArray(records) ? records.filter((record) => record && record.requestId && record.path) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeReviewFlowOutbox(records) {
+  try {
+    if (records.length) window.localStorage?.setItem(REVIEW_FLOW_OUTBOX_KEY, JSON.stringify(records));
+    else window.localStorage?.removeItem(REVIEW_FLOW_OUTBOX_KEY);
+  } catch {}
+}
+
+function reviewFlowOutboxRecord(decision) {
+  return {
+    requestId: decision.body.requestId,
+    flowStartedAt: decision.flowStartedAt || "",
+    itemId: decision.itemId,
+    projectId: decision.projectId,
+    path: decision.path,
+    status: decision.status,
+    expectedContentHash: decision.body.expectedContentHash,
+    tab: reviewFlowTabId(),
+    at: new Date().toISOString(),
+  };
+}
+
+function reviewFlowTabId() {
+  try {
+    let id = window.sessionStorage?.getItem("context-room:tab-id");
+    if (!id) {
+      id = crypto.randomUUID();
+      window.sessionStorage?.setItem("context-room:tab-id", id);
+    }
+    return id;
+  } catch {
+    return "";
+  }
+}
+
+function removeReviewFlowOutbox(requestId) {
+  const records = readReviewFlowOutbox();
+  const kept = records.filter((record) => record.requestId !== requestId);
+  if (kept.length !== records.length) writeReviewFlowOutbox(kept);
+}
+
+function queueReviewFlowDecision(decision, after = null) {
+  reviewFlowSaves.pending += 1;
+  reviewFlowSaves.unsent.add(decision);
+  writeReviewFlowOutbox([...readReviewFlowOutbox(), reviewFlowOutboxRecord(decision)]);
+  window.clearTimeout(reviewFlowSaves.settleTimer);
+  reviewFlowSaves.chain = reviewFlowSaves.chain
+    .then(() => Promise.resolve(after).catch(() => {}))
+    .then(() => saveReviewFlowDecision(decision))
+    .finally(() => {
+      reviewFlowSaves.pending -= 1;
+      if (!reviewFlowSaves.pending) scheduleReviewFlowSavesSettled();
+    });
+  return reviewFlowSaves.chain;
+}
+
+function reviewFlowDecisionRequests(decision) {
+  const request = (body) => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+    targetProjectId: decision.projectId,
+  });
+  return {
+    baseline: decision.baseline ? ["/api/docqa/review-baseline", request(decision.baseline)] : null,
+    review: ["/api/docqa/review", request(decision.body)],
+  };
+}
+
+// The page is going away: send what the queue has not started, each decision
+// still base first, then review. Their outcome is read back the next time the
+// page shows (the outbox), or here if the page comes back from the cache.
+function flushUnsentReviewFlowDecisions() {
+  const decisions = [...reviewFlowSaves.unsent];
+  reviewFlowSaves.unsent.clear();
+  for (const decision of decisions) void sendReviewFlowDecision(decision);
+}
+
+async function saveReviewFlowDecision(decision) {
+  if (!reviewFlowSaves.unsent.delete(decision)) return;
+  await sendReviewFlowDecision(decision);
+}
+
+async function sendReviewFlowDecision(decision) {
+  reviewFlowSaves.sending.set(decision.body.requestId, decision.itemId);
+  const requests = reviewFlowDecisionRequests(decision);
+  let failure = null;
+  try {
+    if (requests.baseline) await api(...requests.baseline);
+    await api(...requests.review);
+    state.reviewHistoryStale = true;
+  } catch (error) {
+    // No answer (network, page unloading): the request may still land, so
+    // the outbox reads the outcome back from the review queue.
+    if (error instanceof TypeError) {
+      reviewFlowSaves.sending.delete(decision.body.requestId);
+      window.setTimeout(() => reconcileReviewFlowOutbox().catch(() => {}), 1500);
+      return;
+    }
+    failure = error?.code === "review_revision_conflict" ? "a newer version is waiting" : error?.message || String(error);
+  }
+  reviewFlowSaves.sending.delete(decision.body.requestId);
+  settleReviewFlowDecision(reviewFlowOutboxRecord(decision), failure);
+}
+
+function settleReviewFlowDecision(record, failure) {
+  removeReviewFlowOutbox(record.requestId);
+  if (failure) setStatus("Not saved · " + record.path + " · " + failure);
+  const flow = currentReviewFlow();
+  if (!flow || (record.flowStartedAt && flow.startedAt !== record.flowStartedAt) || !(record.itemId in (flow.results || {}))) return false;
+  if (failure) {
+    flow.results[record.itemId] = "failed";
+    flow.failures = [...(flow.failures || []).filter((entry) => entry.path !== record.path), { path: record.path, message: failure }];
+  } else {
+    flow.results[record.itemId] = record.status === "verified" ? "accepted" : "changes";
+  }
+  saveReviewFlow();
+  renderReviewFlowBar();
+  if (flow.done) renderReviewFlowPanel();
+  return true;
+}
+
+// A save that the last page could not see end is read back from the review
+// queue: the file left it (or carries this decision) = saved; still there =
+// not saved. A "saving" left without any record ends the same way.
+async function reconcileReviewFlowOutbox() {
+  const flow = currentReviewFlow();
+  // Another open tab may still be sending its own: leave those a minute.
+  const tab = reviewFlowTabId();
+  const records = readReviewFlowOutbox().filter((record) => !reviewFlowSaves.sending.has(record.requestId)
+    && (record.tab === tab || Date.now() - Date.parse(record.at || 0) > 60_000));
+  const recorded = new Set(records.map((record) => record.itemId));
+  const sendingItems = new Set(reviewFlowSaves.sending.values());
+  if (flow) {
+    const queued = new Set([...reviewFlowSaves.unsent].map((decision) => decision.itemId));
+    for (const item of flow.items) {
+      if (flow.results[item.id] !== "saving" || recorded.has(item.id) || queued.has(item.id) || sendingItems.has(item.id)) continue;
+      records.push({ requestId: "orphan:" + item.id, flowStartedAt: flow.startedAt, itemId: item.id, projectId: item.projectId, path: item.path, status: "", expectedContentHash: item.currentHash || "" });
+    }
+  }
+  if (!records.length) return;
+  const byProject = new Map();
+  for (const record of records) byProject.set(record.projectId || "", [...(byProject.get(record.projectId || "") || []), record]);
+  const lost = [];
+  for (const [projectId, group] of byProject) {
+    let queue = null;
+    try {
+      queue = (await api("/api/docqa", projectId ? { targetProjectId: projectId } : undefined))?.queue || [];
+    } catch {}
+    for (const record of group) {
+      const live = queue?.find((entry) => entry.path === record.path) || null;
+      const decided = live?.review?.current && (record.status ? live.review.status === record.status : ["verified", "needs_changes"].includes(live.review.status));
+      let failure = null;
+      if (!queue) failure = "could not be confirmed; check the review queue";
+      else if (live && !decided) failure = live.currentHash && live.currentHash !== record.expectedContentHash ? "a newer version is waiting" : "the decision did not reach Context Room";
+      const outcome = { ...record, status: record.status || live?.review?.status || "verified" };
+      if (!settleReviewFlowDecision(outcome, failure) && failure) lost.push(record.path);
+    }
+  }
+  if (lost.length) setStatus("Not saved · " + lost.length + " review decision" + (lost.length === 1 ? "" : "s") + " from your last visit · they stay in the review queue: " + lost.join(", "));
+}
+
+// The queue counts and related links follow once the saves are done and the
+// reviewer pauses, so they never compete with opening the next file.
+function scheduleReviewFlowSavesSettled() {
+  window.clearTimeout(reviewFlowSaves.settleTimer);
+  reviewFlowSaves.settleTimer = window.setTimeout(() => {
+    if (reviewFlowSaves.pending) return;
+    const locationId = state.activeProjectLocationId;
+    workspaceUpdate("review-decided", { path: state.selected || "" });
+    api("/api/docqa").then((docqa) => {
+      if (reviewFlowSaves.pending || state.activeProjectLocationId !== locationId) return;
+      state.docqa = docqa;
+      renderReviewFlowBar();
+    }).catch(() => {});
+  }, 1500);
+}
+
+// Other decision paths end in applyReviewDecision; the flow moves on once the caller has finished.
 function noteReviewFlowDecision(path, status) {
   const flow = currentReviewFlow();
   const item = flow && !flow.done ? flow.items[flow.index] : null;
@@ -7863,8 +8129,9 @@ function finishReviewFlow({ stopped = false } = {}) {
   if (state.page !== "hub") goHub();
   renderReviewFlowPanel();
   setStatus(stopped ? "review stopped" : "review finished");
-  // The queue kept the count from before the flow: fetch the real one, then redraw the summary.
-  reloadContextHubReviewQueueOnly().then(renderReviewFlowPanel).catch(() => {});
+  // The queue kept the count from before the flow: once the queued saves are
+  // done, fetch the real one, then redraw the summary.
+  reviewFlowSaves.chain.then(reloadContextHubReviewQueueOnly).then(renderReviewFlowPanel).catch(() => {});
 }
 
 function closeReviewFlow() {
@@ -7875,7 +8142,7 @@ function closeReviewFlow() {
 }
 
 function reviewFlowCounts(flow) {
-  const counts = { accepted: 0, changes: 0, later: 0 };
+  const counts = { accepted: 0, changes: 0, later: 0, saving: 0, failed: 0 };
   for (const result of Object.values(flow.results || {})) if (result in counts) counts[result] += 1;
   return { ...counts, open: Math.max(0, flow.items.length - flow.index) };
 }
@@ -7915,6 +8182,7 @@ function renderReviewFlowBar() {
     : lever.why;
   const live = state.docqa?.queue?.find((entry) => entry.path === item.path);
   const changed = Boolean(item.currentHash && live?.currentHash && live.currentHash !== item.currentHash);
+  const failures = flow.failures || [];
   const disabled = flow.busy ? " disabled" : "";
   const accept = reviewFlowAcceptAvailable()
     ? '<button type="button" class="primary" data-review-flow="accept"' + disabled + '>Accept <kbd>A</kbd></button>' : "";
@@ -7924,12 +8192,21 @@ function renderReviewFlowBar() {
       + escapeHtml(item.projectTitle || "Project") + ' · ' + escapeHtml(lever.label) + '</div>'
     + '<p class="review-flow-why"><strong>Why</strong> ' + escapeHtml(why) + ' <strong>Effect</strong> ' + escapeHtml(lever.effect) + '</p>'
     + (changed ? '<p class="review-flow-note">Changed since this review started. You decide on the version shown.</p>' : "")
+    + reviewFlowFailuresMarkup(failures)
     + '<div class="review-flow-actions">' + accept + changes
     + '<button type="button" data-review-flow="later"' + disabled + '>Later <kbd>L</kbd></button>'
     + '<button type="button" class="quiet-button" data-review-flow="stop"' + disabled + '>Stop</button>'
     + (flow.busy ? '<span class="review-flow-busy" role="status">Saving…</span>' : "")
     + '</div>');
   bar.hidden = false;
+}
+
+function reviewFlowFailuresMarkup(failures) {
+  if (!failures.length) return "";
+  const line = (failure) => escapeHtml(failure.path) + ' · ' + escapeHtml(failure.message);
+  if (failures.length === 1) return '<p class="review-flow-note" role="alert"><strong>Not saved</strong> ' + line(failures[0]) + '. It stays in the review queue.</p>';
+  return '<details class="review-flow-note review-flow-failures" role="alert"><summary><strong>' + failures.length + ' not saved</strong> · they stay in the review queue</summary><ul>'
+    + failures.map((failure) => '<li>' + line(failure) + '</li>').join("") + '</ul></details>';
 }
 
 function renderReviewFlowPanel() {
@@ -7940,6 +8217,8 @@ function renderReviewFlowPanel() {
     const counts = reviewFlowCounts(flow);
     const separate = reviewFlowSeparateCount();
     const parts = [counts.accepted + " accepted", counts.changes + " changes requested", counts.later + " later"];
+    if (counts.saving) parts.push(counts.saving + " saving");
+    if (counts.failed) parts.push(counts.failed + " not saved");
     if (counts.open) parts.push(counts.open + " not reached");
     setReviewFlowMarkup(panel, '<strong>' + (flow.stopped ? "Review stopped" : "Review finished") + '</strong>'
       + '<p>' + escapeHtml(parts.join(" · ")) + '.</p>'
@@ -27926,8 +28205,10 @@ el("reload").addEventListener("click", () => {
   selectFile(state.selected, { pushHistory: false, fromPlanet: state.filePanel, forceReload: true }).catch((error) => setStatus(error.message));
 });
 window.addEventListener("pagehide", handleWorkspacePageHide);
+window.addEventListener("pagehide", flushUnsentReviewFlowDecisions);
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) resumeWorkspaceRuntime();
+  reconcileReviewFlowOutbox().catch(() => {});
 });
 document.addEventListener("visibilitychange", () => {
   window.clearTimeout(state.workspaceVisibilityTimer);

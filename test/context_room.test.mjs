@@ -533,7 +533,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(html, /\.context-hub-review-filter\[hidden\] \{ display: none !important; \}/);
   assert.match(script, /state\.activeProjectLocationId = "";/);
   assert.match(script, /function applyContextHubRequestedProject\(contextHub\)[\s\S]*resolveContextHubProjectSelection\([\s\S]*state\.activeProjectLocationId = requestedLocationId;/);
-  assert.match(script, /headers\.set\("x-context-room-target-project", state\.activeProjectLocationId\)/);
+  assert.match(script, /const targetLocationId = requestOptions\.targetProjectId \?\? state\.activeProjectLocationId;[\s\S]*headers\.set\("x-context-room-target-project", targetLocationId\)/);
   assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*assignWorkspaceLocation\(target\.toString\(\)\)/);
   assert.match(script, /function currentContextRoomProject\(\)[\s\S]*project\.current[\s\S]*hub\.currentProjectId/);
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
