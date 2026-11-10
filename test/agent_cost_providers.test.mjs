@@ -22,6 +22,11 @@ function lab(t) {
   spawnSync("git", ["init", "-q"], { cwd: root });
   const env = { ...process.env, HOME: home, CONTEXT_ROOM_HUB_HOME: path.join(temp, "hub"), CONTEXT_ROOM_SHARED_HOME: path.join(temp, "shared"), CONTEXT_ROOM_REVIEW_AUTHORITY_HOME: path.join(temp, "ra") };
   delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME;
+  // A Claude Code version that loads AGENTS.md, first on PATH, so the result never depends on the machine's own install.
+  fs.mkdirSync(path.join(temp, "bin")); fs.mkdirSync(path.join(temp, "versions"));
+  fs.writeFileSync(path.join(temp, "versions/9.9.9"), "");
+  fs.symlinkSync(path.join(temp, "versions/9.9.9"), path.join(temp, "bin/claude"));
+  env.PATH = `${path.join(temp, "bin")}${path.delimiter}${env.PATH || ""}`;
   let run;
   run = (args, extra = {}) => spawnSync(process.execPath, [cli, ...args, "--root", root], { encoding: "utf8", env: { ...env, ...extra }, cwd: root });
   const effective = (provider, extra) => { const r = run(["context", "effective", "--provider", provider], extra); assert.equal(r.status, 0, r.stderr + r.stdout); return JSON.parse(r.stdout).data; };
@@ -61,6 +66,16 @@ test("a file reached by two resources is counted once at startup", () => {
   const entry = (id, scope) => ({ resource: { id, kind: "instruction", metadata: { absolutePath: file } }, application: { status: "active", scope } });
   const effective = { coordinate: { provider: "claude-code" }, instructions: [entry("local", "project"), entry("shared", "context-room")], skills: [], hooks: [], providerConfigs: [], mcpServers: [], unknown: [] };
   const single = contextCost({ ...effective, instructions: [entry("local", "project")] }, { root: process.cwd() });
+  const double = contextCost(effective, { root: process.cwd() });
+  assert.equal(double.startup.tokens, single.startup.tokens);
+  assert.equal(double.startup.resources, 1);
+});
+
+test("a Shared link that is still uncertain does not count the local AGENTS.md twice", () => {
+  const file = path.resolve("AGENTS.md");
+  const entry = (id, status) => ({ resource: { id, kind: "instruction", metadata: { absolutePath: file } }, application: { status, scope: "project" } });
+  const effective = { coordinate: { provider: "claude-code" }, instructions: [entry("local", "active"), entry("shared", "uncertain")], skills: [], hooks: [], providerConfigs: [], mcpServers: [], unknown: [] };
+  const single = contextCost({ ...effective, instructions: [entry("local", "active")] }, { root: process.cwd() });
   const double = contextCost(effective, { root: process.cwd() });
   assert.equal(double.startup.tokens, single.startup.tokens);
   assert.equal(double.startup.resources, 1);
