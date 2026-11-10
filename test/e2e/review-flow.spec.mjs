@@ -195,3 +195,32 @@ test('@smoke review flow pagehide sends the review even when the base never answ
   holdOpen = false;
   for (const request of hung.splice(0)) await request.abort().catch(() => {});
 });
+
+// Coming back to the window (focus, page restore) reads the reports from the
+// server cache, which writes, the file watcher and its TTL keep current. The
+// full recompute (`?fresh=1`, 1 to 2 s on a 500-file queue) is not sent again.
+test('@smoke review flow focus refreshes reports without a full recompute', async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  const bar = page.locator('#reviewFlowBar');
+  await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
+  await page.keyboard.press('l');
+  await expect(bar).toContainText(/^2 of \d+/, { timeout: 30_000 });
+  await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
+
+  const reports = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/reports') reports.push(url.search);
+  });
+  for (let round = 0; round < 3; round += 1) {
+    await page.evaluate(() => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')); });
+    await page.waitForTimeout(400);
+  }
+  await expect.poll(() => reports.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(reports.filter((search) => search.includes('fresh=1'))).toEqual([]);
+  await bar.locator('[data-review-flow="stop"]').click();
+});

@@ -10651,7 +10651,13 @@ export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false }
   return {
     generatedAt: report.generatedAt,
     summary: report.summary,
-    queue: report.queue.map((item) => ({
+    queue: agentReviewQueueItems(report.queue),
+    note: "Read-only queue. Human verification must happen in the Context Room webapp.",
+  };
+}
+
+function agentReviewQueueItems(queue = []) {
+  return queue.map((item) => ({
       path: item.path,
       oldPath: item.oldPath || null,
       label: item.label,
@@ -10667,9 +10673,7 @@ export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false }
       currentHash: item.currentHash || "",
       dependencyVersions: item.dependencyVersions || {},
       dependencyChanges: item.dependencyChanges || [],
-    })),
-    note: "Read-only queue. Human verification must happen in the Context Room webapp.",
-  };
+  }));
 }
 
 function defaultCollaborationSessionState(root) {
@@ -17938,9 +17942,25 @@ export function contextHubAttentionItems(root, requestedId = "") {
   let healthIssues = [];
   let freshness = [];
   if (selection.worktree?.root && selection.worktree.available !== false) {
-    const report = buildContextRoomDoctorReport(selection.worktree.root, { readOnly: true });
-    healthIssues = report.issues || [];
-    freshness = (buildAgentReviewQueue(selection.worktree.root, { readOnly: true }).queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    const worktreeRoot = selection.worktree.root;
+    // One snapshot (Git HEAD read in one batch) serves the health check and the
+    // freshness queue, as in the reports: no `git show` per modified file, twice.
+    let snapshot = null;
+    try {
+      snapshot = readDocQaSnapshot(worktreeRoot, { readOnly: true });
+    } catch {}
+    if (snapshot) {
+      const { settings, files, gitEntries, startupFiles } = snapshot;
+      const docqa = buildDocQaReportFromSnapshot(worktreeRoot, snapshot, { readOnly: true });
+      const gitStatuses = new Map([...gitEntries.entries()].map(([rel, entry]) => [rel, entry.status]));
+      const startupHooks = listStartupHookFiles(worktreeRoot, settings);
+      const graph = buildDocumentationGraph(worktreeRoot, { settings, files, gitStatuses, startupFiles, startupHooks, readOnly: true });
+      healthIssues = buildContextRoomDoctorReport(worktreeRoot, { settings, graph, docqa, readOnly: true }).issues || [];
+      freshness = agentReviewQueueItems(docqa.queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    } else {
+      healthIssues = buildContextRoomDoctorReport(worktreeRoot, { readOnly: true }).issues || [];
+      freshness = (buildAgentReviewQueue(worktreeRoot, { readOnly: true }).queue || []).filter((item) => item.reviewReason === "dependency-changed");
+    }
   }
   const decisions = (state.proposals || []).filter((proposal) => (
     (!selection.project || contextHubProposalMatchesProject(proposal, selection.project))

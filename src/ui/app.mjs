@@ -4109,6 +4109,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.localForegroundRefreshTimer = null;
 	state.localForegroundRefreshBackground = false;
 	state.localForegroundRefreshForceReports = false;
+	state.localForegroundRefreshReportsNow = false;
 	state.backgroundRefreshController = null;
 	state.workspacePresenceControllers = new Set();
 	state.workspacePresenceActive = null;
@@ -14812,12 +14813,16 @@ function quiesceWorkspaceBackgroundActivity() {
   state.localForegroundRefreshTimer = null;
   state.localForegroundRefreshBackground = false;
   state.localForegroundRefreshForceReports = false;
+  state.localForegroundRefreshReportsNow = false;
 }
 
+// Focus and page restore ask for the reports now, but from the server cache: the
+// file watcher, every mutating request and the cache TTL already keep it current.
+// The fresh=1 query (a full recompute) stays for decisions, runtime invalidations and user asks.
 function scheduleWorkspaceResumeRefresh(source = "page-restore") {
   if (IS_HOSTED_REVIEW) scheduleHostedReviewRefresh();
   else if (IS_HOSTED_HUB) scheduleRuntimeContextHubRefresh({ data: { source } });
-  else scheduleLocalForegroundRefresh({ background: true, forceReports: true });
+  else scheduleLocalForegroundRefresh({ background: true, reportsNow: true });
 }
 
 function settleWorkspaceUnload(outcome) {
@@ -26585,20 +26590,23 @@ async function refreshFromDisk() {
   }
 }
 
-function scheduleLocalForegroundRefresh({ background = false, forceReports = false } = {}) {
+function scheduleLocalForegroundRefresh({ background = false, forceReports = false, reportsNow = false } = {}) {
   if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM || document.hidden) return;
   state.localForegroundRefreshBackground = Boolean(state.localForegroundRefreshBackground || background);
   state.localForegroundRefreshForceReports = Boolean(state.localForegroundRefreshForceReports || forceReports);
+  state.localForegroundRefreshReportsNow = Boolean(state.localForegroundRefreshReportsNow || reportsNow);
   if (state.localForegroundRefreshTimer) return;
   state.localForegroundRefreshTimer = window.setTimeout(() => {
     state.localForegroundRefreshTimer = null;
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || document.hidden) return;
     const refreshBackground = state.localForegroundRefreshBackground;
     const refreshReports = state.localForegroundRefreshForceReports;
+    const reportsNow = state.localForegroundRefreshReportsNow;
     state.localForegroundRefreshBackground = false;
     state.localForegroundRefreshForceReports = false;
+    state.localForegroundRefreshReportsNow = false;
     if (state.selected) refreshFromDisk().catch(() => {});
-    if (refreshBackground) scheduleBackgroundRefresh({ forceReports: refreshReports });
+    if (refreshBackground) scheduleBackgroundRefresh({ forceReports: refreshReports, reportsNow });
   }, 50);
 }
 
@@ -26608,6 +26616,7 @@ function scheduleBackgroundRefresh(options = {}) {
   const pending = state.backgroundRefreshPendingOptions || {};
   state.backgroundRefreshPendingOptions = {
     forceReports: Boolean(pending.forceReports || options.forceReports),
+    reportsNow: Boolean(pending.reportsNow || options.reportsNow),
     forceFull: Boolean(pending.forceFull || options.forceFull),
   };
   if (state.backgroundRefreshTimer || state.reportsRefreshInFlight) return;
@@ -26648,7 +26657,7 @@ async function refreshBackgroundReports(options = {}) {
   const now = Date.now();
   const reportInterval = state.selected ? 30_000 : 15_000;
   const fullInterval = state.selected ? 60_000 : 30_000;
-  const shouldRefreshReports = options.forceReports || now - (state.lastReportRefreshAt || 0) >= reportInterval;
+  const shouldRefreshReports = options.forceReports || options.reportsNow || now - (state.lastReportRefreshAt || 0) >= reportInterval;
   const shouldRefreshFull = options.forceFull || now - (state.lastFullRefreshAt || 0) >= fullInterval;
   if (!shouldRefreshReports && !shouldRefreshFull) return;
   state.reportsRefreshInFlight = true;
