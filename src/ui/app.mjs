@@ -21565,7 +21565,7 @@ function renderViewer() {
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
   const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
-    ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "")
+    ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "") + reviewDocumentChecksMarkup(externalChange.documentChecks)
     : "";
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
@@ -23914,6 +23914,16 @@ function reviewRiskNoticeMarkup(beforeText, afterText) {
   return '<details class="issue review-risk-notice" data-review-risk><summary><strong>Check before accepting</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + shown + more + '</ul></details>';
 }
 
+// Deterministic documentation warnings for this version: added dead links, likely duplicate. Never a block.
+function reviewDocumentChecksMarkup(checks) {
+  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc"].includes(item.type)) : [];
+  if (!list.length) return "";
+  const links = list.filter((item) => item.type === "dead_link").length;
+  const summary = [links ? links + " new dead link" + (links === 1 ? "" : "s") : "", list.some((item) => item.type === "duplicate_doc") ? "likely duplicate" : ""].filter(Boolean).join(" · ");
+  const rows = list.slice(0, 8).map((item) => '<li data-review-doc-check="' + escapeHtml(item.type) + '">' + (item.type === "dead_link" ? '<span>Line ' + escapeHtml(String(item.line)) + '</span> ' : '') + escapeHtml(item.message) + '</li>').join("");
+  return '<details class="issue review-risk-notice" data-review-doc-checks open><summary><strong>Documentation checks</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + rows + '</ul><p class="muted">A warning: you can still accept.</p></details>';
+}
+
 function renderExternalReviewDocument(beforeText, afterText) {
   const change = activeExternalChange();
   const blocks = buildExternalReviewBlocks(beforeText, afterText, change?.reviewDecisions || {});
@@ -25837,6 +25847,7 @@ function applyChangedFileInlineReview(path, diff, review, requestId = state.sele
     diskHash: review.currentHash || state.savedHash,
     diskUpdatedAt: "",
     changeKind: review.changeKind || "modified",
+    documentChecks: Array.isArray(review.documentChecks) ? review.documentChecks : [],
     reviewDecisions,
   };
   state.saved = state.externalChange.diskContent;

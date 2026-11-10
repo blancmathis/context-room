@@ -114,7 +114,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
-import { analyzeDocumentTidiness, readGitDocumentHistory, preReviewDocumentChecks } from "./doc_tidy.mjs";
+import { analyzeDocumentTidiness, readGitDocumentHistory, preReviewDocumentChecks, reviewVersionChecks } from "./doc_tidy.mjs";
 import { TIDY_SKILLS, tidyOrder } from "./doc_tidy_orders.mjs";
 import {
   assertFreshGitHubAppCredential,
@@ -8307,6 +8307,53 @@ export function localProposalDocumentChecks(root, id) {
   return preReviewDocumentChecks({ root, docs,
     exists: (rel) => kinds.get(rel) !== "deleted" && (fs.existsSync(inProposal(rel)) || fs.existsSync(path.join(root, rel))),
     readText: (rel) => fs.readFileSync(source(rel), "utf8") });
+}
+
+// Markdown documents of the project as they are on disk, for advisory review checks.
+// overrides: Map(path → content, or null for a document that the reviewed version removes).
+const REVIEW_CHECK_MAX_BYTES = 512 * 1024;
+function reviewDocumentCorpus(root, overrides = new Map()) {
+  const docs = [];
+  for (const file of listMemoryFiles(root, { readOnly: true, metadataOnly: true })) {
+    if (!/\.md$/i.test(file.path || "") || resolveExternalPath(file.path) || overrides.has(file.path)) continue;
+    try {
+      const absolutePath = path.join(root, file.path);
+      const stats = fs.statSync(absolutePath);
+      if (stats.isFile() && stats.size <= REVIEW_CHECK_MAX_BYTES) docs.push({ path: file.path, content: fs.readFileSync(absolutePath, "utf8") });
+    } catch {}
+  }
+  for (const [rel, content] of overrides) if (typeof content === "string") docs.push({ path: rel, content });
+  return docs;
+}
+
+// While a human reviews one changed file: dead links this version adds, and a likely duplicate.
+// Warnings only; a failure here never hides or blocks the review.
+export function withReviewDocumentChecks(root, review) {
+  if (!review?.available || review.changeKind === "deleted" || !/\.md$/i.test(review.path || "")) return review;
+  let documentChecks = [];
+  try {
+    documentChecks = reviewVersionChecks({ root, path: review.path, before: review.changeKind === "added" ? null : review.baseContent,
+      after: review.currentContent, others: reviewDocumentCorpus(root) });
+  } catch {}
+  return { ...review, documentChecks };
+}
+
+// The same warnings for one file of a local proposal, with the proposal's other files as they would land.
+export function localProposalFileDocumentChecks(root, id, file) {
+  if (!/\.md$/i.test(file?.path || "") || !file.afterBytes) return [];
+  try {
+    const proposal = inspectLocalProposal(root, id);
+    const kinds = new Map(proposal.changes.map((change) => [change.path, change.kind]));
+    const inProposal = (rel) => path.join(proposal.editRoot, rel);
+    const overrides = new Map(proposal.changes.filter((change) => /\.md$/i.test(change.path)).map((change) => [change.path,
+      change.kind === "deleted" ? null : readLocalProposalFile(root, id, change.path).afterBytes.toString("utf8")]));
+    return reviewVersionChecks({ root, path: file.path, before: file.beforeBytes ? file.beforeBytes.toString("utf8") : null,
+      after: file.afterBytes.toString("utf8"), others: reviewDocumentCorpus(root, overrides),
+      exists: (rel) => kinds.get(rel) !== "deleted" && (fs.existsSync(inProposal(rel)) || fs.existsSync(path.join(root, rel))),
+      readText: (rel) => fs.readFileSync(fs.existsSync(inProposal(rel)) ? inProposal(rel) : path.join(root, rel), "utf8") });
+  } catch {
+    return [];
+  }
 }
 
 export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {
@@ -24988,7 +25035,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-file") {
     const file = readLocalProposalFile(root, url.searchParams.get("proposal"), url.searchParams.get("path"));
     const { beforeBytes, afterBytes, ...metadata } = file;
-    sendJson(res, 200, { ...metadata, beforeBase64: beforeBytes?.toString("base64") ?? null, afterBase64: afterBytes?.toString("base64") ?? null });
+    sendJson(res, 200, { ...metadata, beforeBase64: beforeBytes?.toString("base64") ?? null, afterBase64: afterBytes?.toString("base64") ?? null,
+      documentChecks: localProposalFileDocumentChecks(root, url.searchParams.get("proposal"), file) });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-blocks") {

@@ -5,6 +5,7 @@ import {
   contextHubUiState,
   readFileDiff,
   readReviewBaseFile,
+  withReviewDocumentChecks,
 } from "./context_room.mjs";
 
 function runTask(task, root, payload = {}) {
@@ -18,7 +19,7 @@ function runTask(task, root, payload = {}) {
     throw new Error("Hosted Shared repository refresh requires the supervised process transport");
   }
   if (task === "file-diff") return readFileDiff(root, payload.path || "", { readOnly: true });
-  if (task === "review-base") return readReviewBaseFile(root, payload.path || "", { readOnly: true });
+  if (task === "review-base") return withReviewDocumentChecks(root, readReviewBaseFile(root, payload.path || "", { readOnly: true }));
   throw new Error(`Unknown background task: ${task}`);
 }
 

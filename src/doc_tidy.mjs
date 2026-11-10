@@ -15,6 +15,9 @@ export const DOC_TIDY_LIMITS = Object.freeze({
   // Deleted lines below 1/8 of added lines: the file only grows.
   logMaxDeletedRatio: 0.125,
   findingsPerDocument: 20,
+  // Likely duplicate document: word 3-grams, Jaccard similarity of the two sets.
+  duplicateDocMinShingles: 40,
+  duplicateDocMinSimilarity: 0.5,
 });
 
 export const DOC_TIDY_RULES = Object.freeze({
@@ -22,6 +25,7 @@ export const DOC_TIDY_RULES = Object.freeze({
   doc_not_in_map: "Every document under docs/ is listed in docs/index.md, directly or through a listed index.",
   dead_link: "A relative Markdown link points to an existing file and, with #section, to an existing heading.",
   duplicate_block: "A block of text lives in one document; other documents link to it.",
+  duplicate_doc: "A document that repeats most of another document is likely a duplicate: keep one, link to it.",
   log_in_state_doc: "State is rewritten, a log is appended: a state document that only grows holds a log.",
   missing_summary: "A document longer than 3,000 characters opens with a short summary.",
 });
@@ -158,6 +162,69 @@ export function readGitDocumentHistory(root, relPath, { commits = DOC_TIDY_LIMIT
   }
 }
 
+// Distinct word 3-grams (hashed) of the prose: front matter and code are ignored.
+const shingleCache = new Map();
+function shingles(content = "") {
+  const key = String(content);
+  const cached = shingleCache.get(key);
+  if (cached) return cached;
+  const words = maskCode(stripFrontMatter(key).body).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const set = new Set();
+  for (let index = 0; index + 2 < words.length; index += 1) {
+    let hash = 0x811c9dc5;
+    for (const char of words[index] + " " + words[index + 1] + " " + words[index + 2]) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193);
+    set.add(hash >>> 0);
+  }
+  if (shingleCache.size >= 4000) shingleCache.delete(shingleCache.keys().next().value);
+  shingleCache.set(key, set);
+  return set;
+}
+
+// docs: [{ path, content }]. One finding per likely duplicate, on the focus document when given,
+// else on the smaller one (later path on a tie), naming the most similar other document.
+export function likelyDuplicateDocuments(docs = [], { focus = null } = {}) {
+  const entries = docs
+    .filter((doc) => /\.md$/i.test(doc.path || "") && typeof doc.content === "string")
+    .map((doc) => ({ path: normalizeRel(doc.path), set: shingles(doc.content) }))
+    .filter((entry) => entry.set.size >= DOC_TIDY_LIMITS.duplicateDocMinShingles);
+  const focusPath = focus ? normalizeRel(focus) : null;
+  // Inverted index over rare 3-grams only: shared boilerplate does not create candidates.
+  const common = Math.max(12, Math.ceil(entries.length * 0.05));
+  const postings = new Map();
+  entries.forEach((entry, index) => { for (const hash of entry.set) { const list = postings.get(hash); if (list) list.push(index); else postings.set(hash, [index]); } });
+  const best = new Map();
+  const consider = (left, right) => {
+    const small = left.set.size <= right.set.size ? left : right, large = small === left ? right : left;
+    let shared = 0;
+    for (const hash of small.set) if (large.set.has(hash)) shared += 1;
+    const similarity = shared / (left.set.size + right.set.size - shared);
+    if (similarity < DOC_TIDY_LIMITS.duplicateDocMinSimilarity) return;
+    const tie = left.set.size === right.set.size;
+    const reported = focusPath ? (left.path === focusPath ? left : right.path === focusPath ? right : null)
+      : tie ? (left.path.localeCompare(right.path, "en") > 0 ? left : right) : small;
+    if (!reported) return;
+    const other = reported === left ? right : left;
+    const current = best.get(reported.path);
+    if (!current || similarity > current.similarity) best.set(reported.path, { other: other.path, similarity });
+  };
+  const sources = focusPath ? entries.map((entry, index) => [entry, index]).filter(([entry]) => entry.path === focusPath) : entries.map((entry, index) => [entry, index]);
+  for (const [entry, index] of sources) {
+    const counts = new Map();
+    for (const hash of entry.set) {
+      const list = postings.get(hash);
+      if (list.length > common) continue;
+      for (const other of list) if (focusPath ? other !== index : other > index) counts.set(other, (counts.get(other) || 0) + 1);
+    }
+    for (const [other, count] of counts) {
+      const candidate = entries[other];
+      if (candidate.path === entry.path) continue;
+      if (count >= DOC_TIDY_LIMITS.duplicateDocMinSimilarity * Math.min(entry.set.size, candidate.set.size) * 0.5) consider(entry, candidate);
+    }
+  }
+  return [...best].sort(([left], [right]) => left.localeCompare(right, "en")).map(([docPath, { other, similarity }]) =>
+    finding("duplicate_doc", docPath, 1, other, "Likely duplicate of " + other + " (" + Math.round(similarity * 100) + "% of word sequences shared). Keep one document and link to it."));
+}
+
 function finding(type, docPath, line, evidence, message, severity = "low") {
   return { type, severity, path: docPath, line, rule: DOC_TIDY_RULES[type], evidence, message };
 }
@@ -200,6 +267,8 @@ export function analyzeDocumentTidiness({
     }
   }
 
+  const duplicateDocs = likelyDuplicateDocuments(markdown);
+  const duplicatePairs = new Set(duplicateDocs.flatMap((item) => [item.path + "\n" + item.evidence, item.evidence + "\n" + item.path]));
   const blockOwners = new Map();
   for (const doc of [...markdown].sort((left, right) => left.path.localeCompare(right.path, "en"))) {
     const size = doc.content.length;
@@ -239,7 +308,9 @@ export function analyzeDocumentTidiness({
         duplicates.get(owner.path).count += 1;
       }
     }
+    for (const item of duplicateDocs) if (item.path === doc.path) add(item);
     for (const [ownerPath, duplicate] of duplicates) {
+      if (duplicatePairs.has(doc.path + "\n" + ownerPath)) continue;
       add(finding("duplicate_block", doc.path, duplicate.line, ownerPath + ":" + duplicate.ownerLine,
         duplicate.count + " block" + (duplicate.count === 1 ? "" : "s") + " duplicated from " + ownerPath + " (first at line " + duplicate.ownerLine + "). Keep one copy and link to it."));
     }
@@ -279,4 +350,25 @@ export function preReviewDocumentChecks(options = {}) {
   if (!changed.size) return [];
   const { findings } = analyzeDocumentTidiness({ ...options, history: () => null });
   return findings.filter((finding) => PRE_REVIEW_CHECKS.includes(finding.type) && changed.has(finding.path));
+}
+
+// While a human reviews one version of a document: the dead links this version adds
+// (compared with the version it replaces) and a likely duplicate among the other documents.
+// Advisory only: it never blocks or decides a review.
+export function reviewVersionChecks({ root = process.cwd(), path: docPath = "", before = null, after = null, others = [], exists, readText } = {}) {
+  const rel = normalizeRel(docPath);
+  if (!/\.md$/i.test(rel) || typeof after !== "string") return [];
+  const options = { root, history: () => null, ...(exists ? { exists } : {}), ...(readText ? { readText } : {}) };
+  const deadLinks = (content) => typeof content === "string"
+    ? analyzeDocumentTidiness({ ...options, docs: [{ path: rel, content }] }).findings.filter((item) => item.type === "dead_link" && item.path === rel)
+    : [];
+  const previous = new Map();
+  for (const item of deadLinks(before)) previous.set(item.message, (previous.get(item.message) || 0) + 1);
+  const added = deadLinks(after).filter((item) => {
+    const count = previous.get(item.message) || 0;
+    if (count) previous.set(item.message, count - 1);
+    return !count;
+  });
+  const duplicate = likelyDuplicateDocuments([{ path: rel, content: after }, ...others.filter((doc) => normalizeRel(doc.path || "") !== rel)], { focus: rel });
+  return [...added, ...duplicate];
 }

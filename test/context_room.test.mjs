@@ -9233,6 +9233,7 @@ test("local proposal HTTP review stays human-owned and accepts only the correcte
   assert.equal(rebased.status, 200, JSON.stringify(rebasedBody));
   const fileView = await (await fetch(base + `/api/docqa/local-proposal-file?proposal=${draft.id}&path=docs/delete.md`)).json();
   assert.equal(Buffer.from(fileView.beforeBase64, "base64").toString("utf8"), "# Edited by hand\n");
+  assert.deepEqual(fileView.documentChecks, []);
   const accepted = await fetch(base + "/api/docqa/local-proposal-decision", { method: "POST", headers: owner, body: JSON.stringify({ proposal: draft.id, path: "docs/delete.md", decision: "accepted", expectedRevision: rebasedBody.revision }) });
   assert.equal(accepted.status, 200, await accepted.text());
   assert.equal(fs.readFileSync(path.join(root, "docs/delete.md"), "utf8"), "# Delete\nOther proposal.\n");

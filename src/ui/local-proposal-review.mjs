@@ -46,6 +46,8 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     .local-proposal-review footer { justify-content: flex-end; margin-top: 20px; position: sticky; bottom: 0; z-index: 1; padding-block: 10px; background: var(--surface-floating, #252526); }
     .local-proposal-review [role=status] { min-height: 24px; margin-top: 12px; color: var(--muted, #9a9a9a); }
     .local-proposal-review .local-proposal-blocks { margin-bottom: 20px; }
+    .local-proposal-review .local-proposal-checks { margin-bottom: 20px; padding: 12px 16px; border: 2px solid currentColor; border-radius: 12px; }
+    .local-proposal-review .local-proposal-checks ul { margin: 8px 0 0; padding-left: 20px; }
     .local-proposal-review .local-proposal-blocks p { margin: 0 0 8px; color: var(--muted, #9a9a9a); }
     .local-proposal-review .local-proposal-blocks h4 { margin: 12px 0 8px; font-size: 14px; }
     .local-proposal-review .local-proposal-blocks pre { min-height: 0; max-height: 30dvh; margin-bottom: 8px; border-left: 4px solid var(--muted, #9a9a9a); }
@@ -61,11 +63,15 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   const blocksPanel = element("section", "", "local-proposal-blocks");
   blocksPanel.setAttribute("aria-label", "Block check");
   blocksPanel.hidden = true;
+  // Documentation warnings for the proposed version (added dead links, likely duplicate). Never a block.
+  const checksPanel = element("section", "", "local-proposal-checks");
+  checksPanel.setAttribute("aria-label", "Documentation checks");
+  checksPanel.hidden = true;
   const versions = element("div", "", "local-proposal-versions");
   const status = element("div");
   status.setAttribute("role", "status");
   const footer = element("footer");
-  dialog.append(header, nav, blocksPanel, versions, status, footer);
+  dialog.append(header, nav, checksPanel, blocksPanel, versions, status, footer);
   document.body.append(dialog);
   let objectUrls = [];
   let viewers = [];
@@ -245,6 +251,16 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     }
   }
 
+  function renderChecks(checks) {
+    const list = Array.isArray(checks) ? checks.filter((check) => ["dead_link", "duplicate_doc"].includes(check?.type)) : [];
+    checksPanel.replaceChildren();
+    checksPanel.hidden = !list.length;
+    if (!list.length) return;
+    const items = element("ul");
+    items.append(...list.slice(0, 8).map((check) => element("li", check.type === "dead_link" ? `Line ${check.line}: ${check.message}` : check.message)));
+    checksPanel.append(element("h3", "Documentation checks"), items, element("p", "A warning: you can still accept."));
+  }
+
   function renderNavigation() {
     nav.replaceChildren();
     for (const file of files) {
@@ -279,6 +295,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       const map = await blockMap;
       if (serial !== requestId || !dialog.isConnected) return;
       renderBlocks(map, file);
+      renderChecks(file.documentChecks);
       const accept = element("button", "Accept file", "file-action primary");
       const reject = element("button", "Reject file", "file-action danger-action");
       const undo = element("button", "Undo correction", "quiet-button");

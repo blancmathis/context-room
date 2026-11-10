@@ -7,10 +7,10 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks, localProposalFileDocumentChecks, withReviewDocumentChecks, readReviewBaseFile } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
-import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
+import { inspectLocalProposal, readLocalProposalBlockMap, readLocalProposalFile } from "../src/local_proposals.mjs";
 import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation, readDocumentation, estimateTokens } from "../src/documentation.mjs";
 import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
 import { DOC_TIDY_RULES } from "../src/doc_tidy.mjs";
@@ -255,7 +255,7 @@ test("block map shows only removed and rewritten blocks when a status file is sp
 });
 
 test("docs tidy turns each finding into a short deterministic order for the user's agent", (t) => {
-  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", log_in_state_doc: "git", missing_summary: "first block" };
+  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", duplicate_doc: "docs/owner.md", log_in_state_doc: "git", missing_summary: "first block" };
   for (const type of Object.keys(DOC_TIDY_RULES)) {
     const order = tidyOrder({ type, path: "docs/state.md", line: 3, rule: DOC_TIDY_RULES[type], evidence: evidence[type], message: `${type} message` });
     const lines = order.text.split("\n");
@@ -441,4 +441,27 @@ test("the documentation navigation follows the accepted index and keeps other do
   assert.deepEqual(filed.unfiled, []);
   assert.equal(filed.sequence.at(-1).path, "docs/a.md");
   assert.ok(fs.existsSync(path.join(root, "docs/a.md")), "filing never moves the file");
+});
+
+test("review shows the dead links a version adds and a likely duplicate, as warnings only", (t) => {
+  const root = fixture(t);
+  let seed = 17;
+  const words = "agent backup branch cache check client commit config cursor deploy device disk draft error event field folder graph guard hash index issue journal label layer limit link lock merge model module node note offset owner page panel patch path policy port queue range record release report retry review route rule schema scope search server session skill state status store table task thread token trace update user value version view watch worker".split(" ");
+  const article = Array.from({ length: 10 }, () => Array.from({ length: 30 }, () => words[(seed = (seed * 1103515245 + 12345) >>> 0) % words.length]).join(" ") + ".").join("\n\n");
+  fs.writeFileSync(path.join(root, "docs/deploy.md"), "# Deploy\n\n" + article + "\n");
+  writeDocReviewDecision(root, "docs/deploy.md", { status: "verified" });
+  const proposal = createLocalDocumentationProposal(root, { title: "Add a guide" });
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/guide.md"), "# Guide\n\n" + article + "\n\nSee [b](b.md).\n");
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/a.md"), "# a\n\nAccepted a. See [gone](gone.md) and [b](b.md#nowhere).\n");
+  submitLocalDocumentationProposal(root, proposal.id);
+  const checks = (rel) => localProposalFileDocumentChecks(root, proposal.id, readLocalProposalFile(root, proposal.id, rel)).map((item) => [item.type, item.evidence]);
+  assert.deepEqual(checks("docs/a.md"), [["dead_link", "gone.md"], ["dead_link", "b.md#nowhere"]]);
+  assert.deepEqual(checks("docs/guide.md"), [["duplicate_doc", "docs/deploy.md"]]);
+
+  // A direct edit in the project: links already dead before are not repeated.
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nAccepted b. New [missing](missing.md).\n");
+  const review = withReviewDocumentChecks(root, readReviewBaseFile(root, "docs/b.md", { readOnly: true }));
+  assert.equal(review.available, true);
+  assert.deepEqual(review.documentChecks.map((item) => [item.type, item.evidence]), [["dead_link", "missing.md"]]);
+  assert.equal(inspectLocalProposal(root, proposal.id).status, "submitted", "checks never decide");
 });
