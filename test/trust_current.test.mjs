@@ -212,7 +212,24 @@ test("a trust of 2 000 files of 15 KB splits its baseline into parts under the b
   const reviews = readDocReviewState(root).reviews;
   assert.equal(new Set(Object.values(reviews).map((entry) => entry.baselinePath)).size, parts.length);
   // Every entry reads its accepted text back from its own part.
-  assert.equal(buildDocQaReport(root).summary.needsReview, 0);
+  const controlFiles = [".context-room/review-state.json", ".context-room/review-ledger.json"].map((rel) => path.join(root, rel));
+  const controlSnapshot = () => controlFiles.map((file) => {
+    const stat = fs.statSync(file);
+    return [file, stat.ino, stat.size, stat.mtimeMs, fs.readFileSync(file, "utf8")];
+  });
+  const beforeReports = controlSnapshot();
+  const comparable = (report) => JSON.stringify({ ...report, generatedAt: null });
+  const readOnlyReport = buildDocQaReport(root, { readOnly: true });
+  const startedAt = Date.now();
+  const firstReport = buildDocQaReport(root);
+  const firstMs = Date.now() - startedAt;
+  const secondReport = buildDocQaReport(root);
+  assert.equal(firstReport.summary.needsReview, 0);
+  // The writable report gives the read-only result, file by file, and writes nothing when nothing differs.
+  assert.equal(comparable(firstReport), comparable(readOnlyReport));
+  assert.equal(comparable(secondReport), comparable(firstReport));
+  assert.deepEqual(controlSnapshot(), beforeReports, "a report with nothing to migrate writes no control file");
+  assert.ok(firstMs < 30_000, `writable report took ${firstMs} ms`);
   // A later single decision, then the undo of the whole trust.
   fs.writeFileSync(path.join(root, "docs", "later.md"), "# Later\n", "utf8");
   writeDocReviewDecision(root, "docs/later.md", { status: "verified", receiptSource: "file-review" });
@@ -241,4 +258,32 @@ test("more files than one trust can take are refused at the list, with a plain s
     assert.match(error.message, /smaller folder/);
     return true;
   });
+});
+
+test("a trust list of long paths above the command-line limit still reads the Git index", () => {
+  const root = makeProject("trust-long-paths");
+  // About 4 900 paths of ~420 characters: more than 2 MB of Git arguments in one command.
+  const folder = path.join("docs", ...Array.from({ length: 4 }, (_, index) => `${"long-folder-name-".repeat(5)}${index}`));
+  fs.mkdirSync(path.join(root, folder), { recursive: true });
+  const names = Array.from({ length: 4_900 }, (_, index) => path.join(folder, `${"a-long-document-name-".repeat(3)}${String(index).padStart(4, "0")}.md`));
+  for (const name of names) fs.writeFileSync(path.join(root, name), "# x\n", "utf8");
+  assert.ok(names.reduce((sum, name) => sum + name.length + 1, 0) > 2_000_000);
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore", env: gitEnv });
+  const preview = previewTrustCurrentDocVersions(root);
+  assert.equal(preview.offered, true, preview.reason);
+  assert.equal(preview.count, names.length + DOCS.length);
+});
+
+test("a temporary part left by a crashed writer is removed at the next trust", () => {
+  const root = makeProject("trust-stale-tmp");
+  const bundlesDir = path.join(root, ".context-room", "review-baselines", ".bundles");
+  fs.mkdirSync(bundlesDir, { recursive: true });
+  const stale = path.join(bundlesDir, `.context-room-review-4242-${"ab".repeat(12)}.tmp`);
+  const other = path.join(bundlesDir, "keep-me.tmp");
+  fs.writeFileSync(stale, "{\"version\":1,", "utf8");
+  fs.writeFileSync(other, "x", "utf8");
+  const preview = previewTrustCurrentDocVersions(root);
+  trustCurrentDocVersions(root, { items: preview.items });
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(other), true, "only the writer's own temporary names are removed");
 });
