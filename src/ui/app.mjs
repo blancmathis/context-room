@@ -7530,9 +7530,9 @@ function renderExplorerViewPanel() {
       else if (event.target.closest("[data-explorer-home]")) setHomeExplorer(false);
       else if (event.target.closest("[data-context-hub-project-goto]")) openContextHubProjectPicker(null, { purpose: "open" });
       else if (event.target.closest("[data-trust-current]")) {
-        const key = event.target.closest("[data-trust-current]").dataset.projectKey;
-        const project = (state.contextHub?.projects || []).find((item) => item.projectKey === key);
-        if (project) void showTrustCurrentVersionsDialog(worktreeId(project), project.title);
+        const trigger = event.target.closest("[data-trust-current]");
+        const project = (state.contextHub?.projects || []).find((item) => item.projectKey === trigger.dataset.projectKey);
+        if (project) void showTrustCurrentVersionsDialog(worktreeId(project), project.title, { trigger });
       } else {
         const button = event.target.closest("[data-context-hub-project-destination]");
         if (button) openContextHubProjectDestination(button.dataset.projectKey, button.dataset.contextHubProjectDestination).catch((error) => setStatus(error.message));
@@ -8089,14 +8089,20 @@ function confirmReviewUndo(receiptId) {
 // "Trust the current versions" (docs/features/review-authority.md): one explicit, undoable human
 // gesture for a project with no accepted version yet. The person sees the exact list first; the
 // server refuses the gesture if any file changed since this list (nothing is written then).
-async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { afterAdd = false } = {}) {
+async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { afterAdd = false, trigger = null } = {}) {
   if (!projectId || IS_HOSTED_CONTEXT_ROOM) return;
+  if (trigger?.getAttribute("aria-busy") === "true") return;
+  // Listing a large project takes seconds: the button says so and cannot be pressed twice.
+  const triggerLabel = trigger?.textContent || "";
+  if (trigger) { trigger.disabled = true; trigger.setAttribute("aria-busy", "true"); trigger.textContent = "Listing files…"; }
   let preview;
   try {
     preview = await api("/api/context-hub/trust-current?projectId=" + encodeURIComponent(projectId));
   } catch (error) {
     if (!afterAdd) setStatus(error.message || "The list of files could not be read.");
     return;
+  } finally {
+    if (trigger?.isConnected) { trigger.disabled = false; trigger.removeAttribute("aria-busy"); trigger.textContent = triggerLabel; }
   }
   if (!preview?.offered || !preview.items?.length) {
     if (!afterAdd) setStatus(preview?.reason === "has_accepted_versions" ? "This project already has accepted versions. Review its files one by one." : "No file is waiting for a first acceptance.");
@@ -8115,6 +8121,7 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
     confirmLabel: "Trust " + count + " file" + plural,
     confirmPendingLabel: "Trusting…",
     confirmVariant: "primary",
+    focusCancel: true,
     onConfirm: async () => {
       try {
         await api("/api/context-hub/trust-current", {
@@ -25216,7 +25223,7 @@ function promptRevertCurrentDiff() {
   });
 }
 
-function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, listItems = null, listLabel = "", onConfirm }) {
+function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, listItems = null, listLabel = "", focusCancel = false, onConfirm }) {
   state.activeModalClose?.({ restoreFocus: false });
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const backdrop = document.createElement("div");
@@ -25259,7 +25266,7 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
     setBusy(false);
     errorMessage.textContent = error?.message || "This action could not be completed.";
     errorMessage.hidden = false;
-    (checkbox || confirmButton).focus();
+    (focusCancel ? cancelButton : checkbox || confirmButton).focus();
   };
   const close = ({ restoreFocus = true } = {}) => {
     if (closed) return;
@@ -25325,7 +25332,8 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
   document.body.appendChild(backdrop);
   releaseBackgroundIsolation = isolateContextRoomModalBackground(backdrop);
   state.activeModalClose = close;
-  backdrop.querySelector(checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
+  // focusCancel: a broad gesture never sits one Enter/Space away (trust of many files).
+  backdrop.querySelector(focusCancel ? "[data-confirm-cancel]" : checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
 }
 
 function showContextHubCreationDialog({ title, body, submitLabel, fields = [], onSubmit }) {

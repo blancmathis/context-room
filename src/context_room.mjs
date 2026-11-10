@@ -260,6 +260,12 @@ const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_PORT = 4317;
 const CONTEXT_ROOM_VERSION = String(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version || "").trim();
 const MAX_FILE_BYTES = 750_000;
+// Review control files (review-state.json, review-ledger.json, baseline bundles) grow about 1 KB per
+// accepted file, so they get their own bound: every review write refuses to pass it, and every
+// rollback snapshot and undo accepts files up to it. See docs/features/review-authority.md.
+const MAX_REVIEW_CONTROL_FILE_BYTES = 8 * 1024 * 1024;
+// The journal keeps a base64 copy of up to three control files (state, ledger, bundle).
+const MAX_REVIEW_JOURNAL_BYTES = 4 * MAX_REVIEW_CONTROL_FILE_BYTES + 1024 * 1024;
 const MAX_VISUAL_ASSET_BYTES = 12_000_000;
 const MAX_JSON_REQUEST_BYTES = 2_097_152;
 const HOSTED_HTTP_HEADERS_TIMEOUT_MS = 10_000;
@@ -4564,7 +4570,7 @@ function anchoredRevisionFailure(error) {
   return ["EEXIST", "ELOOP", "ESTALE", "ENOENT", "ENOTDIR"].includes(error?.code);
 }
 
-function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentRealPath = "", containmentRoot = "" } = {}) {
+function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentRealPath = "", containmentRoot = "", maxBytes = null } = {}) {
   const resolved = path.resolve(abs);
   const cacheKey = resolved;
   if (budget?.byAbsolutePath.has(cacheKey)) {
@@ -4577,12 +4583,13 @@ function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentR
     const beforeStats = fs.fstatSync(fd, { bigint: true });
     if (!beforeStats.isFile()) throw new Error(`Not a regular file: ${relPath}`);
     const before = deletionFileStats(beforeStats);
-    if (before.size > (isDocumentAssetPath(relPath) ? 20 * 1024 * 1024 : MAX_FILE_BYTES)) {
+    const maximumBytes = maxBytes ?? (isDocumentAssetPath(relPath) ? 20 * 1024 * 1024 : MAX_FILE_BYTES);
+    if (before.size > maximumBytes) {
       throw deletionManifestError(
         `File too large for deletion preview: ${relPath}`,
         413,
         "delete_file_too_large",
-        { path: relPath, bytes: before.size, maximumBytes: MAX_FILE_BYTES },
+        { path: relPath, bytes: before.size, maximumBytes },
       );
     }
     if (budget && budget.fileCount + 1 > MAX_DELETE_MANIFEST_FILES) {
@@ -7129,6 +7136,10 @@ function assertDocReviewEvidenceLockHeld(root = process.cwd()) {
 function atomicWriteReviewControlFile(root, relPath, content) {
   assertDocReviewEvidenceLockHeld(root);
   const normalized = normalizeRelPath(relPath);
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > MAX_REVIEW_CONTROL_FILE_BYTES) {
+    throw sharedRequestError(`Review records for this location would pass ${MAX_REVIEW_CONTROL_FILE_BYTES} bytes. Nothing was written.`, 413, "review_control_file_too_large", { path: normalized, bytes, maximumBytes: MAX_REVIEW_CONTROL_FILE_BYTES });
+  }
   const absolute = path.join(path.resolve(root), normalized);
   assertManagedProjectPath(root, absolute, normalized);
   const directory = path.dirname(absolute);
@@ -8341,6 +8352,17 @@ export function reviewLocalDocumentationProposal(root, id, options = {}) {
   }, { expectedRootIdentity: options.expectedRootIdentity || null });
 }
 
+function reviewControlFileMaxBytes(filePath) {
+  const resolved = path.resolve(filePath);
+  const parent = path.dirname(resolved);
+  const name = path.basename(resolved);
+  if (path.basename(parent) === CONFIG_DIR && [path.basename(DOCQA_REVIEW_STATE), path.basename(DOCQA_GLOBAL_REVIEW_LEDGER)].includes(name)) {
+    return MAX_REVIEW_CONTROL_FILE_BYTES;
+  }
+  if (parent.endsWith(path.join(...DOCQA_REVIEW_BASELINE_BUNDLES.split("/"))) && name.endsWith(".json")) return MAX_REVIEW_CONTROL_FILE_BYTES;
+  return null;
+}
+
 function snapshotRegularFile(filePath, { managedRoot = path.dirname(filePath) } = {}) {
   const resolved = path.resolve(filePath);
   const resolvedManagedRoot = path.resolve(managedRoot);
@@ -8368,6 +8390,7 @@ function snapshotRegularFile(filePath, { managedRoot = path.dirname(filePath) } 
     const file = readDeletionFileSnapshot(resolved, displayPath(resolved), {
       expectedParentRealPath: parentSnapshot?.parentRealPath || "",
       containmentRoot: resolvedManagedRoot,
+      maxBytes: reviewControlFileMaxBytes(resolved),
     });
     return {
       exists: true,
@@ -8427,6 +8450,7 @@ function restoreRegularFileSnapshot(filePath, snapshot, {
     current = readDeletionFileSnapshot(resolved, displayPath(resolved), {
       expectedParentRealPath: parentRealPath,
       containmentRoot: managedRoot,
+      maxBytes: reviewControlFileMaxBytes(resolved),
     });
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
@@ -8664,7 +8688,7 @@ function readDocReviewJournal(store) {
   if (cached?.modified === modified) return cached.value;
   let value;
   try {
-    const journal = store.readJson(REVIEW_JOURNAL_FILE);
+    const journal = store.readJson(REVIEW_JOURNAL_FILE, { maxBytes: MAX_REVIEW_JOURNAL_BYTES });
     if (!journal) value = null;
     else if (journal.version !== 1 || !Array.isArray(journal.files) || !store.verify(journal)) value = { invalid: true };
     else {
@@ -9030,11 +9054,18 @@ function collectTrustCurrentCandidates(root, { readOnly }) {
   if (reviewState.authorityViolation) return { offered: false, reason: "review_evidence_untrusted", items: [], excluded: [], reviewState };
   if (reviewStateHasAcceptedVersion(reviewState)) return { offered: false, reason: "has_accepted_versions", items: [], excluded: [], reviewState };
   const report = buildDocQaReportUnderLock(root, { readOnly, reviewState });
-  const candidates = trustCurrentQueueCandidates(reviewState, report.queue);
+  // A location above this project (the Git top level) may already accept a file: never replace it.
+  const ledger = readGlobalReviewLedger(root, { readOnly });
+  const excluded = [];
+  const candidates = trustCurrentQueueCandidates(reviewState, report.queue).filter((item) => {
+    const entry = ledger.reviews?.[globalReviewKeyFor(root, item.path)];
+    if (!entry || typeof entry !== "object" || (entry.status !== "verified" && !entry.acceptedVersion)) return true;
+    excluded.push({ path: item.path, reason: "accepted_at_git_top_level" });
+    return false;
+  });
   const gitIndexStates = candidates.length ? gitIndexStatesForReviewPaths(root, candidates.map((item) => item.path)) : new Map();
   const files = new Map();
   const items = [];
-  const excluded = [];
   for (const candidate of candidates) {
     let file;
     try { file = readReviewTrackedFile(root, candidate.path); } catch { file = null; }
@@ -9068,10 +9099,11 @@ function collectTrustCurrentCandidates(root, { readOnly }) {
   };
 }
 
+// A cheap hint for the report. It carries no count on purpose: the only count shown anywhere is
+// the exact list from previewTrustCurrentDocVersions (the same list the gesture accepts).
 function trustCurrentOfferSummary(reviewState, queue) {
-  if (reviewState?.authorityViolation || reviewStateHasAcceptedVersion(reviewState)) return { offered: false, count: 0 };
-  const count = trustCurrentQueueCandidates(reviewState, queue).length;
-  return { offered: count > 0, count };
+  if (reviewState?.authorityViolation || reviewStateHasAcceptedVersion(reviewState)) return { offered: false };
+  return { offered: trustCurrentQueueCandidates(reviewState, queue).length > 0 };
 }
 
 export function previewTrustCurrentDocVersions(root = process.cwd(), { expectedRootIdentity = null } = {}) {
@@ -9119,6 +9151,9 @@ export function trustCurrentDocVersions(root, { items, requestId = null, expecte
         const replayed = loadDocReviewReceipt(store, index, prior.id);
         if (!replayed || replayed.action !== "trust-current" || replayed.target.projectRoot !== resolvedRoot) {
           throw sharedRequestError("This request was already used for another decision.", 409, "review_request_reused");
+        }
+        if (index.receipts.some((entry) => entry.action === "undo" && entry.undoOf === replayed.id)) {
+          throw sharedRequestError("This trust was undone. Nothing is accepted. Open the list again to trust the current versions.", 409, "trust_current_undone", { receiptId: replayed.id });
         }
         return { count: replayed.items.length, receipt: publicDocReviewReceipt(replayed, trustCurrentReceiptAvailability(index, replayed, { state: readDocReviewState(resolvedRoot), ledger: readGlobalReviewLedger(resolvedRoot) })), replayed: true };
       }

@@ -71,10 +71,15 @@ Undo is offered only for the latest decision on that file, within 30 days, for a
 
 A project with no accepted version yet can accept all its current files in one explicit human gesture: "Trust the current versions". It is never a default. The Hub offers it after "Add a project" and in the project's Documents card while no file has an accepted version. `project register` only reports the offer (`trustCurrentVersions`); agents cannot perform it.
 
-- The person first sees the exact list and count of files: present in the project, with no review entry, not an asset, and with staged Git content equal to the file. Files with different staged content stay in review.
+- The person first sees the exact list and count of files: present in the project, with no review entry, not an asset, not already accepted in the review ledger of the Git top level (a parent location's acceptance is never replaced), and with staged Git content equal to the file. Files with different staged content stay in review. This list is the only count shown: the project card only says that the gesture is offered, and `project register` reports the same list's count. The dialog opens with the focus on Cancel.
 - The confirmation sends that exact list with each content hash. The route needs the owner-interface nonce, like any review decision. If any listed file changed, or a new file joined the list, nothing is written and the request fails with `trust_current_stale`.
 - The gesture accepts each file as it is now, with one shared baseline bundle, in one review transaction. It writes ONE signed receipt (`action: "trust-current"`) that lists each file, its content hash, its ledger key and the ledger value it replaced. The receipt index stays at version 1: the receipt becomes the head of every ledger key it covers.
+- A request id already used by a trust that was undone is refused with `trust_current_undone`: it never replays a receipt that no longer accepts anything.
 - "Undo this trust" removes every acceptance of that gesture at once and restores each ledger key, or its absence. Files are not changed. Undo is refused after 30 days, or when a newer decision covers any of the files, or when any entry differs from the receipt. A file edited after the gesture does not block undo: there is no earlier accepted version to restore.
+
+## Size of the review records
+
+Review control files (`.context-room/review-state.json`, the review ledger at the Git top level, and baseline bundles) grow by about 1 KB per accepted file. They have their own bound, 8 MiB per file, larger than the 750 KB limit for project files. Every review write refuses to pass it with `review_control_file_too_large` (413) before anything is written, and every rollback snapshot, undo and recovery reads these files up to that bound. The review journal holds a copy of up to three such files and is read up to 33 MiB. In practice this is several thousand accepted files per location, whether by single decisions or by "Trust the current versions".
 
 ## Terminal request binding
 

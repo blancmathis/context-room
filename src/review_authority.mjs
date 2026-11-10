@@ -1207,11 +1207,11 @@ export function createReviewReceiptStore(domainKey, options = {}) {
       const current = key({ create: false });
       return Boolean(current) && signedStateIsVerified(record, current);
     },
-    readJson(name) {
+    readJson(name, { maxBytes = SIGNED_STATE_MAX_BYTES } = {}) {
       const filePath = safeName(name);
       let stats;
       try { stats = fs.lstatSync(filePath); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-      if (!stats.isFile() || stats.size > SIGNED_STATE_MAX_BYTES) throw new Error(`Review receipt file is unsafe: ${filePath}`);
+      if (!stats.isFile() || stats.size > maxBytes) throw new Error(`Review receipt file is unsafe: ${filePath}`);
       return JSON.parse(fs.readFileSync(filePath, "utf8"));
     },
     readBytes(name) {

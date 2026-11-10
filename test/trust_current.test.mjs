@@ -55,7 +55,7 @@ test("trusting the current versions accepts the exact list in one receipt, and u
   const root = makeProject("trust");
   const ledgerBefore = readGlobalReviewLedger(root).reviews;
   const before = buildDocQaReport(root);
-  assert.deepEqual(before.summary.trustCurrent, { offered: true, count: DOCS.length });
+  assert.deepEqual(before.summary.trustCurrent, { offered: true });
   const preview = previewTrustCurrentDocVersions(root);
   assert.equal(preview.offered, true);
   assert.deepEqual(preview.items.map((item) => item.path), [...DOCS].sort((left, right) => left.localeCompare(right, "en")));
@@ -73,7 +73,7 @@ test("trusting the current versions accepts the exact list in one receipt, and u
   for (const doc of DOCS) assert.equal(reviews[doc].status, "verified", doc);
   const after = buildDocQaReport(root);
   assert.equal(after.summary.needsReview, 0);
-  assert.deepEqual(after.summary.trustCurrent, { offered: false, count: 0 });
+  assert.deepEqual(after.summary.trustCurrent, { offered: false });
   assert.equal(previewTrustCurrentDocVersions(root).reason, "has_accepted_versions");
 
   // One receipt for the whole gesture; a replay returns it.
@@ -93,6 +93,21 @@ test("trusting the current versions accepts the exact list in one receipt, and u
   assert.deepEqual(readDocReviewHistory(root).receipts.map((receipt) => receipt.action), ["undo", "trust-current"]);
   // Offered again once nothing is accepted.
   assert.equal(previewTrustCurrentDocVersions(root).offered, true);
+  // The request id of an undone trust gets a clear refusal, never a replay of a receipt that accepts nothing.
+  assert.throws(() => trustCurrentDocVersions(root, { items: preview.items, requestId: "trust-1" }), { code: "trust_current_undone" });
+  assert.deepEqual(readDocReviewState(root).reviews, {});
+});
+
+test("a file already accepted at the Git top level is never a candidate of a subfolder project", () => {
+  const top = makeProject("trust-top");
+  writeDocReviewDecision(top, "docs/notes/plan.md", { status: "verified", receiptSource: "file-review" });
+  // Changed since that acceptance: it waits in review, but its accepted version belongs to the top level.
+  fs.appendFileSync(path.join(top, "docs/notes/plan.md"), "\nAgent edit.\n", "utf8");
+  const sub = path.join(top, "docs");
+  initializeContextRoomProject(sub, { title: "sub", allowedPaths: ["notes/", "guide.md"], watchAllow: ["notes/", "guide.md"] });
+  const preview = previewTrustCurrentDocVersions(sub);
+  assert.deepEqual(preview.items.map((item) => item.path), ["guide.md"]);
+  assert.deepEqual(preview.excluded, [{ path: "notes/plan.md", reason: "accepted_at_git_top_level" }]);
 });
 
 test("undo of a trust is refused once a newer decision covers one of its files", () => {
@@ -155,4 +170,26 @@ test("Hub route lists the files, refuses the gesture without the human nonce and
   const undo = await fetch(origin + "/api/context-hub/review-undo", { method: "POST", headers: ownerHeaders, body: JSON.stringify({ projectId: registered.id, receiptId: result.receipt.id }) });
   assert.equal(undo.status, 200, await undo.clone().text());
   assert.deepEqual(readDocReviewState(root).reviews, {});
+});
+
+test("control files above the 750 KB file limit still snapshot: a 1 000-file trust, a later decision and the undo all succeed", () => {
+  const root = makeProject("trust-large");
+  const many = Array.from({ length: 1_000 }, (_, index) => `docs/bulk/${String(index).padStart(4, "0")}-a-fairly-long-document-name.md`);
+  fs.mkdirSync(path.join(root, "docs", "bulk"), { recursive: true });
+  for (const doc of many) fs.writeFileSync(path.join(root, doc), `# ${doc}\n`, "utf8");
+  const preview = previewTrustCurrentDocVersions(root);
+  assert.equal(preview.count, many.length + DOCS.length);
+  const trusted = trustCurrentDocVersions(root, { items: preview.items });
+  const stateBytes = fs.statSync(path.join(root, ".context-room", "review-state.json")).size;
+  assert.ok(stateBytes > 750_000, `state is ${stateBytes} bytes`);
+  const ledgerBytes = fs.statSync(path.join(root, ".context-room", "review-ledger.json")).size;
+  assert.ok(ledgerBytes > 750_000, `ledger is ${ledgerBytes} bytes`);
+  // A later single decision snapshots the large state and ledger.
+  fs.writeFileSync(path.join(root, "docs", "later.md"), "# Later\n", "utf8");
+  writeDocReviewDecision(root, "docs/later.md", { status: "verified", receiptSource: "file-review" });
+  assert.equal(readDocReviewState(root).reviews["docs/later.md"].status, "verified");
+  // The undo of the trust restores both large files.
+  const undone = undoDocReviewAcceptance(root, { receiptId: trusted.receipt.id });
+  assert.equal(undone.count, many.length + DOCS.length);
+  assert.deepEqual(Object.keys(readDocReviewState(root).reviews), ["docs/later.md"]);
 });

@@ -86,7 +86,8 @@ export function summarizeInspection(data) {
   const review = Number(docqa.needsReview || 0);
   const tokens = Number(data.effectiveContext?.cost?.startup?.tokens || 0);
   // No accepted version yet: the person may trust the current versions in one undoable gesture.
-  const trust = docqa.trustCurrent?.offered ? Number(docqa.trustCurrent.count || 0) : 0;
+  // No count here: the dialog shows the exact list and its count (the same list the server accepts).
+  const trust = docqa.trustCurrent?.offered === true;
   return { names: [...new Set(names)], tokens, total, stale, review, trust, state: data.effectiveContext?.freshness?.state || '' };
 }
 

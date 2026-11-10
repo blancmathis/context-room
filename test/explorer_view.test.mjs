@@ -70,12 +70,12 @@ test('summarizeInspection reads the existing inspection payload', () => {
     startupContext: [{ startupContext: { fileName: 'AGENTS.md' } }, { startupContext: { fileName: 'AGENTS.md' } }],
     effectiveContext: { cost: { startup: { tokens: 1500 } }, freshness: { state: 'fresh' } },
   });
-  assert.deepEqual(s, { names: ['AGENTS.md'], tokens: 1500, total: 10, stale: 3, review: 1, trust: 0, state: 'fresh' });
+  assert.deepEqual(s, { names: ['AGENTS.md'], tokens: 1500, total: 10, stale: 3, review: 1, trust: false, state: 'fresh' });
   // F31: a project with no accepted version offers the gesture instead of "all up to date".
-  const fresh = summarizeInspection({ doctor: { docqa: { totalDocs: 84, changedDocs: 0, needsReview: 84, trustCurrent: { offered: true, count: 84 } } } });
-  assert.equal(fresh.trust, 84);
+  const fresh = summarizeInspection({ doctor: { docqa: { totalDocs: 84, changedDocs: 0, needsReview: 84, trustCurrent: { offered: true } } } });
+  assert.equal(fresh.trust, true);
   assert.equal(fresh.review, 84);
-  assert.equal(summarizeInspection({ doctor: { docqa: { totalDocs: 84, needsReview: 84, trustCurrent: { offered: false, count: 0 } } } }).trust, 0);
+  assert.equal(summarizeInspection({ doctor: { docqa: { totalDocs: 84, needsReview: 84, trustCurrent: { offered: false } } } }).trust, false);
 });
 
 test('formatters', () => {

@@ -132,6 +132,7 @@ import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
   buildDocQaReport,
+  previewTrustCurrentDocVersions,
   contextHubUiState,
   createMemoryServer,
   createContextRoomDeviceService,
@@ -954,7 +955,8 @@ if (command === "project") {
       // Offer only: trusting the current versions is a human gesture in the Hub (owner nonce).
       let trustCurrentVersions = null;
       try {
-        const offer = buildDocQaReport(registered?.root || root, { readOnly: true }).summary?.trustCurrent;
+        // The count is the exact list the Hub dialog shows and the gesture accepts.
+        const offer = previewTrustCurrentDocVersions(registered?.root || root);
         if (offer) {
           trustCurrentVersions = {
             offered: offer.offered === true,
