@@ -7785,7 +7785,9 @@ async function openReviewFlowItem() {
     return;
   }
   // Opening another project reloads the page: let the queued saves end first.
-  await reviewFlowSaves.chain;
+  // A stuck Hub must not freeze the flow: wait about 10 s, then open anyway.
+  // Unsent items stay in the outbox and show as "not saved" after the reload.
+  await Promise.race([reviewFlowSaves.chain, new Promise((resolve) => window.setTimeout(resolve, 10000))]);
   await openContextHubProject(item.projectId, item.review.startupContext ? { reviewTarget: item.review } : { filePath: item.path });
 }
 
@@ -7996,12 +7998,13 @@ function reviewFlowDecisionRequests(decision) {
 }
 
 // The page is going away: send what the queue has not started, each decision
-// still base first, then review. Their outcome is read back the next time the
+// with base and review sent together (both carry the hash of the version
+// shown, so order does not matter). Their outcome is read back the next time the
 // page shows (the outbox), or here if the page comes back from the cache.
 function flushUnsentReviewFlowDecisions() {
   const decisions = [...reviewFlowSaves.unsent];
   reviewFlowSaves.unsent.clear();
-  for (const decision of decisions) void sendReviewFlowDecision(decision);
+  for (const decision of decisions) void sendReviewFlowDecision(decision, true);
 }
 
 async function saveReviewFlowDecision(decision) {
@@ -8009,13 +8012,18 @@ async function saveReviewFlowDecision(decision) {
   await sendReviewFlowDecision(decision);
 }
 
-async function sendReviewFlowDecision(decision) {
+async function sendReviewFlowDecision(decision, together = false) {
   reviewFlowSaves.sending.set(decision.body.requestId, decision.itemId);
   const requests = reviewFlowDecisionRequests(decision);
   let failure = null;
   try {
-    if (requests.baseline) await api(...requests.baseline);
-    await api(...requests.review);
+    if (together) {
+      // The page is leaving: nothing after the first answer would run.
+      await Promise.all([requests.baseline && api(...requests.baseline), api(...requests.review)]);
+    } else {
+      if (requests.baseline) await api(...requests.baseline);
+      await api(...requests.review);
+    }
     state.reviewHistoryStale = true;
   } catch (error) {
     // No answer (network, page unloading): the request may still land, so
