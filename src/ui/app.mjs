@@ -5119,6 +5119,20 @@ async function api(path, options) {
   throw lastError || new Error("request failed");
 }
 
+// A read must not surface a transient registry lock held by another writer:
+// retry quietly, and fail only if the lock persists. Returns null once stale.
+async function apiReadRetryingRegistryBusy(path, isStale = () => false) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await api(path);
+    } catch (error) {
+      if (error?.code !== "context_hub_registry_busy" || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+      if (isStale()) return null;
+    }
+  }
+}
+
 function shortSharedHash(value) {
   return String(value || "").slice(0, 12);
 }
@@ -14649,7 +14663,7 @@ async function loadInitialContextHubData({ openRequestedProject = false, onCatal
   const requestedGeneration = openRequestedProject ? ++state.contextHubPendingOpenGeneration : 0;
   const ticket = beginContextHubSnapshotRequest();
   state.contextHubReviewQueueReady = false;
-  const catalog = sanitizeHostedHubCatalog(await api("/api/context-hub/catalog"));
+  const catalog = sanitizeHostedHubCatalog(await apiReadRetryingRegistryBusy("/api/context-hub/catalog"));
   const initialCatalog = {
     ...catalog,
     proposals: state.contextHub?.proposals || [],
@@ -14908,6 +14922,13 @@ async function loadFiles(options = {}) {
       : state.contextHubReadyPromise);
     renderGlobalProjectExplorer();
   }
+  // A boot catalogue superseded by a newer snapshot never binds ?project=; bind it
+  // from the current one, or a direct file read carries no target-project header
+  // and the server reads under the Hub root (404).
+  const unboundGlobalFileTarget = () => IS_GLOBAL_CONTEXT_ROOM && Boolean(requestedReviewFile && requestedProject) && !state.activeProjectLocationId;
+  if (unboundGlobalFileTarget() && state.contextHub) {
+    void openInitialContextHubRequestedProject(state.contextHub).catch((error) => setStatus("Project unavailable: " + error.message));
+  }
   const restoreRequest = skipsGenericNavigationRestore ? Promise.resolve(false) : restoreNavigationAfterInitialLoad();
   const restored = await restoreRequest;
   let restoredContextHubTarget = false;
@@ -14922,6 +14943,8 @@ async function loadFiles(options = {}) {
   } else if (requestedStartupOrder) {
     await selectStartupContextFile(requestedStartupOrder, { reviewMode: true });
     restoredContextHubTarget = true;
+  } else if (unboundGlobalFileTarget()) {
+    // No catalogue or unknown project: stay on the home rather than read under the Hub root.
   } else if (requestedReviewFile && (IS_GLOBAL_CONTEXT_ROOM || state.files.some((file) => file.path === requestedReviewFile))) {
     await selectFile(requestedReviewFile, { pushHistory: false, reviewMode: true, forceReload: true });
     restoredContextHubTarget = true;
@@ -17120,20 +17143,12 @@ async function loadContextAttention(project) {
   state.contextAttentionProjectKey = project.projectKey;
   renderContextRoomOtherAttention();
   try {
-    // A read must not surface a transient registry lock held by another writer:
-    // retry quietly (the panel keeps "Checking…"), and show the error only if it persists.
-    let payload;
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        payload = await api("/api/context-hub/attention?projectId=" + encodeURIComponent(worktree.id));
-        break;
-      } catch (error) {
-        if (error?.code !== "context_hub_registry_busy" || attempt >= 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
-        if (state.globalExplorerProjectKey !== project.projectKey) return null;
-      }
-    }
-    if (state.globalExplorerProjectKey !== project.projectKey) return null;
+    // The panel keeps "Checking…" while a registry lock is retried.
+    const payload = await apiReadRetryingRegistryBusy(
+      "/api/context-hub/attention?projectId=" + encodeURIComponent(worktree.id),
+      () => state.globalExplorerProjectKey !== project.projectKey,
+    );
+    if (!payload || state.globalExplorerProjectKey !== project.projectKey) return null;
     state.contextAttentionItems = (payload.items || []).filter((item) => item.kind !== "review");
     return payload;
   } catch (error) {

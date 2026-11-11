@@ -229,7 +229,8 @@ function attachFailureGuards(page) {
 function consumeRetriedAttentionBusy(failures) {
   const consoleLine = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
   for (let index = failures.length - 1; index >= 0; index -= 1) {
-    if (!/^http 409: \S*\/api\/context-hub\/attention(?:\?|$)/.test(failures[index])) continue;
+    // The boot catalogue read retries the same lock the same way.
+    if (!/^http 409: \S*\/api\/context-hub\/(?:attention|catalog)(?:\?|$)/.test(failures[index])) continue;
     failures.splice(index, 1);
     const consoleIndex = failures.indexOf(consoleLine);
     if (consoleIndex >= 0) failures.splice(consoleIndex, 1);
@@ -246,17 +247,18 @@ function consumeExpectedConflictConsole(failures) {
   if (httpMatches.length) failures.splice(httpMatches[0], 1);
 }
 
-function consumeExpectedDuplicateRegistrationFailures(failures, startIndex) {
+function consumeExpectedDuplicateRegistrationFailures(failures, startIndex, { notFound = true } = {}) {
   const expectedPaths = new Set(["/api/file", "/api/file/diff", "/api/file/review-base"]);
   const consumedIndexes = new Set();
   const consumedPaths = new Set();
   for (let index = startIndex; index < failures.length; index += 1) {
     // Since #92 a read against the not-yet-registered duplicate answers 403
     // file_path_not_allowed instead of a plain 500. Since 06a2864 it answers 404
-    // file_not_found when the path would be readable if it existed (the duplicate
-    // has no project root yet). All are the same transient read.
+    // file_not_found: sent without the target-project header, it reads under the
+    // Hub root. All are the same transient read. The primary page binds its
+    // project before it reads, so a 404 there is a real failure (notFound: false).
     const match = failures[index].match(/^http (403|404|409|500): (\S+)$/);
-    if (!match) continue;
+    if (!match || (match[1] === "404" && !notFound)) continue;
     const pathname = new URL(match[2]).pathname;
     if (!expectedPaths.has(pathname)) continue;
     expect(consumedPaths.has(pathname), `${pathname} fails at most once while the duplicate workspace registers`).toBe(false);
@@ -285,6 +287,12 @@ test("@smoke duplicate registration consumes only its transient stale file reads
     "console: Failed to load resource: the server responded with a status of 404 (Not Found)",
   ];
 
+  const primary = [
+    "http 404: http://127.0.0.1/api/file?path=docs%2FREADME.md",
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  ];
+  consumeExpectedDuplicateRegistrationFailures(primary, 0, { notFound: false });
+  expect(primary).toHaveLength(2);
   consumeExpectedDuplicateRegistrationFailures(failures, 1);
 
   expect(failures).toEqual([
@@ -669,7 +677,7 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await expect.poll(() => workspaceId(duplicate.url())).not.toBe(atlasWorkspace);
   await waitForWorkspaceBackgroundIdle(duplicate);
   await waitForWorkspaceBackgroundIdle(page);
-  consumeExpectedDuplicateRegistrationFailures(guard.failures, primaryDuplicateRegistrationStart);
+  consumeExpectedDuplicateRegistrationFailures(guard.failures, primaryDuplicateRegistrationStart, { notFound: false });
   consumeExpectedDuplicateRegistrationFailures(duplicateGuard.failures, duplicateRegistrationStart);
   await duplicate.close();
 
