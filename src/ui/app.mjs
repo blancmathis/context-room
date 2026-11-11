@@ -1280,6 +1280,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .doc-link-modifier-active .markdown-path[data-doc-link-path] { cursor: pointer; border-color: color-mix(in srgb, var(--accent) 54%, transparent); background-color: color-mix(in srgb, var(--accent) 5%, transparent); }
     .doc-link-modifier-active .markdown-path[data-doc-link-path]:hover, .doc-link-modifier-active .markdown-path[data-doc-link-path].doc-link-hover-target { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 72%, transparent); background-color: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent); animation: docLinkClickableSweep 1.1s ease-in-out infinite; }
     @keyframes docLinkClickableSweep { 0% { background-size: 0 2px; background-position: 0 100%; } 46% { background-size: 100% 2px; background-position: 0 100%; } 100% { background-size: 0 2px; background-position: 100% 100%; } }
+    .markdown-doc-link-missing { color: var(--muted); cursor: default; }
     .markdown-doc-link { color: var(--file-list); border-bottom: 1px solid color-mix(in srgb, var(--file-list) 42%, transparent); text-decoration: none; }
     .markdown-inline-code.markdown-path { color: var(--file-list); }
     .markdown-editor-shell { position: relative; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); isolation: isolate; }
@@ -23117,17 +23118,19 @@ function scrollToMarkdownAnchor(anchor) {
 
 // Large documents render one section per H1/H2 with content-visibility:auto. Sections not yet shown have only an
 // estimated height, so the first jump lands off target once the real sizes appear. Align again over a few frames.
-let anchorSettleToken = 0;
+let anchorSettleToken = 0, settlingAnchor = "";
 function settleAnchorScroll(target, frames = 10) {
   const token = ++anchorSettleToken; // a newer jump cancels the older alignment
+  settlingAnchor = target.dataset.headingId;
   let previous = null;
   let stable = 0;
   const step = (left) => {
-    if (token !== anchorSettleToken || !target.isConnected) return;
+    if (token !== anchorSettleToken) return;
+    if (!target.isConnected) return void (settlingAnchor = "");
     const top = target.getBoundingClientRect().top;
     stable = previous !== null && Math.abs(top - previous) < 1 ? stable + 1 : 0;
     previous = top;
-    if (stable >= 2 || left <= 0) return;
+    if (stable >= 2 || left <= 0) return void (settlingAnchor = "");
     target.scrollIntoView({ block: "start" });
     window.requestAnimationFrame(() => step(left - 1));
   };
@@ -24138,6 +24141,9 @@ function renderMarkdownPlainInline(value, options = {}) {
       const label = renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
+      if (options.reader && !state.files.length && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[2])) {
+        return hubDocLinkMissing(link[2]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[2]) + '">' + label + '</span>' : label;
+      }
       return escapeHtml(part);
     }
     return escapeHtml(part).replace(/(^|[\s([{])((?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)?[A-Za-z0-9_./@~-]*[A-Za-z0-9_@~-]+\.[A-Za-z0-9_-]+(?:#[A-Za-z0-9_.-]+)?|(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)[A-Za-z0-9_./@~-]+)/g, (match, prefix, rawPath) => {
@@ -24214,7 +24220,22 @@ function currentDocumentDirectory() {
 }
 
 function isKnownContextRoomFile(filePath) {
-  return state.files.some((file) => file.path === filePath);
+  return state.files.some((file) => file.path === filePath) || (!state.files.length && hubLinks?.known(filePath) === true);
+}
+
+// Hub: state.files is empty. Links are checked by a module loaded with the first relative link of a doc.
+let hubLinks = null, hubLinksLoading = null;
+const hubLinkTargets = new Set();
+function hubDocLinkMissing(rawTarget) {
+  if (hubLinks) return hubLinks.missing(rawTarget);
+  const target = cleanMarkdownDocLinkTarget(rawTarget);
+  if (!target || target.startsWith("/")) return false;
+  hubLinkTargets.add(rawTarget);
+  hubLinksLoading ||= import("/assets/hub-doc-links.mjs").then((module) => {
+    hubLinks = module.createHubDocLinks({ state, globalProjectSelectedWorktree, globalProjectExplorerPageKey, globalProjectExplorerCacheKey, loadGlobalProjectExplorerPage, captureReadingPlace, restoreReadingPlace, renderViewer, scrollToMarkdownAnchor, settlingAnchor: () => settlingAnchor, cleanMarkdownDocLinkTarget, isMarkdownDocLinkTarget, currentDocumentDirectory, normalizeDocPath });
+    hubLinks.prime([...hubLinkTargets]);
+  }, () => { hubLinksLoading = null; }).finally(() => hubLinkTargets.clear());
+  return false;
 }
 
 function wireMarkdownDocLinks(root = document) {

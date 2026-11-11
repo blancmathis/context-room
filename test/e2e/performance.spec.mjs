@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import zlib from "node:zlib";
 import { test, expect } from "@playwright/test";
 
 function fixture() {
@@ -106,6 +107,15 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   // Brotli size of the whole script (244606 on 20c6254); the old 200 kB limit only ever saw 304 revalidations.
   // Raised 260 000 -> 263 000 on 2026-11-11 for the review-scope notice (S5a, PR #149): main was 259 335, this branch measures 261 009 after trimming the notice.
   expect(jsBytes).toBeLessThan(263_000);
+  // Hub doc links (PR #158) load on demand, out of the main budget. Served without compression: measure its brotli
+  // size here. 1 591 on 2026-11-11; 1 713 after the fix for a doc opened during a read (tour 3); limit +10 %.
+  const hubLinks = await new Promise((resolve, reject) => http.get(new URL("/assets/hub-doc-links.mjs", samples[0].jsUrls[0]), (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
+  }).on("error", reject));
+  expect(hubLinks.status).toBe(200);
+  expect(zlib.brotliCompressSync(hubLinks.body).length).toBeLessThan(1_900);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();

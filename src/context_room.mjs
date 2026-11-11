@@ -23257,7 +23257,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
     return;
   }
-  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs"].includes(url.pathname)) {
+  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs", "/assets/hub-doc-links.mjs"].includes(url.pathname)) {
     writeHttpResponse(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL(`./ui/${path.basename(url.pathname)}`, import.meta.url)));
     return;
   }
