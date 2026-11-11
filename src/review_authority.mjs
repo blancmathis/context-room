@@ -966,6 +966,24 @@ function recordAuthorityWitness(paths, canonicalRoot) {
   writePrivateFileAtomic(witness, Buffer.from(JSON.stringify({ projectRoot: canonicalRoot, signedAt: new Date().toISOString() }) + "\n"));
 }
 
+// A witness only for a signature that verifies (primary or its backup) and names this root. Never for a missing,
+// invalid or legacy-unmigrated authority.
+function witnessSignedAuthority(record, canonicalRoot) {
+  if (!["verified", "recovered"].includes(record.integrity) || record.legacy === true || record.state?.projectRoot !== canonicalRoot) return false;
+  recordAuthorityWitness(record.paths, canonicalRoot);
+  return true;
+}
+
+// Hub startup: projects initialized before the witness existed get it now, so deleting their authority later is seen.
+export function witnessOwnerReviewScope(root, options = {}) {
+  try {
+    const canonicalRoot = canonicalAuthorityRoot(root);
+    return witnessSignedAuthority(readAuthority(canonicalRoot, { ...options, readOnly: true }), canonicalRoot);
+  } catch {
+    return false;
+  }
+}
+
 function writeAuthority(root, scope, { actor = "human-ui", authorityHome = "" } = {}) {
   const options = authorityHome ? { authorityHome } : {};
   const canonicalRoot = canonicalAuthorityRoot(root);
@@ -1558,7 +1576,7 @@ export function inspectOwnerReviewScope(root, settings = {}, options = {}) {
   if (!["verified", "recovered"].includes(record.integrity) || !rootStateIdentityMatches(record, "projectRoot", canonicalRoot)) {
     return { configured: true, tampered: true, severity: "critical", integrity: record.integrity, reductions: [{ field: "authority", value: record.integrity }], authorityPath: record.paths.state };
   }
-  if (record.integrity === "verified" && options.readOnly !== true) recordAuthorityWitness(record.paths, canonicalRoot);
+  if (options.readOnly !== true) witnessSignedAuthority(record, canonicalRoot);
   const reductions = scopeReductions(record.state.scope || {}, settings);
   if (record.integrity === "recovered") reductions.unshift({ field: "authority", value: `recovered-from-${record.recoveredFrom || "invalid-primary"}` });
   return {
@@ -1609,8 +1627,8 @@ export function effectiveOwnerReviewScope(root, settings = {}, options = {}) {
     }
     authorizeOwnerReviewScope(root, settings, { ...options, actor: options.bootstrapActor || "bootstrap" });
     record = readAuthority(root, options);
-  } else if (record.integrity === "verified" && options.readOnly !== true) {
-    recordAuthorityWitness(record.paths, canonicalRoot);
+  } else if (options.readOnly !== true) {
+    witnessSignedAuthority(record, canonicalRoot);
   }
   if (!["verified", "recovered"].includes(record.integrity) || !rootStateIdentityMatches(record, "projectRoot", canonicalRoot)) {
     const error = new Error(`Owner review authority is unavailable or invalid: ${record.integrity}`);

@@ -18039,8 +18039,13 @@ function describeReviewScopeSetting(item) {
   return escapeHtml(reviewScopeSettingCard(item)) + ' — ' + change + value;
 }
 
-// The notice token of the reduction the owner accepted with the notice button (cleared when the notice changes).
+// The notice token of the reduction the owner accepted with the notice button (cleared when the notice or the project changes).
+function reviewScopeProjectKey() {
+  return IS_GLOBAL_CONTEXT_ROOM ? selectedGlobalProjectSettingsContext().key : String(state.projectId || "");
+}
+
 function reviewScopeAcceptedByButton(notice) {
+  if (state.reviewScopeAcceptedProject !== reviewScopeProjectKey()) state.reviewScopeAcceptedToken = "";
   return Boolean(notice?.token && state.reviewScopeAcceptedToken === notice.token);
 }
 
@@ -18077,6 +18082,7 @@ function applyReviewScopeReductionToField() {
   const paths = Array.isArray(notice?.paths) ? notice.paths : [];
   if (!notice?.token || (!paths.length && !notice.missing)) return;
   state.reviewScopeAcceptedToken = notice.token;
+  state.reviewScopeAcceptedProject = reviewScopeProjectKey();
   if (notice.missing) {
     const button = document.querySelector("[data-review-scope-notice] [data-apply-review-scope-reduction]");
     if (button) button.outerHTML = '<p data-review-scope-accepted><strong>Scope confirmed.</strong> Save settings to sign it.</p>';

@@ -2324,11 +2324,54 @@ test("review scope: a deleted owner authority is critical and nothing signs a re
   assert.equal((await refused.json()).code, "review_authority_confirmation_required");
   assert.equal(fs.existsSync(authorityPath), false, "a plain Save signs nothing");
   assert.equal(critical(), true);
+  // The token binds the confirmation to the scope shown: a scope changed after display is refused.
+  const further = { ...narrowed, allowedPaths: [], watchAllow: ["docs/guide.md"] };
+  fs.writeFileSync(configPath, JSON.stringify(further, null, 2) + "\n");
+  const stale = await save({ settings: further, reviewScopeDecision: { token: notice.token, confirmAuthority: true } });
+  assert.equal(stale.status, 409);
+  assert.equal(fs.existsSync(authorityPath), false, "a scope changed since display is not signed");
+  fs.writeFileSync(configPath, JSON.stringify(narrowed, null, 2) + "\n");
 
   const confirmed = await save({ settings: narrowed, reviewScopeDecision: { token: notice.token, confirmAuthority: true } });
   assert.equal(confirmed.status, 200);
   assert.ok(fs.existsSync(authorityPath), "the owner's confirmation signs the scope again");
   assert.equal(critical(), false);
+});
+
+test("review scope: a missing-authority confirmation token is bound to its project and the UI forgets it on project change", () => {
+  const roots = [makeRoot(), makeRoot()];
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  try {
+    const tokens = roots.map((root) => {
+      fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+      initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+      const authorityPath = inspectOwnerReviewScope(root, readResolvedContextRoomSettings(root)).authorityPath;
+      fs.rmSync(authorityPath);
+      fs.rmSync(`${authorityPath}.backup`, { force: true });
+      const notice = ownerReviewScopeNotice(root);
+      assert.equal(notice?.missing, true);
+      return notice.token;
+    });
+    assert.notEqual(tokens[0], tokens[1], "two projects never share a confirmation token");
+  } finally {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  }
+
+  const script = extractInlineAppScript(renderAppHtml());
+  const pick = (name) => script.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`))[0];
+  const ui = new Function("state", "IS_GLOBAL_CONTEXT_ROOM", "selectedGlobalProjectSettingsContext",
+    `${pick("reviewScopeProjectKey")}\n${pick("reviewScopeAcceptedByButton")}\nreturn reviewScopeAcceptedByButton;`);
+  let selected = "project-a";
+  const state = { reviewScopeAcceptedToken: "same-token", reviewScopeAcceptedProject: "project-a" };
+  const accepted = ui(state, true, () => ({ key: selected }));
+  assert.equal(accepted({ token: "same-token", missing: true }), true);
+  selected = "project-b";
+  assert.equal(accepted({ token: "same-token", missing: true }), false, "another project is never shown as confirmed");
+  assert.equal(state.reviewScopeAcceptedToken, "");
 });
 
 test("Settings names a pending raw scope reduction and refuses dead scope paths", async (t) => {

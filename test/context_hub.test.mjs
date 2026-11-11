@@ -4406,6 +4406,55 @@ test("Hub project settings: a deleted review scope authority is shown and only a
   assert.equal((await (await fetch(settingsUrl)).json()).settings.reviewScopeNotice, null);
 });
 
+test("Hub startup witnesses review scope authorities signed before witnesses existed, so deleting one later is seen", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-authority-witness-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  withHubHome(t, path.join(base, "hub"));
+  const { buildContextRoomDoctorReport } = await import("../src/context_room.mjs");
+  const { inspectOwnerReviewScope, effectiveOwnerReviewScope } = await import("../src/review_authority.mjs");
+  const make = (name) => {
+    const root = path.join(base, name);
+    for (const folder of ["docs", "notes"]) {
+      fs.mkdirSync(path.join(root, folder), { recursive: true });
+      fs.writeFileSync(path.join(root, folder, "a.md"), `# ${folder}\n`);
+    }
+    initializeContextRoomProject(root, { title: name, allowedPaths: ["docs/", "notes/"], watchAllow: ["docs/", "notes/"] });
+    registerContextHubProject(root);
+    const authorityPath = inspectOwnerReviewScope(root, readMemoryWebappSettings(root), { readOnly: true }).authorityPath;
+    const witness = authorityPath.replace(/\.json$/, ".signed");
+    fs.rmSync(witness, { force: true }); // as signed by the code before witnesses
+    return { root, authorityPath, witness };
+  };
+  const legacy = make("Legacy project");
+  const invalid = make("Invalid project");
+  fs.writeFileSync(invalid.authorityPath, "{}\n");
+  fs.rmSync(`${invalid.authorityPath}.backup`, { force: true });
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Context Room Hub", allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false, landOnHubHome: true });
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown?.();
+  });
+  assert.ok(fs.existsSync(legacy.witness), "Hub startup witnesses a verified authority");
+  assert.equal(fs.existsSync(invalid.witness), false, "never for an invalid authority");
+
+  fs.rmSync(legacy.authorityPath);
+  fs.rmSync(`${legacy.authorityPath}.backup`, { force: true });
+  const configPath = path.join(legacy.root, ".context-room", "config.json");
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  raw.allowedPaths = ["docs/"];
+  raw.watchAllow = ["docs/"];
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+  for (const readOnly of [true, false]) {
+    assert.ok(buildContextRoomDoctorReport(legacy.root, { readOnly }).issues.some((issue) => issue.type === "review_authority_tamper" && issue.severity === "critical"));
+  }
+  initializeContextRoomProject(legacy.root);
+  assert.throws(() => effectiveOwnerReviewScope(legacy.root, readMemoryWebappSettings(legacy.root)), { code: "review_authority_unavailable" });
+  assert.equal(fs.existsSync(legacy.authorityPath), false, "nothing signs the reduction");
+});
+
 test("Hub project settings: an unchanged save keeps an allowedPaths reduction made outside Settings; only an accepted decision signs it", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-allowed-reduction-"));
   withHubHome(t, path.join(base, "hub"));
