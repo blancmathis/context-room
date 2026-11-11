@@ -7311,7 +7311,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /<strong>Auto-open Git diff<\/strong>/);
   assert.match(html, /id="showHiddenFiles"/);
   assert.match(html, /<strong>Show hidden files<\/strong>/);
-  assert.match(html, /Display safe dotfiles and \.context-room in every Explorer\./);
+  assert.match(html, /Display safe dotfiles in every Explorer\./);
   assert.match(html, /class="settings-shell"/);
   assert.match(html, /function renderSettingsTabs\(items = \[\]\)/);
   assert.match(html, /role="tablist" aria-label="Settings categories"/);
