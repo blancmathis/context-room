@@ -450,7 +450,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .explorer-document-tab.active { background: color-mix(in srgb, var(--accent) 11%, var(--surface-card-hover)); color: var(--text); }
     .explorer-document-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .global-project-watch-filters { display: flex; flex-wrap: wrap; gap: 4px; }
-    .global-project-watch-filter { min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
+    .global-project-watch-filter { display: inline-block; min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
     .global-project-watch-filter:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-watch-filter.active { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
     .global-project-folder-tree { min-width: 0; display: grid; gap: 1px; padding: 3px 0 18px; }
@@ -458,8 +458,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-tree-entry:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-tree-entry:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent); outline-offset: -1px; }
     .global-project-tree-entry[data-kind="file"] { color: var(--muted); }
-    .global-project-tree-entry[data-watch-state="watched"],
-    .global-project-tree-entry[data-watch-state="watched-inherited"] { color: var(--good-fg); }
     .global-project-tree-name { min-width: 0; overflow: hidden; font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-tree-meta { color: var(--muted); font-size: 9px; }
     .global-project-folder-state { padding: 20px 8px; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
@@ -3621,6 +3619,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
+    @media (pointer: coarse) { .global-project-tree-entry { min-height: 44px; } }
     /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
@@ -6455,8 +6454,7 @@ function clearGlobalProjectExplorerCache(project) {
 
 function globalProjectExplorerEntryMatchesFilter(entry, filter) {
   if (entry.type === "directory" || filter === "all") return true;
-  const watched = Boolean(entry.watchState);
-  return filter === "watched" ? watched : !watched;
+  return filter === "watched" ? !!entry.watchState : !entry.watchState;
 }
 
 function workspaceProjectHref(projectId, filePath = "", { fresh = false } = {}) {
@@ -6489,8 +6487,8 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
         + (expanded && child ? renderGlobalProjectExplorerPage(project, child, depth + 1, filter) : "");
     }
     const worktree = globalProjectSelectedWorktree(project);
-    return '<a class="global-project-tree-entry" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, entry.path)) + '" data-kind="file" data-watch-state="' + escapeHtml(entry.watchState || "") + '" data-global-project-file="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px">'
-      + '<span aria-hidden="true">◇</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + escapeHtml(entry.watchState ? "watched" : formatExplorerBytes(entry.bytes || 0)) + '</span></a>';
+    return '<a class="global-project-tree-entry" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, entry.path)) + '" data-kind="file" data-global-project-file="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px">'
+      + '<span aria-hidden="true">◇</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + (entry.watchState ? "" : "Not watched") + '</span></a>';
   }).join("");
   const more = page.nextCursor == null ? "" : '<button class="global-project-tree-entry" type="button" data-global-project-more="' + escapeHtml(page.nextCursor) + '" data-global-project-path="' + escapeHtml(page.directory || "") + '" data-global-project-query="' + escapeHtml(page.query || "") + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">＋</span><span class="global-project-tree-name">Load more</span><span class="global-project-tree-meta">' + Math.max(0, Number(page.total || 0) - (page.entries || []).length) + ' remaining</span></button>';
   return entries + more;
@@ -6794,13 +6792,13 @@ function renderGlobalProjectFolder(project) {
   const filter = state.globalProjectWatchFilters.get(project.projectKey) || "all";
   const markup = renderGlobalProjectExplorerPage(project, details, 0, filter);
   const visibleCount = (details.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).length;
-  const locationContent = '<div class="global-project-folder-head"><div class="global-project-watch-filters" aria-label="Project watch filter">'
+  const locationContent = '<div class="global-project-folder-head"><details><summary class="global-project-watch-filter' + (filter === "all" ? "" : " active") + '" aria-label="More">⋯</summary><div class="global-project-watch-filters" aria-label="Project watch filter">'
     + [
       ["all", "All"],
       ["watched", "Watched"],
       ["unwatched", "Not watched"],
-    ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" aria-pressed="' + String(filter === value) + '" data-global-project-watch-filter="' + value + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">' + label + '</button>').join("")
-    + '</div><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
+    ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" aria-pressed="' + String(filter === value) + '" data-global-project-watch-filter="' + value + '">' + label + '</button>').join("")
+    + '</div></details><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
     + '<div class="global-project-folder-tree">' + (markup || (needle && !IS_HOSTED_HUB
       ? '<div class="global-project-folder-state">No file name matches. <button class="file-action" type="button" data-goto-text-search="' + escapeHtml(needle) + '">Search the text with ⌘K</button></div>'
       : '<div class="global-project-folder-state">No files match this view.</div>')) + '</div>';
@@ -13317,9 +13315,6 @@ function setExplorerWatchFilter(filter) {
   scheduleSessionStatePush();
 }
 
-function expandExplorerFilterResults() {
-  explorerExpansionPathsForFiles(visibleFiles()).forEach((path) => state.expanded.add(path));
-}
 
 function explorerExpansionPathsForFiles(files = []) {
   const seen = new Set();
@@ -14188,9 +14183,6 @@ function toggleFolder(folderPath) {
   renderFiles();
 }
 
-function filterFolder(folderPath) {
-  filterFolders([folderPath]);
-}
 
 function filterFolders(folderPaths) {
   const cleans = folderPaths.map((folderPath) => (folderPath || "").replace(/\/$/, "")).filter(Boolean);
@@ -14241,14 +14233,6 @@ function closeFolder(folderPath) {
   }
 }
 
-function openFolder(folderPath) {
-  for (const part of parentFolders(folderPath)) state.expanded.add(part);
-  renderFiles();
-  const aside = document.querySelector("aside");
-  const target = document.querySelector('[data-folder-path="' + cssEscape(folderPath.replace(/\/$/, "")) + '"]');
-  if (aside && target) aside.scrollTop += target.getBoundingClientRect().top - aside.getBoundingClientRect().top - 16;
-  setStatus("folder open");
-}
 
 function expandSearchMatches() {
   if (!el("search").value.trim()) return;
@@ -19441,7 +19425,7 @@ function renderSettingsPanel() {
     renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button><button type="button" data-web-app-settings>Install / offline notebooks</button>' }) +
     renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
       '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
-      '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +
+      '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles in every Explorer.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="hideEmptyReviewToolbar"><input id="hideEmptyReviewToolbar" type="checkbox" ' + (appearance.hideEmptyReviewToolbar === true ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Hide review filters when nothing is pending</strong><em>Off keeps the project and type filters in place, so the page does not jump. Turn this on to hide them on a clean queue.</em></span></label></div>' +
       '<div class="settings-field"><label for="computerExplorerRoot">Computer Explorer root</label><span class="settings-field-note">Computer mode can browse this folder and everything inside it. Use an absolute path or ~/…</span><input id="computerExplorerRoot" type="text" value="' + escapeHtml(explorer.computerRoot || "") + '" placeholder="' + escapeHtml(DEFAULT_COMPUTER_EXPLORER_ROOT) + '" /></div></div>'
     }) +
@@ -27569,7 +27553,7 @@ el("globalProjectList")?.addEventListener("click", (event) => {
   }
   const watchFilter = event.target.closest("[data-global-project-watch-filter]");
   if (watchFilter) {
-    state.globalProjectWatchFilters.set(watchFilter.dataset.globalProjectKey, watchFilter.dataset.globalProjectWatchFilter);
+    state.globalProjectWatchFilters.set(state.globalExplorerProjectKey, watchFilter.dataset.globalProjectWatchFilter);
     renderGlobalProjectExplorer();
     return;
   }
