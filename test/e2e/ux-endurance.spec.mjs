@@ -954,7 +954,7 @@ test("@smoke hidden workspace presence is delayed and reports the real visibilit
 test("@smoke a project list held back during a press is applied after blur or contextmenu, without another click", async ({ page }) => {
   const data = fixture();
   const guard = attachFailureGuards(page);
-  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=collapsed`);
   await waitForBoot(page);
   const list = page.locator("#contextHubHomeProjectList");
   await expect(list.locator(".context-hub-home-project").first()).toBeVisible();

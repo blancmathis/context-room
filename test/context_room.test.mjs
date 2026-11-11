@@ -504,7 +504,7 @@ test("the global home lists projects in a stable order with three destinations a
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);
   const orderSource = script.slice(script.indexOf("function contextHubPrioritizedProjects"), script.indexOf("function globalProjectExplorerPageKey"));
-  assert.match(html, /id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"[\s\S]*id="reviewQueuePanel"/);
+  assert.match(html, /data-global-explorer-mode="notebooks"[\s\S]*id="notebookSpacePanel"[\s\S]*data-home-explorer[\s\S]*id="reviewQueuePanel"[\s\S]*id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"/);
   assert.doesNotMatch(orderSource, /localReviewCount|sharedProposalCount|lastOpenedAt|\.current/);
   assert.match(orderSource, /priorityRank[\s\S]*title/);
   assert.match(script, /function renderContextHubHomeProjects\(\)[\s\S]*local inspected[\s\S]*data-context-hub-project-destination="' \+ id/);
@@ -583,9 +583,8 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function renderGlobalInspectionDisclosure\([\s\S]*<details class="global-project-inspection-disclosure"[\s\S]*<summary>/);
   assert.match(script, /data-global-inspection-disclosure[\s\S]*state\.globalInspectionView === view[\s\S]*state\.globalInspectionView = ""/);
   assert.match(html, /\.global-project-inspection-disclosure\[open\] \.global-project-inspection-disclosure-chevron/);
-  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*Select a project in Explorer[\s\S]*Context health[\s\S]*Agent environment/);
+  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*panel\.hidden = !project;[\s\S]*Context health[\s\S]*Agent environment/);
   assert.match(script, /heading\.textContent = "Project inspection"/);
-  assert.match(script, /Context health and the agent environment for its selected worktree will appear here\./);
   assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*no accepted main snapshot is cached/);
   assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*This Shared-only project has no local worktree to inspect\./);
   assert.match(script, /project\.mode !== "shared"[\s\S]*No connected local worktree is available to inspect for this project\./);
@@ -8630,7 +8629,7 @@ test("context health supports full refresh, acknowledged results, and simple fil
     { severity: "medium", message: "Missing metadata." },
   ], "/tmp/example-project");
 
-  assert.match(html, /id="contextHealthPanel" class="docqa-panel">/);
+  assert.match(html, /id="contextHealthPanel" class="docqa-panel context-hub-home-side">/);
   assert.match(html, /id="refreshContextHealth"[^>]*>Refresh all<\/button>/);
   assert.match(html, /id="sendContextHealthToCodex"[^>]*><span aria-hidden="true">@<\/span> Fix in Codex<\/button>/);
   assert.doesNotMatch(html, /shown only when checks need attention/);

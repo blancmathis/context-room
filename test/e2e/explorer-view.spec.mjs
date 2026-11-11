@@ -69,11 +69,11 @@ test("@explorer Files opens from the home in one click, hides the internal Hub, 
   const hub = await fixture();
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
-    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible({ timeout: 15_000 });
     await expect(view(page)).toBeHidden();
     await page.locator("[data-home-explorer]").click();
     await expect(view(page)).toBeVisible();
-    await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
+    await expect(page.locator("#reviewQueuePanel")).toBeHidden();
     await expect(projectButton(page, "Alpha")).toBeVisible({ timeout: 15_000 });
     await expect(projectButton(page, "Beta")).toBeVisible();
     // « Context Room Hub » is hidden by default; the View menu can show it.
@@ -94,7 +94,7 @@ test("@explorer Files opens from the home in one click, hides the internal Hub, 
     }
     // The Home button returns to the Hub home as it is today.
     await view(page).locator("[data-explorer-home]").click();
-    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible();
     await expect(view(page)).toBeHidden();
     await expect(page).toHaveURL(/view=hub/);
   } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
@@ -105,20 +105,20 @@ test("@explorer Files renders on a quiet Hub: no catalog refresh needed after th
   const hub = await fixture();
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
-    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("#contextHubHomeProjectList")).toContainText("Alpha", { timeout: 15_000 });
     // From here, the catalog and the event stream stay silent.
     await page.route((url) => url.pathname === "/api/context-hub" || url.pathname === "/api/runtime-events", () => {});
     await page.locator("[data-home-explorer]").click();
     await expect(page).toHaveURL(/view=explorer/);
     await expect(view(page)).toBeVisible();
-    await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
+    await expect(page.locator("#reviewQueuePanel")).toBeHidden();
     await expect(projectButton(page, "Alpha")).toBeVisible({ timeout: 15_000 });
     await projectButton(page, "Alpha").click();
     await expect(fileLink(page, "README.md")).toBeVisible({ timeout: 15_000 });
     await view(page).locator("[data-explorer-home]").click();
     await expect(page).toHaveURL(/view=hub/);
-    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible();
     await expect(view(page)).toBeHidden();
     // Back in the browser history reopens the Files view.
     await page.goBack();

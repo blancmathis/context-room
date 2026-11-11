@@ -119,6 +119,8 @@ test("@smoke two cleanup triggers share one load", async ({ page }) => {
 test("@smoke Documents on a project row reveals that project's documentation map", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openHub(page);
+  // The home project rows show only while the Explorer is collapsed.
+  await page.evaluate(() => setExplorerCollapsedFromUser(true));
   await page.locator("#contextHubHomeProjectList").getByRole("button", { name: "Documents · Beacon", exact: true }).click();
   const map = page.locator("#documentsMapPanel");
   await expect(map).toBeVisible();
