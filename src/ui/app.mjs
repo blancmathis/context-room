@@ -14683,8 +14683,8 @@ async function loadInitialContextHubData({ openRequestedProject = false, onCatal
   }
   onCatalog?.();
   const [reviewsRaw, sectionsRaw] = await Promise.all([
-    api("/api/context-hub/review-queue?limit=80"),
-    api("/api/context-hub/sections"),
+    apiReadRetryingRegistryBusy("/api/context-hub/review-queue?limit=80"),
+    apiReadRetryingRegistryBusy("/api/context-hub/sections"),
   ]);
   // The requested project is selected from the catalogue immediately. Its
   // exact worktree activation may include Shared sync, so keep that bounded
@@ -14927,7 +14927,13 @@ async function loadFiles(options = {}) {
   // and the server reads under the Hub root (404).
   const unboundGlobalFileTarget = () => IS_GLOBAL_CONTEXT_ROOM && Boolean(requestedReviewFile && requestedProject) && !state.activeProjectLocationId;
   if (unboundGlobalFileTarget() && state.contextHub) {
+    // No generation is passed, so this bumps contextHubPendingOpenGeneration; at boot
+    // that is harmless, and the next rAF retry reuses this in-flight open.
     void openInitialContextHubRequestedProject(state.contextHub).catch((error) => setStatus("Project unavailable: " + error.message));
+    // The binding above is synchronous: still unbound means the project is not in the catalogue.
+    if (!state.activeProjectLocationId && !state.contextHubRequestedProjectNotice) {
+      state.contextHubRequestedProjectNotice = "This project is not registered in Context Room.";
+    }
   }
   const restoreRequest = skipsGenericNavigationRestore ? Promise.resolve(false) : restoreNavigationAfterInitialLoad();
   const restored = await restoreRequest;
