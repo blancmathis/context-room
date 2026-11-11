@@ -950,6 +950,22 @@ function readAuthority(root, options = {}) {
   });
 }
 
+// Witness that a scope authority was signed for this root. It lives next to the signed file but survives its
+// deletion, so a deleted authority (and its backup) reads as missing evidence, not as a project never initialized.
+function authorityWitnessPath(paths) {
+  return paths.state.replace(/\.json$/, ".signed");
+}
+
+function authorityWitnessed(paths) {
+  return fs.existsSync(authorityWitnessPath(paths));
+}
+
+function recordAuthorityWitness(paths, canonicalRoot) {
+  const witness = authorityWitnessPath(paths);
+  if (fs.existsSync(witness)) return;
+  writePrivateFileAtomic(witness, Buffer.from(JSON.stringify({ projectRoot: canonicalRoot, signedAt: new Date().toISOString() }) + "\n"));
+}
+
 function writeAuthority(root, scope, { actor = "human-ui", authorityHome = "" } = {}) {
   const options = authorityHome ? { authorityHome } : {};
   const canonicalRoot = canonicalAuthorityRoot(root);
@@ -961,9 +977,11 @@ function writeAuthority(root, scope, { actor = "human-ui", authorityHome = "" } 
     actor: String(actor || "human-ui").slice(0, 120),
     updatedAt: new Date().toISOString(),
   };
-  return writeSignedState(paths, payload, {
+  const written = writeSignedState(paths, payload, {
     validateState: (state) => state?.projectRoot === canonicalRoot,
   });
+  recordAuthorityWitness(paths, canonicalRoot);
+  return written;
 }
 
 function omitSignedStateSignature(state) {
@@ -1533,12 +1551,14 @@ function scopeReductions(protectedScope, settings) {
 export function inspectOwnerReviewScope(root, settings = {}, options = {}) {
   const canonicalRoot = canonicalAuthorityRoot(root);
   const record = readAuthority(root, options);
-  if (record.integrity === "missing") {
+  // Missing without a witness: a project never signed (first init). Missing with one: the evidence was deleted.
+  if (record.integrity === "missing" && !authorityWitnessed(record.paths)) {
     return { configured: false, tampered: false, severity: "none", integrity: record.integrity, reductions: [], authorityPath: record.paths.state };
   }
   if (!["verified", "recovered"].includes(record.integrity) || !rootStateIdentityMatches(record, "projectRoot", canonicalRoot)) {
     return { configured: true, tampered: true, severity: "critical", integrity: record.integrity, reductions: [{ field: "authority", value: record.integrity }], authorityPath: record.paths.state };
   }
+  if (record.integrity === "verified" && options.readOnly !== true) recordAuthorityWitness(record.paths, canonicalRoot);
   const reductions = scopeReductions(record.state.scope || {}, settings);
   if (record.integrity === "recovered") reductions.unshift({ field: "authority", value: `recovered-from-${record.recoveredFrom || "invalid-primary"}` });
   return {
@@ -1577,10 +1597,20 @@ export function ownerReviewScopeSaveBase(root, settings = {}, { acceptPaths = []
 export function effectiveOwnerReviewScope(root, settings = {}, options = {}) {
   const canonicalRoot = canonicalAuthorityRoot(root);
   let record = readAuthority(root, options);
+  // Only a never-signed project bootstraps its authority. A deleted one is shown read-only (so Settings can ask the
+  // owner to confirm it) and fails closed for every writer until the owner signs again.
   if (record.integrity === "missing") {
     if (options.readOnly === true) return settings;
+    if (authorityWitnessed(record.paths)) {
+      const error = new Error("Owner review authority is missing: its signed record was deleted");
+      error.code = "review_authority_unavailable";
+      error.integrity = record.integrity;
+      throw error;
+    }
     authorizeOwnerReviewScope(root, settings, { ...options, actor: options.bootstrapActor || "bootstrap" });
     record = readAuthority(root, options);
+  } else if (record.integrity === "verified" && options.readOnly !== true) {
+    recordAuthorityWitness(record.paths, canonicalRoot);
   }
   if (!["verified", "recovered"].includes(record.integrity) || !rootStateIdentityMatches(record, "projectRoot", canonicalRoot)) {
     const error = new Error(`Owner review authority is unavailable or invalid: ${record.integrity}`);

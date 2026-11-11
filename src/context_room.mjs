@@ -12553,7 +12553,9 @@ export function buildConfigDiagnostics(root = process.cwd(), settings = readMemo
     issues.push({
       type: "review_authority_tamper",
       severity: "critical",
-      message: `Owner review authority is damaged or project configuration attempted to reduce it${fields.length ? `: ${fields.join(", ")}` : ""}. The last recoverable owner-authorized scope remains effective.`,
+      message: reviewAuthority.integrity === "missing"
+        ? "Owner review authority is missing: its signed record was deleted. Nothing is signed again until the owner confirms the scope in Settings."
+        : `Owner review authority is damaged or project configuration attempted to reduce it${fields.length ? `: ${fields.join(", ")}` : ""}. The last recoverable owner-authorized scope remains effective.`,
     });
   }
   const configPath = path.join(root, CONFIG_FILE);
@@ -18346,7 +18348,8 @@ export function ownerReviewScopeNotice(root, { expectedRootIdentity = null } = {
     .map((item) => ({ field: item.field, value: item.value }));
   // token: binds an owner decision to the exact reduction shown, so a stale page cannot accept a newer one.
   const token = hashContent(JSON.stringify(authority.reductions));
-  return { fields, paths, settings, damaged: fields.includes("authority"), token };
+  // missing: the signed authority was deleted. Only an explicit owner confirmation signs the scope shown.
+  return { fields, paths, settings, damaged: fields.includes("authority"), missing: authority.integrity === "missing", token };
 }
 
 // Base for an owner save of project settings. While project configuration tries to reduce the signed review scope,
@@ -18354,6 +18357,13 @@ export function ownerReviewScopeNotice(root, { expectedRootIdentity = null } = {
 function ownerScopeSaveContext(root, decision, { expectedRootIdentity = null } = {}) {
   const current = readMemoryWebappSettings(root, { expectedRootIdentity });
   const notice = ownerReviewScopeNotice(root, { expectedRootIdentity });
+  if (notice?.missing) {
+    // No signed scope to keep: the configuration may already be reduced. Sign it only on the owner's confirmation.
+    if (decision?.confirmAuthority !== true || decision?.token !== notice.token) {
+      throw sharedRequestError("The signed review scope is missing. Check the documents to review in Settings, then confirm them to sign this scope again.", 409, "review_authority_confirmation_required");
+    }
+    return { current, base: null, pending: true };
+  }
   if (!notice?.fields?.some((field) => field !== "authority")) return { current, base: null, pending: false };
   const acceptPaths = Array.isArray(decision?.acceptPaths) ? decision.acceptPaths.map((item) => String(item || "")).filter(Boolean) : [];
   if (acceptPaths.length && decision?.token !== notice.token) {

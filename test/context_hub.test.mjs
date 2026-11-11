@@ -4358,6 +4358,54 @@ test("Hub project settings name a pending raw scope reduction and let the owner 
   assert.equal(tamper(), false);
 });
 
+test("Hub project settings: a deleted review scope authority is shown and only an owner confirmation signs it again", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-missing-authority-"));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = path.join(base, "Target project");
+  for (const folder of ["docs", "notes"]) {
+    fs.mkdirSync(path.join(targetRoot, folder), { recursive: true });
+    fs.writeFileSync(path.join(targetRoot, folder, "a.md"), `# ${folder}\n`);
+  }
+  initializeContextRoomProject(targetRoot, { title: "Target project", allowedPaths: ["docs/", "notes/"], watchAllow: ["docs/", "notes/"] });
+  const target = registerContextHubProject(targetRoot);
+  registerContextHubProject(hostRoot);
+  const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
+  const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
+  const { buildContextRoomDoctorReport } = await import("../src/context_room.mjs");
+  const { inspectOwnerReviewScope } = await import("../src/review_authority.mjs");
+  const authorityPath = inspectOwnerReviewScope(targetRoot, readMemoryWebappSettings(targetRoot)).authorityPath;
+  fs.rmSync(authorityPath);
+  fs.rmSync(`${authorityPath}.backup`, { force: true });
+  const configPath = path.join(targetRoot, ".context-room", "config.json");
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  raw.allowedPaths = ["docs/"];
+  raw.watchAllow = ["docs/"];
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+  assert.ok(buildContextRoomDoctorReport(targetRoot, { readOnly: true }).issues.some((issue) => issue.type === "review_authority_tamper" && issue.severity === "critical"));
+
+  const loaded = await (await fetch(settingsUrl)).json();
+  const notice = loaded.settings.reviewScopeNotice;
+  assert.equal(notice?.missing, true);
+  const save = (decision) => fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: target.id, expectedRevision: loaded.revision, settings: { watchAllow: loaded.settings.watchAllow }, ...(decision ? { reviewScopeDecision: decision } : {}) }),
+  });
+  const refused = await save(null);
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).code, "review_authority_confirmation_required");
+  assert.equal(fs.existsSync(authorityPath), false, "an unconfirmed save signs nothing");
+  const confirmed = await save({ token: notice.token, acceptPaths: [], confirmAuthority: true });
+  assert.equal(confirmed.status, 200, await confirmed.clone().text());
+  assert.ok(fs.existsSync(authorityPath));
+  assert.equal((await (await fetch(settingsUrl)).json()).settings.reviewScopeNotice, null);
+});
+
 test("Hub project settings: an unchanged save keeps an allowedPaths reduction made outside Settings; only an accepted decision signs it", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-allowed-reduction-"));
   withHubHome(t, path.join(base, "hub"));
