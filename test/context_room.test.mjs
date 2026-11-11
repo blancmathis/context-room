@@ -68,6 +68,8 @@ import {
   buildAgentBrief,
   buildAgentReviewQueue,
   buildContextRoomDoctorReport,
+  ownerReviewScopeNotice,
+  deadReviewScopePathEntry,
   buildContextRoomReports,
   buildDeletedReviewBatch,
   buildDocQaReport,
@@ -2275,6 +2277,185 @@ test("raw config narrowing fails closed until the human owner explicitly saves t
   assert.equal(ownerReduced.startupContext.enabled, false);
   assert.equal(ownerReduced.startupSkills.enabled, false);
   assert.equal(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper"), false);
+});
+
+test("Settings names a pending raw scope reduction and refuses dead scope paths", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "notes"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  fs.writeFileSync(path.join(root, "notes", "n.md"), "# Note\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/", "notes/"], watchAllow: ["docs/", "notes/"] });
+  assert.equal(ownerReviewScopeNotice(root), null);
+
+  const configPath = path.join(root, CONFIG_FILE);
+  const narrowed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  narrowed.watchAllow = ["docs/"];
+  fs.writeFileSync(configPath, JSON.stringify(narrowed, null, 2) + "\n");
+  const notice = ownerReviewScopeNotice(root);
+  assert.ok(notice.fields.includes("watchAllow"));
+  assert.ok(notice.paths.includes("notes/"));
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => room.server.close(resolve)));
+  const base = `http://127.0.0.1:${room.server.address().port}`;
+  const current = await (await fetch(`${base}/api/settings`)).json();
+  assert.ok(current.settings.reviewScopeNotice.paths.includes("notes/"), "Settings sees the pending reduction");
+  assert.ok(current.settings.watchAllow.includes("notes/"), "the signed scope stays effective");
+
+  const headers = { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce };
+  for (const field of ["watchAllow", "allowedPaths"]) {
+    const response = await fetch(`${base}/api/settings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ settings: { ...narrowed, [field]: ["docs/", ".."] } }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.code, "review_scope_path_invalid");
+    assert.match(body.error, new RegExp(`${field} cannot be "\\.\\."`));
+  }
+  const emptied = await fetch(`${base}/api/settings`, { method: "POST", headers, body: JSON.stringify({ settings: { ...narrowed, watchAllow: [".//docs/"] } }) });
+  assert.equal(emptied.status, 400, "an entry the path cleaning empties is refused");
+  assert.equal((await emptied.json()).code, "review_scope_path_invalid");
+  assert.ok(ownerReviewScopeNotice(root).paths.includes("notes/"), "a refused save signs nothing");
+
+  const saved = await fetch(`${base}/api/settings`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ settings: { ...narrowed, reviewScopeNotice: notice } }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(ownerReviewScopeNotice(root), null);
+  assert.equal(readResolvedContextRoomSettings(root).watchAllow.includes("notes/"), false);
+});
+
+// Rule: a reduction made outside Settings is never signed by a save unless the owner accepted it visibly
+// (removed the path from the field, or pressed Accept). One case per reduced field and per kind of save.
+test("Room settings save never signs a reduction made outside Settings without the owner's visible decision", async (t) => {
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  const scenario = async (name) => {
+    const root = makeRoot();
+    for (const folder of ["docs", "notes", "rules"]) {
+      fs.mkdirSync(path.join(root, folder), { recursive: true });
+      fs.writeFileSync(path.join(root, folder, "a.md"), `# ${folder}\n`);
+    }
+    initializeContextRoomProject(root, { title: name, allowedPaths: ["docs/", "notes/", "rules/"], watchAllow: ["docs/", "notes/"] });
+    const room = createMemoryServer({ root });
+    await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => room.server.close(resolve)));
+    const origin = `http://127.0.0.1:${room.server.address().port}`;
+    const headers = { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce };
+    const read = async () => (await (await fetch(`${origin}/api/settings`)).json()).settings;
+    // What the Settings form sends: the fields it shows, never allowedPaths.
+    const form = (settings, change = {}) => ({
+      watchAllow: settings.watchAllow,
+      watchRules: settings.watchRules || [],
+      startupContext: settings.startupContext,
+      startupSkills: settings.startupSkills,
+      startupHooks: settings.startupHooks,
+      ...change,
+    });
+    const save = async (settings, extra = {}) => {
+      const response = await fetch(`${origin}/api/settings`, { method: "POST", headers, body: JSON.stringify({ settings, ...extra }) });
+      return { status: response.status, body: await response.json() };
+    };
+    const configPath = path.join(root, CONFIG_FILE);
+    const editRaw = (edit) => {
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      edit(raw);
+      fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+    };
+    const tampered = () => buildContextRoomDoctorReport(root, { readOnly: true }).issues.some((issue) => issue.type === "review_authority_tamper");
+    return { root, read, form, save, editRaw, tampered };
+  };
+
+  // Signed watch rule and startup file name, set by the owner in Settings first.
+  const signedExtras = async (project) => {
+    const shown = await project.read();
+    const owner = await project.save(project.form(shown, {
+      watchRules: [{ path: "rules/", mode: "recursive-live" }],
+      startupContext: { ...shown.startupContext, enabled: true, fileNames: [...new Set([...(shown.startupContext.fileNames || []), "TEAM.md"])] },
+    }));
+    assert.equal(owner.status, 200, JSON.stringify(owner.body));
+    assert.equal(ownerReviewScopeNotice(project.root), null);
+  };
+
+  const reductions = {
+    allowedPaths: (raw) => { raw.allowedPaths = raw.allowedPaths.filter((item) => item !== "notes/"); },
+    watchAllow: (raw) => { raw.watchAllow = raw.watchAllow.filter((item) => item !== "notes/"); },
+    watchRules: (raw) => { raw.watchRules = []; },
+    startupFileName: (raw) => { raw.startupContext.fileNames = raw.startupContext.fileNames.filter((item) => item !== "TEAM.md"); },
+    startupDisabled: (raw) => { raw.startupContext.enabled = false; },
+  };
+  const stillProtected = (settings) => {
+    assert.ok(settings.allowedPaths.includes("notes/"), "allowedPaths keeps notes/");
+    assert.ok(settings.watchAllow.includes("notes/"), "watchAllow keeps notes/");
+    assert.ok(settings.watchRules.some((rule) => rule.path === "rules/" && rule.mode === "recursive-live"), "the watch rule stays");
+    assert.equal(settings.startupContext.enabled, true, "startup context stays on");
+    assert.ok(settings.startupContext.fileNames.includes("TEAM.md"), "the startup file name stays");
+  };
+
+  for (const [field, reduce] of Object.entries(reductions)) {
+    for (const kind of ["unchanged", "other-setting"]) {
+      const project = await scenario(`${field}-${kind}`);
+      await signedExtras(project);
+      project.editRaw(reduce);
+      assert.equal(project.tampered(), true, `${field}: the raw reduction is detected`);
+      const shown = await project.read();
+      assert.ok(shown.reviewScopeNotice, `${field}: Settings shows the pending reduction`);
+      stillProtected(shown);
+      const change = kind === "other-setting"
+        ? { startupContext: { ...shown.startupContext, fileNames: [...shown.startupContext.fileNames, "EXTRA.md"] } }
+        : {};
+      const result = await project.save(project.form(shown, change));
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(ownerReviewScopeNotice(project.root), null, `${field}/${kind}: the save settles the notice`);
+      assert.equal(project.tampered(), false, `${field}/${kind}: doctor sees no tampering`);
+      stillProtected(readResolvedContextRoomSettings(project.root));
+      stillProtected(readMemoryWebappSettings(project.root));
+    }
+  }
+
+  // The owner's gesture: remove notes/ from the field, then Save. The UI sends the accepted paths with the notice token.
+  const accept = await scenario("accept");
+  accept.editRaw((raw) => { reductions.allowedPaths(raw); reductions.watchAllow(raw); });
+  const pending = await accept.read();
+  assert.deepEqual(pending.reviewScopeNotice.paths, ["notes/"]);
+  const stale = await accept.save(accept.form(pending, { watchAllow: ["docs/"] }), { reviewScopeDecision: { token: "stale", acceptPaths: ["notes/"] } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "review_scope_decision_stale");
+  assert.ok(ownerReviewScopeNotice(accept.root), "a stale decision signs nothing");
+  const accepted = await accept.save(accept.form(pending, { watchAllow: ["docs/"] }), { reviewScopeDecision: { token: pending.reviewScopeNotice.token, acceptPaths: ["notes/"] } });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.equal(ownerReviewScopeNotice(accept.root), null);
+  assert.equal(accept.tampered(), false);
+  const reduced = readResolvedContextRoomSettings(accept.root);
+  assert.equal(reduced.allowedPaths.includes("notes/"), false, "the accepted allowedPaths reduction is signed");
+  assert.equal(reduced.watchAllow.includes("notes/"), false, "the accepted watchAllow reduction is signed");
+
+  // Removing a path from the field without the decision reduces only that field: allowedPaths keeps it.
+  const fieldOnly = await scenario("field-only");
+  fieldOnly.editRaw((raw) => { reductions.allowedPaths(raw); reductions.watchAllow(raw); });
+  const fieldOnlyShown = await fieldOnly.read();
+  assert.equal((await fieldOnly.save(fieldOnly.form(fieldOnlyShown, { watchAllow: ["docs/"] }))).status, 200);
+  const fieldOnlyAfter = readResolvedContextRoomSettings(fieldOnly.root);
+  assert.equal(fieldOnlyAfter.watchAllow.includes("notes/"), false, "the field the owner edited is reduced");
+  assert.ok(fieldOnlyAfter.allowedPaths.includes("notes/"), "the hidden allowedPaths reduction is not signed");
 });
 
 test("startup context API opens files from the last owner-authorized scope after raw narrowing", async (t) => {
@@ -7080,7 +7261,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /api\("\/api\/context-hub\/project-settings\?projectId="/);
   assert.match(html, /api\("\/api\/context-hub\/preferences"/);
   assert.match(source, /url\.pathname === "\/api\/context-hub\/project-settings"/);
-  assert.match(source, /writeMemoryWebappSettings\(project\.root, projectInput, \{\s*migrateLegacyReview: true,\s*expectedRootIdentity: project\.rootIdentity,\s*beforeMutation: beforeManagedControlMutation,\s*\}\)/);
+  assert.match(source, /writeMemoryWebappSettings\(project\.root, projectInput, \{\s*migrateLegacyReview: true,\s*expectedRootIdentity: project\.rootIdentity,\s*beforeMutation: beforeManagedControlMutation,\s*base: scopeBase,\s*\}\)/);
   assert.match(html, /function applyContextHubSnapshot\(catalog, ticket\) \{[\s\S]*state\.contextHub = sanitizeHostedHubCatalog\(catalog\);[\s\S]*return true;/);
   assert.match(html, /applyContextHubSnapshot\(contextHub, ticket\)[\s\S]*if \(state\.page === "settings" && !state\.settingsDirtyGroups\.size\) renderSettingsPanel\(\);/);
   assert.match(html, /Block Git operations while review is pending/);
@@ -9257,9 +9438,79 @@ test("initializeContextRoomProject refuses allowedPaths '.' and './' instead of 
   try {
     fs.mkdirSync(path.join(project, "docs"));
     fs.writeFileSync(path.join(project, "docs/a.md"), "# a\n");
-    for (const value of [".", "./", ".//"]) {
+    for (const value of [".", "./", ".//", "..", "../", "docs/..", "docs/./a.md", " .. "]) {
       assert.throws(() => initializeContextRoomProject(project, { title: "Dot", allowedPaths: [value] }), /allowedPaths cannot be/);
     }
+    assert.throws(() => initializeContextRoomProject(project, { title: "Dot", allowedPaths: ["docs/"], watchAllow: [".."] }), /watchAllow cannot be/);
     assert.equal(fs.existsSync(path.join(project, ".context-room/config.json")), false, "nothing is saved");
+    // A leading "./" (shell completion) is read as docs/: it is a valid entry, not a dead one.
+    for (const value of ["./docs/", "./docs", ".\\docs\\"]) assert.equal(deadReviewScopePathEntry(value), false, value);
+    for (const value of ["docs/.", "./..", "././docs/", ".//docs/", "/docs/"]) assert.equal(deadReviewScopePathEntry(value), true, value);
+    const saved = initializeContextRoomProject(project, { title: "Dot", allowedPaths: ["./docs/"], watchAllow: ["./docs/"] });
+    assert.deepEqual(saved.config.allowedPaths, ["docs/"]);
+    assert.deepEqual(saved.config.watchAllow, ["docs/"]);
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
+});
+
+test("doctor flags a hand-edited scope path with '.' or '..' instead of saying OK", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-dead-scope-"));
+  const hubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-dead-scope-hub-"));
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(hubHome, { recursive: true, force: true });
+  });
+  fs.mkdirSync(path.join(project, "docs"));
+  fs.writeFileSync(path.join(project, "docs/a.md"), "# a\n");
+  initializeContextRoomProject(project, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  assert.equal(buildContextRoomDoctorReport(project).issues.some((issue) => issue.type === "review_scope_path_matches_nothing"), false);
+  const configPath = path.join(project, CONFIG_FILE);
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  config.allowedPaths.push(".", "..");
+  config.watchAllow.push(".");
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  const issues = buildContextRoomDoctorReport(project).issues.filter((issue) => issue.type === "review_scope_path_matches_nothing");
+  assert.equal(issues.length, 3);
+  assert.ok(issues.every((issue) => issue.severity === "high"));
+  const allowed = issues.filter((issue) => /allowedPaths entry/.test(issue.message));
+  const watched = issues.filter((issue) => /watchAllow entry/.test(issue.message));
+  assert.deepEqual(allowed.map((issue) => issue.path).sort(), [".", ".."]);
+  assert.deepEqual(watched.map((issue) => issue.path), ["."]);
+  assert.match(watched[0].message, /Settings > Review and trust > Documents to review/);
+});
+
+test("first init without --allow reports how many discovered documents Git ignores, and where", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-"));
+  const hubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-hub-"));
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(hubHome, { recursive: true, force: true });
+  });
+  execFileSync("git", ["init", "-q"], { cwd: project });
+  fs.writeFileSync(path.join(project, ".gitignore"), "docs/\n");
+  fs.writeFileSync(path.join(project, "README.md"), "# Readme\n");
+  fs.mkdirSync(path.join(project, "docs"));
+  for (const name of ["a", "b", "c"]) fs.writeFileSync(path.join(project, `docs/${name}.md`), `# ${name}\n`);
+  const result = initializeContextRoomProject(project);
+  assert.equal(result.documentationPaths.length, 4);
+  assert.deepEqual(result.gitIgnoredDocumentation, { count: 3, folders: [{ path: "docs/", count: 3 }], moreFolders: 0 });
+  assert.ok(result.config.allowedPaths.includes("docs/"), "ignored documents stay in the scope");
+
+  const second = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-allow-"));
+  t.after(() => fs.rmSync(second, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: second });
+  fs.writeFileSync(path.join(second, "README.md"), "# Readme\n");
+  assert.equal(initializeContextRoomProject(second, { allowedPaths: ["README.md"] }).gitIgnoredDocumentation, null, "--allow chose the scope");
+  const outsideGit = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-nogit-"));
+  t.after(() => fs.rmSync(outsideGit, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(outsideGit, "README.md"), "# Readme\n");
+  const outside = initializeContextRoomProject(outsideGit).gitIgnoredDocumentation;
+  assert.ok(outside === null || outside.count === 0);
 });

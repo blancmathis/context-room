@@ -104,7 +104,8 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   // add-project dialog, Go to palette), each measured; keep this budget tight and raise it only with a reason.
   expect(cssBytes).toBeLessThan(46_000);
   // Brotli size of the whole script (244606 on 20c6254); the old 200 kB limit only ever saw 304 revalidations.
-  expect(jsBytes).toBeLessThan(260_000);
+  // Raised 260 000 -> 263 000 on 2026-11-11 for the review-scope notice (S5a, PR #149): main was 259 335, this branch measures 261 009 after trimming the notice.
+  expect(jsBytes).toBeLessThan(263_000);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();
