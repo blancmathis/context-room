@@ -12,6 +12,25 @@ import { listLocalProposals } from '../../src/local_proposals.mjs';
 import { listSharedProposalWorkspaces } from '../../src/shared_context.mjs';
 import { addNotebookSharedFixture, removeNotebookSharedFixture, notebookFixtureGit } from '../fixtures/notebook_shared.mjs';
 
+// Waits until the page has no request in flight and no scheduled refresh, so a reload cannot cut a request short
+// (WebKit reports that as "due to access control checks"). Real console errors stay visible to the caller.
+const inFlightRequests = new WeakMap();
+function trackRequests(page) {
+  const open = new Set(); inFlightRequests.set(page, open);
+  page.on('request', request => { if (!request.url().includes('/api/runtime-events')) open.add(request); }); // runtime-events is a stream that stays open on purpose
+  for (const event of ['requestfinished', 'requestfailed']) page.on(event, request => open.delete(request));
+}
+async function waitForQuiet(page) {
+  const busy = () => page.evaluate(() => Boolean(
+    state.refreshInFlight || state.reportsRefreshInFlight || state.backgroundRefreshTimer || state.backgroundRefreshPendingOptions
+    || state.localForegroundRefreshTimer || state.workspaceRegistrationPromise || state.workspacePresenceDrainPromise || state.workspacePresenceQueued
+    || state.runtimeContextHubRefreshPromise || state.runtimeContextHubRefreshTimer || state.contextHubBusy || state.contextAttentionLoading
+    || state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing));
+  const open = inFlightRequests.get(page);
+  await expect.poll(async () => open.size === 0 && !(await busy()), { timeout: 15_000 }).toBe(true);
+  await page.waitForTimeout(300);
+  await expect.poll(async () => open.size === 0 && !(await busy()), { timeout: 15_000 }).toBe(true);
+}
 async function fixture(page, { devices = false, shared = false } = {}) {
   const scratch = fs.mkdtempSync(path.join(shared ? os.homedir() : os.tmpdir(), '.context-room-notebook-browser-'));
   const base = fs.realpathSync(scratch), root = path.join(base, 'project'), previous = {};
@@ -23,7 +42,7 @@ async function fixture(page, { devices = false, shared = false } = {}) {
   const deviceService = devices ? createContextRoomDeviceService({ root, stateRoot: path.join(base, 'private-devices') }) : null;
   if (deviceService) await deviceService.listen();
   const runtime = createMemoryServer({ root, deviceService }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${runtime.server.address().port}`, errors = []; page.on('pageerror', error => errors.push(error.message));
+  const origin = `http://127.0.0.1:${runtime.server.address().port}`, errors = []; page.on('pageerror', error => errors.push(error.message)); trackRequests(page);
   await page.goto(origin + '/'); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
   return { root, runtime, origin, errors, deviceService, sharedFixture, async close() {
     try { if (!page.isClosed()) { await page.context().setOffline(false); await page.goto('about:blank'); } }
@@ -827,6 +846,9 @@ test('@smoke @notebook the toolbars wrap at 800 px and scroll with a visible cue
         if (width === 800) expect(bar.scrolls, 'wraps at 800').toBe(false);
         else if (bar.scrolls) expect(bar.cue, 'cue when clipped at 390').toBe(true);
       }
+      // An open notebook polls the Mac every 900 ms; closing it stops that loop, then no request is left to cut.
+      await dialog.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(dialog).toHaveCount(0);
+      await waitForQuiet(page);
       await page.reload(); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
     }
     expect(f.errors).toEqual([]);
