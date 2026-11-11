@@ -24141,7 +24141,7 @@ function renderMarkdownPlainInline(value, options = {}) {
       const label = renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
-      if (options.reader && !state.files.length && isMarkdownDocLinkTarget(link[2])) {
+      if (options.reader && !state.files.length && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[2])) {
         return hubDocLinkMissing(link[2]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[2]) + '">' + label + '</span>' : label;
       }
       return escapeHtml(part);

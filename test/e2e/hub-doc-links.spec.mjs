@@ -28,6 +28,7 @@ async function fixture() {
       "docs/guide.md": "# Guide\n\nHello guide.\n\n" + "Filler line.\n\n".repeat(120) + "## Far part\n\nThe [Other](other/page.md) and [Back](../README.md).\n\n" + "Filler line.\n\n".repeat(60),
       "docs/deep/notes.md": "# Deep notes\n",
       "docs/other/page.md": "# Other page\n",
+      "INTRO.md": "# Intro\n\nThe [Other](docs/other/page.md) and the [Lost page](docs/lost.md).\n",
     },
   })) {
     const root = path.join(base, name);
@@ -96,6 +97,39 @@ test("@links a relative link in a Hub document opens the target; a link to a mis
     await expect(page.locator("#docReader a[data-doc-link-path]", { hasText: "Back" })).toHaveCount(1);
     await expect(page.locator('#docReader [data-heading-id="far-part"]')).toBeInViewport();
     expect(listings).not.toContain("old");
+    expect(failures).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("@links a doc opened while folders are still read gets its links checked", async ({ page }) => {
+  const hub = await fixture();
+  const failures = [];
+  page.on("response", (response) => {
+    if (response.url().includes("/api/") && [404, 409].includes(response.status())) failures.push(response.status() + " " + response.url());
+  });
+  // A slow read of docs/: another doc is opened before it ends.
+  let docsAsked = false;
+  await page.route(/project-explorer\?.*path=docs(&|$)/, async (route) => {
+    docsAsked = true;
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    await route.continue().catch(() => {});
+  });
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+    await page.locator("[data-home-explorer]").click();
+    await view(page).locator(".hl-select", { hasText: "Alpha" }).click();
+    const reader = page.locator("#docReader");
+    await view(page).locator("a.hl-file", { hasText: "README.md" }).click();
+    await expect(reader).toContainText("Read the", { timeout: 15_000 });
+    await expect.poll(() => docsAsked).toBe(true);
+    // The file list of the open project, beside the reader.
+    await page.getByRole("link", { name: /^INTRO\.md/ }).click();
+    await expect(reader).toContainText("The Other", { timeout: 15_000 });
+    await expect(reader.locator("a[data-doc-link-path]", { hasText: "Other" })).toHaveCount(1, { timeout: 15_000 });
+    await expect(reader.locator(".markdown-doc-link-missing")).toHaveText(["Lost page"]);
     expect(failures).toEqual([]);
   } finally {
     await hub.close();

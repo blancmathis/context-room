@@ -3,7 +3,7 @@
 // Only folders listed by their parent are read (no 404). A cleared cache or a failed read is read again.
 export function createHubDocLinks(app) {
   const { state } = app;
-  const pending = new Set();
+  const pending = new Map(); // file path -> Explorer cache key of its project
   let draining = false;
   let redrawWanted = false;
 
@@ -34,25 +34,26 @@ export function createHubDocLinks(app) {
     if (!project || !filePath) return null;
     const result = walk(project, filePath);
     if (typeof result !== "string") return result;
-    pending.add(filePath);
+    const scope = app.globalProjectExplorerCacheKey(project);
+    pending.set(filePath, scope);
     if (!draining) {
       draining = true;
-      queueMicrotask(() => void drain(app.globalProjectExplorerCacheKey(project)));
+      queueMicrotask(() => void drain(scope));
     }
     return null;
   }
 
-  // Read the folders level by level, then redraw once.
+  // Read the folders level by level, then redraw the open doc once, whichever doc it is now.
   async function drain(scope) {
     const current = () => { const project = openProject(); return project && app.globalProjectExplorerCacheKey(project) === scope ? project : null; };
-    const selected = state.selected;
     const tries = new Map();
     let loaded = redrawWanted;
     redrawWanted = false;
     try {
       for (let round = 0, project; round < 16 && (project = current()); round += 1) {
         const directories = new Set();
-        for (const filePath of pending) {
+        for (const [filePath, pathScope] of pending) {
+          if (pathScope !== scope) continue;
           const result = walk(project, filePath);
           if (typeof result === "string" && (tries.get(result) || 0) < 2) directories.add(result);
           else pending.delete(filePath);
@@ -64,10 +65,17 @@ export function createHubDocLinks(app) {
         if (!pages.some(Boolean)) await new Promise((resolve) => setTimeout(resolve, 300));
       }
     } finally {
-      pending.clear();
       draining = false;
     }
-    if (loaded && state.selected === selected && current()) redraw();
+    // Another project opened during the reads: read its paths now, and redraw once at the end.
+    const project = openProject(), next = project && app.globalProjectExplorerCacheKey(project);
+    for (const [filePath, pathScope] of pending) if (pathScope === scope || pathScope !== next) pending.delete(filePath);
+    if (pending.size) {
+      draining = true;
+      redrawWanted = loaded;
+      return void drain(next);
+    }
+    if (loaded && openProject()) redraw();
   }
 
   async function loadDirectory(project, directory) {
