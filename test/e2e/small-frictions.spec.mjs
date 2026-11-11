@@ -135,7 +135,7 @@ test("@smoke a file that no longer exists says so and offers a way back; a real 
     });
     expect(calm, JSON.stringify(calm)).toEqual({ error: false, role: "status", strongMono: false, strongRed: false, codeMono: true });
     await page.getByRole("button", { name: "Back to home" }).click();
-    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible();
     await page.goto(open("notes/blob.bin"));
     await expect(page.getByText("Could not open this file")).toBeVisible({ timeout: 20_000 });
     await expect(page.locator("#viewer").getByText(/Path not allowed/)).toBeVisible();

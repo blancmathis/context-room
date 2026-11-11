@@ -1239,7 +1239,8 @@ test("@layout project rows keep their title and badges whole at 1024 and 1440", 
   const data = fixture();
   for (const width of [1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+    // The home list shows only while the Explorer is collapsed.
+    await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=collapsed`);
     await waitForBoot(page);
     const rows = page.locator("#contextHubHomeProjectList .context-hub-home-project");
     await expect(rows.first()).toBeVisible();
@@ -1263,42 +1264,66 @@ test("@layout project rows keep their title and badges whole at 1024 and 1440", 
   }
 });
 
-test("@layout the review queue starts right under Notebooks while Projects and inspection share the side column", async ({ page }) => {
+test("@layout the Hub home starts with the review queue; projects and notebooks live in the Explorer", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await page.goto(`${data.origin}/?hub=1&view=hub&explorer=expanded`);
   await waitForBoot(page);
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
+  const boxes = () => page.evaluate(() => ({ homeWidth: document.getElementById("home").clientWidth, ...Object.fromEntries([".workspace-chrome", "#reviewQueuePanel", "#contextHubProjectsPanel", "#contextHealthPanel", "#contextEnginePanel"].map((selector) => {
+    const element = document.querySelector(selector), rect = element.getBoundingClientRect();
+    return [selector.replace(/^[.#]/, ""), { top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right), visible: Boolean(element.offsetParent) }];
+  })) }));
+  const near = (a, b) => Math.abs(a - b) <= 2;
+  // Explorer open: it is the only project list and nothing is selected, so the queue starts right under the top bar at full width.
+  const open = await boxes();
+  expect(open.contextHubProjectsPanel.visible).toBe(false);
+  expect(open.contextHealthPanel.visible).toBe(false);
+  expect(near(open.reviewQueuePanel.top, open["workspace-chrome"].bottom), JSON.stringify(open)).toBe(true);
+  expect(open.reviewQueuePanel.right - open.reviewQueuePanel.left, JSON.stringify(open)).toBeGreaterThanOrEqual(open.homeWidth - 2);
+  // The home shortcuts sit in the top bar; "Notebooks" is there only while the Explorer is closed.
+  await expect(page.locator(".workspace-dock [data-home-explorer]")).toBeVisible();
+  await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
+  await expect(page.locator("[data-notebooks-open]")).toBeHidden();
+  // Notebooks is a section of the Explorer, next to Projects and Computer.
+  await page.locator('[data-global-explorer-mode="notebooks"]').click();
+  await expect(page.locator("#notebookSpacePanel").getByRole("button", { name: "New notebook", exact: true })).toBeVisible();
+  await expect(page.locator("#globalProjectList")).toBeHidden();
+  await page.locator('[data-global-explorer-mode="projects"]').click();
+  await expect(page.locator("#globalProjectList")).toBeVisible();
+  await expect(page.locator("#notebookSpacePanel")).toBeHidden();
+  // Explorer collapsed: the home list comes back in a side column; inspection stacks under it.
+  await page.evaluate(() => setExplorerCollapsedFromUser(true));
   await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
-  const box = (selector) => page.locator(selector).evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, visible: Boolean(element.offsetParent) };
-  });
-  const [notebooks, projects, review, health] = await Promise.all(["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"].map(box));
-  // The side column used to share row heights with Notebooks, which pushed the queue below the fold.
-  expect(Math.abs(review.top - (notebooks.visible ? notebooks.bottom : projects.top))).toBeLessThanOrEqual(2);
-  expect(projects.left).toBeGreaterThanOrEqual(review.right - 1);
-  expect(health.visible).toBe(true);
-  // The offset under Projects comes from a ResizeObserver, applied on the next frame.
-  await expect.poll(() => page.evaluate(() => Math.round(Math.abs(document.querySelector("#contextHealthPanel").getBoundingClientRect().top
-    - document.querySelector("#contextHubProjectsPanel").getBoundingClientRect().bottom))), { message: "Project inspection sits right under Projects" }).toBeLessThanOrEqual(2);
-  // Context engine (Explorer menu "inspect the agent environment") stays in the main column right under the queue:
-  // a full-width panel could only start below the whole side column, leaving a gap as tall as Projects.
-  // Shown as openContextEngineInspection shows it; its content does not change its placement.
-  await page.evaluate(() => { document.getElementById("contextEnginePanel").hidden = false; });
-  await expect(page.locator("#contextEnginePanel")).toBeVisible();
-  const engineOffset = () => page.evaluate(() => {
-    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
-    const panel = rect("#contextEnginePanel"), queue = rect("#reviewQueuePanel"), side = rect("#contextHubProjectsPanel");
-    return Math.round(Math.max(Math.abs(panel.top - queue.bottom), panel.right - side.left));
-  });
-  await expect.poll(engineOffset, { message: "Context engine sits right under the queue, left of the side column" }).toBeLessThanOrEqual(2);
+  // The inspection offset comes from a ResizeObserver, applied on the next frame. The two panels are shown
+  // as a chosen project shows them; their content does not change their placement.
+  await expect.poll(async () => {
+    await page.evaluate(() => { for (const id of ["contextHealthPanel", "contextEnginePanel"]) document.getElementById(id).hidden = false; });
+    const side = await boxes();
+    const broken = [
+      near(side.contextHubProjectsPanel.top, side.reviewQueuePanel.top) || "projects start level with the queue",
+      side.contextHubProjectsPanel.left >= side.reviewQueuePanel.right - 1 || "projects sit right of the queue",
+      near(side.contextHealthPanel.top, side.contextHubProjectsPanel.bottom) || "inspection sits under projects",
+      near(side.contextHealthPanel.left, side.contextHubProjectsPanel.left) || "inspection shares the side column",
+      // Context engine stays in the main column right under the queue, left of the side column.
+      near(side.contextEnginePanel.top, side.reviewQueuePanel.bottom) || "context engine sits under the queue",
+      side.contextEnginePanel.right <= side.contextHubProjectsPanel.left + 2 || "context engine stays in the main column",
+    ].filter((entry) => entry !== true);
+    return broken.length ? [...broken, JSON.stringify(side)] : [];
+  }).toEqual([]);
+  // One column below 1280 px: the queue comes before the project list.
   await page.setViewportSize({ width: 1100, height: 900 });
-  const tops = await page.evaluate(() => ["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"]
+  const tops = await page.evaluate(() => ["#reviewQueuePanel", "#contextHubProjectsPanel", "#contextHealthPanel"]
     .map((selector) => document.querySelector(selector))
     .filter((element) => element?.offsetParent)
     .map((element) => Math.round(element.getBoundingClientRect().top)));
-  expect(tops.length).toBeGreaterThanOrEqual(3);
+  expect(tops.length).toBe(3);
   expect(tops).toEqual([...tops].sort((a, b) => a - b));
+  // Explorer closed: the top bar opens it on Notebooks.
+  await page.locator("[data-notebooks-open]").click();
+  await expect(page.locator(".app")).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator("#notebookSpacePanel").getByRole("button", { name: "New notebook", exact: true })).toBeVisible();
+  await expect(page.locator("[data-notebooks-open]")).toBeHidden();
 });
 
 test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {

@@ -381,8 +381,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .global-project-row-side > span:first-child { min-width: 0; justify-self: stretch; overflow: hidden; text-overflow: ellipsis; }
     .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
-    .context-hub-projects-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    .context-hub-projects-panel header kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
+    .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
+    /* Hub home shortcuts sit in the top bar, on the home only; "Notebooks" shows while the Explorer is closed. */
+    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action, .app:not(.sidebar-collapsed) [data-notebooks-open] { display: none; }
+    #contextHubSinceLastVisit:not([hidden]) + .muted { display: none; }
+    /* Phone: the Explorer button is the way to Notebooks; the status stays on screen. */
+    @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebooks-open] { display: none; } }
+    /* One project list on screen: the Explorer carries it while it is open. */
+    .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
     .context-hub-home-project { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
     .context-hub-home-project > .context-hub-home-project-main { flex: 1 1 220px; }
@@ -399,6 +405,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
     .notebook-space-panel[data-no-projects="true"] .notebook-space-new { background: transparent; color: var(--accent); }
+    .notebook-space-panel:not([hidden]) { display: grid; gap: 10px; }
+    .global-project-explorer.notebooks-mode > :not(.global-explorer-modes):not(.notebook-space-panel), .global-project-explorer:not(.notebooks-mode) > .notebook-space-panel { display: none; }
     .context-hub-welcome { display: grid; gap: 10px; justify-items: start; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
     .context-hub-welcome h2, .context-hub-welcome p { margin: 0; }
     .context-hub-welcome h2 { font-size: 20px; }
@@ -413,13 +421,13 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .add-project-list button:hover { background: var(--surface-card-hover); }
     .add-project-list li.add-project-empty { padding: 10px; color: var(--muted); font-size: 12px; }
     .add-project-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-    .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
-    .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
+    .notebook-space-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; border-radius: 10px; }
     .notebook-space-item:hover { background: var(--surface-card-hover); }
     .notebook-space-item button { min-height: 44px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; font-weight: 650; }
     .notebook-space-item .notebook-space-open { min-width: 0; display: grid; justify-items: start; gap: 2px; border-color: transparent; text-align: left; }
     .notebook-space-item .notebook-space-open span { color: var(--muted); font-size: 10px; font-weight: 500; }
-    .notebook-space-item .notebook-space-resume { border-color: var(--accent); font-weight: 780; }
+    .notebook-space-item .notebook-space-resume { grid-row: 2; grid-column: 1 / -1; border-color: var(--accent); font-weight: 780; }
     .documents-map { display: grid; gap: 2px; padding: 6px; }
     .docs-map-group > summary { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; list-style: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
     .docs-map-group > summary::-webkit-details-marker { display: none; }
@@ -2948,11 +2956,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room .context-hub-home-projects { max-height: min(540px, calc(100dvh - 240px)); }
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
-      .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
       [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto auto 1fr; }
-      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(#contextHubProjectsPanel):not(#contextHealthPanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
-      [data-context-room-runtime-profile="local"] .global-context-room #contextHubProjectsPanel { grid-column: 2; grid-row: 1 / -1; align-self: start; min-width: 0; }
-      [data-context-room-runtime-profile="local"] .global-context-room #contextHealthPanel { grid-row: 1 / -1; align-self: start; margin-top: var(--projects-h); }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-columns: minmax(0,1fr) auto; }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(.context-hub-home-side):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room .context-hub-home-side { grid-column: 2; grid-row: 1 / -1; align-self: start; width: 340px; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room #contextHealthPanel { margin-top: var(--projects-h); }
     }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-page { overflow: hidden; }
@@ -3406,6 +3414,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-hub"] #sharedSkillsWizard,
     html[data-context-room-runtime-profile="hosted-hub"] #codexReferencePopover,
     html[data-context-room-runtime-profile="hosted-hub"] [data-global-explorer-mode="computer"],
+    html[data-context-room-runtime-profile="hosted-hub"] [data-global-explorer-mode="notebooks"],
     html[data-context-room-runtime-profile="hosted-hub"] [data-context-room-mode-prompt],
     html[data-context-room-runtime-profile="hosted-hub"] #sharedContextControls,
     html[data-context-room-runtime-profile="hosted-hub"] #newDocPage,
@@ -3666,7 +3675,13 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <div id="globalProjectExplorer" class="global-project-explorer" hidden>
         <div class="global-explorer-modes" role="group" aria-label="Explorer scope">
           <button class="global-explorer-mode active" type="button" data-global-explorer-mode="projects">Projects</button>
+          <button class="global-explorer-mode" type="button" data-global-explorer-mode="notebooks">Notebooks</button>
           <button class="global-explorer-mode" type="button" data-global-explorer-mode="computer">Computer</button>
+        </div>
+        <div id="notebookSpacePanel" class="notebook-space-panel" hidden>
+          <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New notebook</button>
+          <div class="global-project-explorer-summary"><strong id="notebookSpaceHeading">Notebooks</strong><span id="notebookSpaceSummary"></span></div>
+          <ul id="notebookSpaceList" class="notebook-space-list" aria-labelledby="notebookSpaceHeading"></ul>
         </div>
         <div id="globalExplorerScope" class="global-explorer-scope" hidden></div>
         <div class="search-row">
@@ -3684,6 +3699,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Accept proposal</button>
           <button id="brandHome" class="context-room-brand" type="button" title="Home" aria-label="Home"><span class="context-room-brand-mark" aria-hidden="true"></span><strong>Context Room</strong></button>
           <button id="settingsButton" class="dock-button workspace-switch" type="button" title="Open settings">Settings</button>
+          <button class="dock-button hub-home-action" type="button" data-home-explorer title="Browse the files of every project" hidden>Files</button>
+          <button class="dock-button hub-home-action" type="button" data-context-hub-project-goto title="Go to project, file or text (⌘K)" hidden>Go to… <kbd>⌘K</kbd></button>
+          <button class="dock-button hub-home-action" type="button" data-notebooks-open title="Open the notebooks in the Explorer" hidden>Notebooks</button>
           <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
           <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
           <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
@@ -3731,34 +3749,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               <button class="file-action primary" type="button" data-add-project>Add a project…</button>
             </section>
             <section id="explorerViewPanel" class="docqa-panel explorer-view-panel" aria-label="Files" hidden></section>
-            <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
-              <header>
-                <div>
-                  <h2 id="notebookSpaceHeading">Notebooks</h2>
-                  <div id="notebookSpaceSummary" class="muted"></div>
-                </div>
-                <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New notebook</button>
-              </header>
-              <ul id="notebookSpaceList" class="notebook-space-list" aria-label="Notebooks"></ul>
-            </section>
-            <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
-              <header>
-                <div>
-                  <h2 id="contextHubProjectsHeading">Projects</h2>
-                  <div id="contextHubProjectCoverage" class="muted"></div>
-                  <div id="contextHubSinceLastVisit" class="muted" hidden></div>
-                </div>
-                <div class="context-hub-projects-actions">
-                  <button class="quiet-button" type="button" data-home-explorer title="Browse the files of every project">Files</button>
-                  <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project, file or text (⌘K)">Go to… <kbd>⌘K</kbd></button>
-                </div>
-              </header>
-              <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
-            </section>
             <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
                   <h2 id="reviewQueueHeading" tabindex="-1">Review queue</h2>
+                  <div id="contextHubSinceLastVisit" class="muted" hidden></div>
                   <div class="muted">Each file stays atomic. Shared changes stay grouped by proposal.</div>
                 </div>
                 <div id="reviewSummary" class="review-summary" role="group" aria-label="review metrics"></div>
@@ -3810,7 +3805,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <div id="contextEngineBody" class="markdown-tools" aria-live="polite"></div>
             </section>
-            <section id="contextHealthPanel" class="docqa-panel">
+            <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel context-hub-home-side" aria-labelledby="contextHubProjectsHeading" hidden>
+              <header>
+                <div>
+                  <h2 id="contextHubProjectsHeading">Projects</h2>
+                  <div id="contextHubProjectCoverage" class="muted"></div>
+                </div>
+              </header>
+              <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
+            </section>
+            <section id="contextHealthPanel" class="docqa-panel context-hub-home-side">
               <header>
                 <div>
                   <h2>Context health</h2>
@@ -4338,11 +4342,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.activeProjectLocationId = "";
 	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
 	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
-	// Wide Hub home: Context health sits under Projects in the same side area and needs that panel's height.
+	// Wide Hub home: Project inspection sits under the home project list, in one side column.
 	if (IS_GLOBAL_CONTEXT_ROOM && typeof ResizeObserver === "function") {
-		const homeGrid = document.querySelector("#home .docqa-grid");
-		const projectsPanel = document.getElementById("contextHubProjectsPanel");
-		if (homeGrid && projectsPanel) new ResizeObserver(() => homeGrid.style.setProperty("--projects-h", projectsPanel.offsetHeight + "px")).observe(projectsPanel);
+		const projects = document.getElementById("contextHubProjectsPanel");
+		if (projects) new ResizeObserver(() => projects.parentElement.style.setProperty("--projects-h", projects.offsetHeight + "px")).observe(projects);
 	}
 const LEGACY_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:";
 const WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:workspace-navigation:";
@@ -7419,6 +7422,7 @@ function renderContextHubHomeProjects() {
   const coverage = el("contextHubProjectCoverage");
   if (!panel || !list || !coverage) return;
   panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB;
+  document.querySelectorAll(".hub-home-action").forEach((button) => { button.hidden = panel.hidden; });
   if (panel.hidden) return;
   syncHomeExplorerMode();
   if (state.homeExplorer) renderExplorerViewPanel();
@@ -7602,8 +7606,8 @@ function renderNotebookSpace() {
     const changed = item.changedAt ? new Date(item.changedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     return '<li class="notebook-space-item" data-notebook-id="' + id + '">'
       + '<button class="notebook-space-open" type="button" data-notebook-space-open="' + id + '"><strong>' + title + '</strong>' + (changed ? '<span>Edited ' + escapeHtml(changed) + '</span>' : "") + '</button>'
-      + (index === 0 ? '<button class="notebook-space-resume" type="button" data-notebook-space-open="' + id + '" aria-label="Resume · ' + title + '">Resume</button>' : '<span></span>')
-      + '<button type="button" data-notebook-space-move="' + id + '" aria-label="Move to project · ' + title + '">Move to project…</button>'
+      + (index === 0 ? '<button class="notebook-space-resume" type="button" data-notebook-space-open="' + id + '" aria-label="Resume · ' + title + '">Resume</button>' : "")
+      + '<button type="button" data-notebook-space-move="' + id + '" title="Move to project…" aria-label="Move to project · ' + title + '">Move…</button>'
       + '</li>';
   }).join("");
 }
@@ -8651,12 +8655,14 @@ function renderGlobalProjectExplorer() {
   explorer.hidden = !IS_GLOBAL_CONTEXT_ROOM;
   if (!IS_GLOBAL_CONTEXT_ROOM) return;
   document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => {
-    const active = button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects");
+    const active = button.dataset.globalExplorerMode === (["computer", "notebooks"].includes(state.globalExplorerMode) ? state.globalExplorerMode : "projects");
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
   if (search.value !== state.globalProjectSearch) search.value = state.globalProjectSearch;
   if (clearSearch) clearSearch.hidden = !state.globalProjectSearch.trim();
+  explorer.classList.toggle("notebooks-mode", state.globalExplorerMode === "notebooks");
+  if (state.globalExplorerMode === "notebooks") return;
   if (state.globalExplorerMode === "computer") {
     search.placeholder = "Search explorer...";
     search.setAttribute("aria-label", "Search computer explorer");
@@ -16668,9 +16674,11 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
   const worktree = project ? globalProjectSelectedWorktree(project) : null;
   const heading = panel.querySelector("h2");
   if (heading) heading.textContent = "Project inspection";
+  // Nothing to inspect until a project is chosen: the panel stays out of the home.
+  panel.hidden = !project;
   if (!project) {
     state.globalInspectionView = "";
-    holder.innerHTML = '<div class="global-project-inspection-empty"><strong>Select a project in Explorer.</strong><span>Context health and the agent environment for its selected worktree will appear here.</span></div>';
+    holder.innerHTML = "";
     return;
   }
   if (project.mode === "shared" || !worktree?.root) {
@@ -27425,6 +27433,11 @@ el("clearGlobalProjectSearch")?.addEventListener("click", () => {
 document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => button.addEventListener("click", () => {
   const mode = button.dataset.globalExplorerMode;
   state.globalProjectSearch = "";
+  if (mode === "notebooks") {
+    state.globalExplorerMode = mode;
+    renderGlobalProjectExplorer();
+    return;
+  }
   if (mode === "computer") {
     state.contextHubPendingOpenGeneration += 1;
     state.globalExplorerMode = "computer";
@@ -27696,7 +27709,12 @@ if (globalThis.ContextRoomNativeOwner) {
   gotoButton?.querySelector("kbd")?.remove();
   gotoButton?.setAttribute("title", "Go to project or file");
 }
-el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
+for (const host of [document.querySelector(".workspace-dock"), el("contextHubProjectsPanel")]) host?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-notebooks-open]")) {
+    setExplorerCollapsedFromUser(false);
+    document.querySelector('[data-global-explorer-mode="notebooks"]').click();
+    return;
+  }
   if (event.target.closest("[data-home-explorer]")) {
     setHomeExplorer(true);
     return;
