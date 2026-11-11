@@ -51,7 +51,19 @@ This is a behavioral authority rule. The command surface reinforces it by withho
 
 ## Owner-authorized scope
 
-Context Room stores the last owner-authorized review scope outside project configuration. Direct configuration changes that narrow the protected scope do not become effective automatically. They produce an authority issue until the owner saves the intended scope through the human Settings surface.
+Context Room stores the last owner-authorized review scope outside project configuration. Direct configuration changes that narrow the protected scope do not become effective automatically. They produce an authority issue (`doctor`: critical `review_authority_tamper`) until the owner saves the intended scope through the human Settings surface.
+
+Where the owner decides: Hub, project selected, **Settings** > tab **Review and trust** > card **Documents to review**, field **Watched documents and folders**, then **Save settings**. When `config.json` was changed outside Settings (probably by an agent or a tool) and tries to reduce the scope, the card shows a notice that says so and names what the configuration drops: paths (`allowedPaths`, `watchAllow`, `watchRules`) and startup settings. The fields still show the owner-authorized (effective) scope.
+
+A save never signs a reduction the owner did not accept in view. A save rewrites the configuration from the signed scope, and reduces it only where the owner acted:
+
+- **Keep**: Save settings without removing anything, or save any other setting. Everything listed stays in review and the reduction is discarded. The status line says so. This holds for every save route, `/api/settings` included.
+- **Accept**: remove the paths from the field, or press the notice button **Accept the reduction** (needed for a path that is not in the field, such as an `allowedPaths` entry), then Save settings. The save sends the accepted paths with the notice token; a token from an older notice is refused (409 `review_scope_decision_stale`). For a startup setting, change it in its own card, then Save settings.
+- Until the owner saves, the footer says **Your decision is needed** and **Save settings** stays enabled, even with an unchanged form.
+
+`init` and `setup --allow`, and both Settings save routes, refuse a scope path with a `.` or `..` segment (`.`, `./`, `..`, `docs/..`): it matches no file. One leading `./` is dropped first, so `./docs/` is saved as `docs/`. A configuration edited by hand with such a path gets a high `review_scope_path_matches_nothing` issue in `doctor`.
+
+The first `init` without `--allow` puts every discovered document in the scope, Git-ignored ones included. It reports how many discovered documents Git ignores, and under which folders (`gitIgnoredDocumentation` with `init --format json`). Pass `--allow` on the first `init` to choose the scope.
 
 ## File review evidence
 
@@ -61,7 +73,7 @@ A changed hash, restored deletion, changed mode or changed proposal head invalid
 
 A review base write (`POST /api/docqa/review-baseline`) may carry `expectedContentHash`, the hash of the version the reviewer saw. When the file changed since, the write fails with 409 `review_revision_conflict` and the base stays as it was, so the newer change still shows in review. The review flow always sends it, because it saves decisions after the next file opens.
 
-A local proposal file closed by "Compare with current file" is not a decision. When the project file already holds the agent's version, or the file is deleted on both sides, nothing is left to decide: the proposal records the file in `settledFiles` (who: the human, via `compare-current`; when; why: `already-in-project` or `deleted-both-sides`), writes no file and no review evidence. The record is visible only when the human closes the file, and in `settledFiles` (stored with the proposal). A proposal whose files were all closed this way gets the status `settled`, never `accepted`, `rejected` or `resolved`. A `settled` proposal leaves the review queue.
+A local proposal file closed by "Compare with current file" is not a decision. When the project file already holds the agent's version, or the file is deleted on both sides, nothing is left to decide: the proposal records the file in `settledFiles` (who: the human, via `compare-current`; when; why: `already-in-project` or `deleted-both-sides`), writes no file and no review evidence. The record is stored with the proposal in `settledFiles`; the review queue item carries it and the proposal view shows it under "Closed without a decision" as soon as it opens. A proposal whose files were all closed this way gets the status `settled`, never `accepted`, `rejected` or `resolved`. A `settled` proposal leaves the review queue.
 
 ## Receipts and undo
 

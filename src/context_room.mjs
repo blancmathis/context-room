@@ -29,7 +29,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -185,6 +185,7 @@ import {
   inspectOwnerTrustedState,
   inspectOwnerReviewScope,
   ownerReviewAuthorityLockPaths,
+  ownerReviewScopeSaveBase,
 } from "./review_authority.mjs";
 
 export { DOC_METADATA_KINDS, DOC_METADATA_STATUSES, parseDocMetadata } from "./doc_metadata.mjs";
@@ -12562,7 +12563,17 @@ export function buildConfigDiagnostics(root = process.cwd(), settings = readMemo
     return pathEntryExists(candidate) && !projectPathIsContained(root, candidate);
   };
   if (!fs.existsSync(configPath)) issues.push({ type: "missing_config", severity: "critical", message: `${CONFIG_FILE} is missing.` });
+  for (const [field, values] of [["allowedPaths", settings.allowedPaths], ["watchAllow", settings.watchAllow]]) {
+    for (const relPath of values || []) {
+      if (!deadReviewScopePathEntry(relPath)) continue;
+      const where = field === "watchAllow"
+        ? "Remove it in Settings > Review and trust > Documents to review, then Save settings"
+        : `Remove it from allowedPaths in ${CONFIG_FILE}; if Context Room then reports a reduction of the owner scope, confirm it with Save settings in Settings > Review and trust`;
+      issues.push({ path: relPath, type: "review_scope_path_matches_nothing", severity: "high", message: `${field} entry "${relPath}" matches no file: a path with "." or ".." never matches. ${where}. Name folders or files instead, for example docs/ or README.md.` });
+    }
+  }
   for (const relPath of settings.allowedPaths || []) {
+    if (deadReviewScopePathEntry(relPath)) continue;
     const externalPath = resolveExternalPath(relPath.replace(/\/$/, ""));
     if (externalPath) {
       if (!fs.existsSync(externalPath)) issues.push({ type: "allowed_path_missing", severity: "low", message: `Allowed external path does not exist: ${relPath}.` });
@@ -14308,6 +14319,33 @@ export function inferProjectDocumentationSetup(root = process.cwd()) {
   };
 }
 
+// Documents found by the first init that Git ignores still enter the review scope (by design). Count them and
+// name their top folders, so the owner sees it before the scope is trusted. Null outside a Git work tree.
+export function summarizeGitIgnoredDocumentation(root, relPaths = [], { maxFolders = 10 } = {}) {
+  const paths = [...new Set((relPaths || []).map((item) => String(item || "")).filter((item) => item && !item.includes("\n") && !item.includes("\0")))];
+  if (!paths.length) return { count: 0, folders: [] };
+  const result = spawnSync("git", ["check-ignore", "--stdin", "-z"], {
+    cwd: root,
+    input: paths.join("\0") + "\0",
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "ignore"],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // 0: some paths ignored; 1: none ignored; anything else: not a Git work tree or Git failed.
+  if (result.error || ![0, 1].includes(result.status)) return null;
+  const ignored = String(result.stdout || "").split("\0").filter(Boolean);
+  const byFolder = new Map();
+  for (const relPath of ignored) {
+    const separator = relPath.indexOf("/");
+    const folder = separator < 0 ? "./" : relPath.slice(0, separator + 1);
+    byFolder.set(folder, (byFolder.get(folder) || 0) + 1);
+  }
+  const folders = [...byFolder.entries()]
+    .map(([folder, count]) => ({ path: folder, count }))
+    .sort((left, right) => right.count - left.count || left.path.localeCompare(right.path, "en"));
+  return { count: ignored.length, folders: folders.slice(0, maxFolders), moreFolders: Math.max(0, folders.length - maxFolders) };
+}
+
 function assertExistingProjectRoot(root) {
   const resolvedRoot = path.resolve(root);
   if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) {
@@ -14366,9 +14404,9 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
     skillDocumentationFiles: [],
   } : inferProjectDocumentationSetup(projectRoot);
   const title = options.title || existing.title || path.basename(projectRoot) || "Context Room";
-  // "." and "./" match no file (an empty or dead entry, so an empty document index): refuse them instead of saving them.
-  const wholeProject = (options.allowedPaths || []).find((item) => /^\.\/*$/.test(String(item).trim()));
-  if (wholeProject !== undefined) throw new Error(`allowedPaths cannot be "${wholeProject}": name the folders or files to allow, for example docs/ or README.md.`);
+  // ".", "./", ".." and "docs/.." match no file (an empty or dead entry, so an empty document index): refuse them instead of saving them.
+  assertNoDeadReviewScopePaths("allowedPaths", options.allowedPaths);
+  assertNoDeadReviewScopePaths("watchAllow", options.watchAllow);
   const allowedPaths = sanitizePathList(options.allowedPaths?.length ? options.allowedPaths : configExists ? existing.allowedPaths : inferred.allowedPaths);
   const inferredWatchAllow = inferred.watchAllow.filter((relPath) => allowedPaths.some((allowedPath) => pathMatchesSetting(relPath, allowedPath)));
   const watchAllow = sanitizePathList(options.watchAllow?.length ? options.watchAllow : configExists ? existing.watchAllow : inferredWatchAllow);
@@ -14430,11 +14468,15 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
   if (!fs.existsSync(path.join(projectRoot, REVIEW_GATE_FILE))) writeReviewGateSettings(projectRoot, DEFAULT_REVIEW_GATE);
   const agentContext = syncContextRoomAgentContext(projectRoot);
   ensureRuntimeGitExcludes(projectRoot);
+  const gitIgnoredDocumentation = !configExists && !options.allowedPaths?.length
+    ? summarizeGitIgnoredDocumentation(projectRoot, inferred.documentationFiles)
+    : null;
   return {
     config: saved,
     configPath,
     agentContextPath: agentContext.entryPath,
     documentationPaths: inferred.documentationFiles,
+    gitIgnoredDocumentation,
     discoverySkipped: configExists,
     fresh: !configExists,
   };
@@ -15229,6 +15271,7 @@ export function writeMemoryWebappSettings(root = process.cwd(), next = {}, {
   migrateLegacyReview = false,
   expectedRootIdentity = null,
   beforeMutation = null,
+  base = null,
 } = {}) {
   const projectRoot = assertExistingProjectRoot(root);
   validateProjectConfigShape(next, "settings update");
@@ -15237,7 +15280,8 @@ export function writeMemoryWebappSettings(root = process.cwd(), next = {}, {
   const current = state.snapshot.exists
     ? normalizeMemoryWebappSettings(state.raw, { ...defaults, projectOnly: false })
     : defaults;
-  let settings = normalizeMemoryWebappSettings(next, current);
+  // base: what fields absent from `next` keep (an owner save while a scope reduction waits keeps the signed scope).
+  let settings = normalizeMemoryWebappSettings(next, base || current);
   if (migrateLegacyReview) settings = settingsWithUnifiedReviewPaths(settings, { stripLegacy: true });
   if (typeof beforeMutation === "function") beforeMutation({ root: projectRoot, path: MEMORY_WEBAPP_SETTINGS });
   atomicWriteManagedProjectControlFile(
@@ -16096,6 +16140,23 @@ function stripHubCardRuntimeFields(card) {
   if ((card.cards || []).length) base.cards = card.cards;
   if (card.autoChildren) base.autoChildren = true;
   return paths.length === 0 ? base : paths.length === 1 ? { ...base, path: paths[0] } : { ...base, paths };
+}
+
+// An entry with a "." or ".." segment (".", "./", "..", "docs/..") never matches a file: saved, it gives an empty or dead review scope.
+// One leading "./" is dropped first, as the configuration reader does: "./docs/" is docs/ and stays valid.
+// An entry the path cleaning empties (".//docs/" becomes the absolute "/docs/") is dead too.
+export function deadReviewScopePathEntry(value) {
+  const text = String(value ?? "").replaceAll("\\", "/").trim();
+  if (!text) return false;
+  if (/^\.\/*$/.test(text) || sanitizePathList([text]).length === 0) return true;
+  return text.replace(/^\.\//, "").split("/").some((segment) => segment === "." || segment === "..");
+}
+
+function assertNoDeadReviewScopePaths(field, values) {
+  if (!Array.isArray(values)) return;
+  const dead = values.find((item) => deadReviewScopePathEntry(item));
+  if (dead === undefined) return;
+  throw sharedRequestError(`${field} cannot be "${String(dead).trim()}": a path with "." or ".." matches no file. Name the folders or files to review, for example docs/ or README.md.`, 400, "review_scope_path_invalid", { field, path: String(dead) });
 }
 
 function sanitizePathList(value) {
@@ -18263,12 +18324,51 @@ function registeredContextHubWorktree(requestedId = "") {
   };
 }
 
+// Settings shows the owner-authorized (effective) scope. When project configuration tries to reduce it,
+// say so and name the paths, so a save never re-authorizes them without the owner seeing it.
+export function ownerReviewScopeNotice(root, { expectedRootIdentity = null } = {}) {
+  let configured;
+  try {
+    configured = readMemoryWebappSettings(root, { expectedRootIdentity });
+  } catch {
+    return null;
+  }
+  const authority = inspectOwnerReviewScope(root, configured, { readOnly: true });
+  if (!authority.tampered) return null;
+  const fields = [...new Set(authority.reductions.map((item) => item.field))];
+  const paths = [...new Set(authority.reductions
+    .filter((item) => ["allowedPaths", "watchAllow", "watchRules"].includes(item.field))
+    .map((item) => String(item.value || ""))
+    .filter(Boolean))];
+  // Reductions that are not review paths (startup context, skills): named so the owner sees each one.
+  const settings = authority.reductions
+    .filter((item) => /^startup(Context|Skills)\./.test(item.field))
+    .map((item) => ({ field: item.field, value: item.value }));
+  // token: binds an owner decision to the exact reduction shown, so a stale page cannot accept a newer one.
+  const token = hashContent(JSON.stringify(authority.reductions));
+  return { fields, paths, settings, damaged: fields.includes("authority"), token };
+}
+
+// Base for an owner save of project settings. While project configuration tries to reduce the signed review scope,
+// fields the save does not send keep the signed scope; only paths the owner accepted in Settings are reduced.
+function ownerScopeSaveContext(root, decision, { expectedRootIdentity = null } = {}) {
+  const current = readMemoryWebappSettings(root, { expectedRootIdentity });
+  const notice = ownerReviewScopeNotice(root, { expectedRootIdentity });
+  if (!notice?.fields?.some((field) => field !== "authority")) return { current, base: null, pending: false };
+  const acceptPaths = Array.isArray(decision?.acceptPaths) ? decision.acceptPaths.map((item) => String(item || "")).filter(Boolean) : [];
+  if (acceptPaths.length && decision?.token !== notice.token) {
+    throw sharedRequestError("The review scope reduction changed before this save. Reload Settings and decide again.", 409, "review_scope_decision_stale");
+  }
+  return { current, pending: true, base: ownerReviewScopeSaveBase(root, current, { acceptPaths, expectedRootIdentity }) };
+}
+
 function contextHubProjectSettingsResponse(project, { hooks = null, preferencesPath = null } = {}) {
-  const settings = readResolvedContextRoomSettings(project.root, {
+  const resolved = readResolvedContextRoomSettings(project.root, {
     preferencesPath,
     expectedRootIdentity: project.rootIdentity,
     readOnly: true,
   });
+  const settings = { ...resolved, reviewScopeNotice: ownerReviewScopeNotice(project.root, { expectedRootIdentity: project.rootIdentity }) };
   // Global preferences are saved by their own route, often in the same click: they stay out of the project revision.
   const { appearance, shortcuts, sounds, explorer, ...projectOwnedSettings } = settings;
   const revision = hashContent(JSON.stringify(projectOwnedSettings));
@@ -24266,13 +24366,19 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       delete projectInput.shortcuts;
       delete projectInput.sounds;
       delete projectInput.explorer;
-      const currentSettings = readMemoryWebappSettings(project.root, { expectedRootIdentity: project.rootIdentity });
+      delete projectInput.reviewScopeNotice;
+      delete projectInput.reviewScopeDecision;
+      assertNoDeadReviewScopePaths("allowedPaths", projectInput.allowedPaths);
+      assertNoDeadReviewScopePaths("watchAllow", projectInput.watchAllow);
+      // A pending raw reduction: the save rewrites the configuration from the signed scope, reduced only where the owner accepted it.
+      const { current: currentSettings, base: scopeBase, pending: pendingReduction } = ownerScopeSaveContext(project.root, body.reviewScopeDecision, { expectedRootIdentity: project.rootIdentity });
       const nextSettings = normalizeMemoryWebappSettings(projectInput, currentSettings);
-      if (JSON.stringify(nextSettings) !== JSON.stringify(currentSettings) || currentSettings.reviewPaths?.length || Object.prototype.hasOwnProperty.call(currentSettings, "reviewAgentInstructions")) {
+      if (pendingReduction || JSON.stringify(nextSettings) !== JSON.stringify(currentSettings) || currentSettings.reviewPaths?.length || Object.prototype.hasOwnProperty.call(currentSettings, "reviewAgentInstructions")) {
         const writtenSettings = writeMemoryWebappSettings(project.root, projectInput, {
           migrateLegacyReview: true,
           expectedRootIdentity: project.rootIdentity,
           beforeMutation: beforeManagedControlMutation,
+          base: scopeBase,
         });
         authorizeOwnerReviewScope(project.root, writtenSettings, { actor: requestIdentity?.sub || "human-ui" });
       }
@@ -25562,7 +25668,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/settings") {
-    const settings = readResolvedContextRoomSettings(root, { preferencesPath: globalPreferencesPath, expectedRootIdentity, readOnly: true });
+    const resolved = readResolvedContextRoomSettings(root, { preferencesPath: globalPreferencesPath, expectedRootIdentity, readOnly: true });
+    const settings = { ...resolved, reviewScopeNotice: ownerReviewScopeNotice(root, { expectedRootIdentity }) };
     sendJson(res, 200, { settings, hubCards: hubCardsForRoot(root, settings), hubSections: hubSectionsForRoot(root, settings), availableHubCards: settings.customHubCards });
     return;
   }
@@ -25574,6 +25681,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     delete projectInput.shortcuts;
     delete projectInput.sounds;
     delete projectInput.explorer;
+    delete projectInput.reviewScopeNotice;
+    delete projectInput.reviewScopeDecision;
+    assertNoDeadReviewScopePaths("allowedPaths", projectInput.allowedPaths);
+    assertNoDeadReviewScopePaths("watchAllow", projectInput.watchAllow);
+    const { base: scopeBase } = ownerScopeSaveContext(root, body.reviewScopeDecision, { expectedRootIdentity });
     const requestedComputerRoot = normalizeExplorerSettings(incoming.explorer).computerRoot;
     if (!pathEntryExists(requestedComputerRoot) || !fs.statSync(requestedComputerRoot).isDirectory()) {
       throw sharedRequestError(`Computer Explorer root is not a folder: ${requestedComputerRoot}`, 400, "context_hub_computer_root_invalid");
@@ -25582,6 +25694,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       migrateLegacyReview: true,
       expectedRootIdentity,
       beforeMutation: beforeManagedControlMutation,
+      base: scopeBase,
     });
     authorizeOwnerReviewScope(root, projectSettings, { actor: requestIdentity?.sub || "human-ui" });
     const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts, sounds: incoming.sounds, explorer: incoming.explorer }, globalPreferencesPath);
