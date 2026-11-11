@@ -18043,8 +18043,13 @@ function describeReviewScopeSetting(item) {
   return escapeHtml(reviewScopeSettingCard(item)) + ' — ' + change + value;
 }
 
-// The notice token of the reduction the owner accepted with the notice button (cleared when the notice changes).
+// The notice token of the reduction the owner accepted with the notice button (cleared when the notice or the project changes).
+function reviewScopeProjectKey() {
+  return IS_GLOBAL_CONTEXT_ROOM ? selectedGlobalProjectSettingsContext().key : String(state.projectId || "");
+}
+
 function reviewScopeAcceptedByButton(notice) {
+  if (state.reviewScopeAcceptedProject !== reviewScopeProjectKey()) state.reviewScopeAcceptedToken = "";
   return Boolean(notice?.token && state.reviewScopeAcceptedToken === notice.token);
 }
 
@@ -18055,6 +18060,10 @@ function renderReviewScopeNotice(notice, watchAllow = []) {
   const paths = Array.isArray(notice.paths) ? notice.paths : [];
   const reducedSettings = Array.isArray(notice.settings) ? notice.settings : [];
   const wrap = (body) => '<div class="review-scope-notice" role="alert" data-review-scope-notice>' + body + '</div>';
+  if (notice.missing) {
+    return wrap('<strong>Owner review authority is missing.</strong><p>Its signed record was deleted, so Context Room cannot tell whether <code>.context-room/config.json</code> was reduced. The field below shows that configuration. Check it, press Confirm this scope, then Save settings to sign it again.</p>' +
+      (reviewScopeAcceptedByButton(notice) ? '<p data-review-scope-accepted><strong>Scope confirmed.</strong> Save settings to sign it.</p>' : '<button class="secondary" type="button" data-apply-review-scope-reduction>Confirm this scope</button>'));
+  }
   if (notice.damaged && !paths.length && !reducedSettings.length) {
     return wrap('<strong>Owner review authority needs your confirmation.</strong><p>The signed review scope could not be fully verified. The field below shows the last scope Context Room could recover, and it stays in effect. Check it, then Save settings to sign it again.</p>');
   }
@@ -18075,8 +18084,16 @@ function renderReviewScopeNotice(notice, watchAllow = []) {
 function applyReviewScopeReductionToField() {
   const notice = activeSettingsForPanel()?.reviewScopeNotice;
   const paths = Array.isArray(notice?.paths) ? notice.paths : [];
-  if (!notice?.token || !paths.length) return;
+  if (!notice?.token || (!paths.length && !notice.missing)) return;
   state.reviewScopeAcceptedToken = notice.token;
+  state.reviewScopeAcceptedProject = reviewScopeProjectKey();
+  if (notice.missing) {
+    const button = document.querySelector("[data-review-scope-notice] [data-apply-review-scope-reduction]");
+    if (button) button.outerHTML = '<p data-review-scope-accepted><strong>Scope confirmed.</strong> Save settings to sign it.</p>';
+    updateSettingsSaveState();
+    setStatus("scope confirmed · Save settings to sign it");
+    return;
+  }
   const field = el("watchAllow");
   if (field) {
     const drop = new Set(paths.map(reviewScopePathKey));
@@ -18098,7 +18115,7 @@ function reviewScopeDecisionForSave(notice, watchAllow = []) {
   const inField = new Set((watchAllow || []).map(reviewScopePathKey));
   const all = reviewScopeAcceptedByButton(notice);
   const acceptPaths = paths.filter((item) => all || (shown.has(reviewScopePathKey(item)) && !inField.has(reviewScopePathKey(item))));
-  return { decision: { token: notice.token, acceptPaths }, kept: paths.filter((item) => !acceptPaths.includes(item)) };
+  return { decision: { token: notice.token, acceptPaths, ...(notice.missing && all ? { confirmAuthority: true } : {}) }, kept:paths.filter((item) => !acceptPaths.includes(item)) };
 }
 
 function renderSettingsDisclosure({ id, title, copy, status = "", scope = "", body = "", trackDirty = false } = {}) {
