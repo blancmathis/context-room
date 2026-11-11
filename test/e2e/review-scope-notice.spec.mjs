@@ -301,3 +301,15 @@ for (const [variant, width] of [["changed", 800], ["missing", 800], ["changed", 
     }
   });
 }
+
+test("@smoke a file link to a project that is not in the catalogue says so instead of an empty home", async ({ page }) => {
+  const hub = await scopeHub();
+  try {
+    await page.goto(`${hub.origin}/?hub=1&project=${encodeURIComponent("no-such-project")}&view=file&file=${encodeURIComponent("docs/a.md")}`);
+    await waitForBoot(page);
+    await waitForQuiet(page);
+    await expect(page.locator("#status")).toContainText("This project is not registered in Context Room.");
+  } finally {
+    await hub.close();
+  }
+});

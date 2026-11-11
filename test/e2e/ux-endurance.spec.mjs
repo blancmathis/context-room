@@ -229,8 +229,8 @@ function attachFailureGuards(page) {
 function consumeRetriedAttentionBusy(failures) {
   const consoleLine = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
   for (let index = failures.length - 1; index >= 0; index -= 1) {
-    // The boot catalogue read retries the same lock the same way.
-    if (!/^http 409: \S*\/api\/context-hub\/(?:attention|catalog)(?:\?|$)/.test(failures[index])) continue;
+    // The boot catalogue and review-queue reads retry the same lock the same way.
+    if (!/^http 409: \S*\/api\/context-hub\/(?:attention|catalog|review-queue)(?:\?|$)/.test(failures[index])) continue;
     failures.splice(index, 1);
     const consoleIndex = failures.indexOf(consoleLine);
     if (consoleIndex >= 0) failures.splice(consoleIndex, 1);
