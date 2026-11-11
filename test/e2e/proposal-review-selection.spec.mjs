@@ -20,6 +20,26 @@ async function waitForBoot(page) {
   }).toBe("ready");
 }
 
+// Waits until the page has no request in flight, no scheduled refresh and no pending save of its place.
+const inFlightRequests = new WeakMap();
+function trackRequests(page) {
+  const open = new Set(); inFlightRequests.set(page, open);
+  page.on("request", (request) => { if (!request.url().includes("/api/runtime-events")) open.add(request); }); // that stream stays open on purpose
+  for (const event of ["requestfinished", "requestfailed"]) page.on(event, (request) => open.delete(request));
+}
+async function waitForQuiet(page) {
+  const busy = () => page.evaluate(() => Boolean(
+    state.refreshInFlight || state.reportsRefreshInFlight || state.backgroundRefreshTimer || state.backgroundRefreshPendingOptions
+    || state.localForegroundRefreshTimer || state.workspaceRegistrationPromise || state.workspacePresenceDrainPromise || state.workspacePresenceQueued
+    || state.runtimeContextHubRefreshPromise || state.runtimeContextHubRefreshTimer || state.contextHubBusy || state.contextHubOpensInFlight
+    || state.contextAttentionLoading || state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing || state.sessionStateTimer));
+  const open = inFlightRequests.get(page);
+  const quiet = async () => open.size === 0 && !(await busy());
+  await expect.poll(quiet, { timeout: 15_000 }).toBe(true);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect.poll(quiet, { timeout: 15_000 }).toBe(true);
+}
+
 async function startLoopbackProxy(targetOrigin) {
   const target = new URL(targetOrigin);
   const sockets = new Set();
@@ -438,6 +458,7 @@ test("@smoke one Explorer click selects the project before refresh finishes and 
 
 test("@smoke the home lists projects in a stable order and Cmd+K goes to a project", async ({ page }) => {
   const { origin } = fixture();
+  trackRequests(page);
   await page.goto(origin + "/?hub=1&workspace=workspace-home-projects&view=hub");
   await waitForBoot(page);
   const rows = page.locator("#contextHubHomeProjectList .context-hub-home-project");
@@ -464,6 +485,9 @@ test("@smoke the home lists projects in a stable order and Cmd+K goes to a proje
   await page.keyboard.press("Enter");
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
   await expect(filterLabel).toHaveText("Atlas");
+  // A reload cuts requests still in flight and a pending save of the current place, and then restores the
+  // previous place (same cut as the notebooks toolbars test). Reload only once the page is quiet.
+  await waitForQuiet(page);
   await page.reload();
   await waitForBoot(page);
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");

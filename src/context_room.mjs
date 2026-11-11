@@ -11136,8 +11136,10 @@ export function resolveAgentAnnotation(root = process.cwd(), { id = "", path: re
   return resolved;
 }
 
-export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false } = {}) {
-  const report = buildDocQaReport(root, { readOnly });
+export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false, report: prebuiltReport = null } = {}) {
+  // A caller that already built the report for this root passes it, so the
+  // queue does not rebuild it (context explain after a large trust).
+  const report = prebuiltReport || buildDocQaReport(root, { readOnly });
   return {
     generatedAt: report.generatedAt,
     summary: report.summary,
