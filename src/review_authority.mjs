@@ -1553,6 +1553,27 @@ export function inspectOwnerReviewScope(root, settings = {}, options = {}) {
   };
 }
 
+// Base of an owner save while project configuration tries to reduce the signed scope: the effective scope, minus
+// only the reduced paths the owner accepted. Fields the save does not send therefore keep the signed scope, and a
+// save never signs a reduction the owner did not accept. Without a usable authority, the settings are returned as is.
+export function ownerReviewScopeSaveBase(root, settings = {}, { acceptPaths = [], ...options } = {}) {
+  const canonicalRoot = canonicalAuthorityRoot(root);
+  const record = readAuthority(root, { ...options, readOnly: true });
+  if (!["verified", "recovered"].includes(record.integrity) || !rootStateIdentityMatches(record, "projectRoot", canonicalRoot)) return settings;
+  const scope = record.state.scope || {};
+  const reduced = new Set(scopeReductions(scope, settings)
+    .filter((item) => ["allowedPaths", "watchAllow", "watchRules"].includes(item.field))
+    .map((item) => normalizeEntry(item.value)));
+  const accepted = new Set(normalizePathList(acceptPaths).filter((item) => reduced.has(item)));
+  const kept = (value) => !accepted.has(normalizeEntry(value));
+  return applyProtectedScope(settings, {
+    ...scope,
+    allowedPaths: (scope.allowedPaths || []).filter(kept),
+    watchAllow: (scope.watchAllow || []).filter(kept),
+    watchRules: (scope.watchRules || []).filter((rule) => kept(rule.path)),
+  });
+}
+
 export function effectiveOwnerReviewScope(root, settings = {}, options = {}) {
   const canonicalRoot = canonicalAuthorityRoot(root);
   let record = readAuthority(root, options);

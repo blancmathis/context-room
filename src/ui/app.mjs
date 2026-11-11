@@ -18026,41 +18026,84 @@ function reviewScopePathKey(value) {
   return String(value || "").trim().replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
-// Project configuration tried to reduce the owner-authorized review scope. The field still shows the effective
-// (owner) scope, so say it, name the paths, and let the owner remove them before Save settings.
+const REVIEW_SCOPE_SETTING_LABELS = {
+  "startupContext.enabled": ["Agent instructions", "discovery turned off"],
+  "startupContext.projectOnly": ["Agent instructions", "limited to this project"],
+  "startupContext.fileNames": ["Agent instructions", "ancestor filename removed"],
+  "startupContext.globalPaths": ["Agent instructions", "global instruction path removed"],
+  "startupSkills.enabled": ["Local skill discovery", "discovery turned off"],
+  "startupSkills.projectOnly": ["Local skill discovery", "limited to this project"],
+  "startupSkills.folderNames": ["Local skill discovery", "skill folder removed"],
+};
+
+function describeReviewScopeSetting(item) {
+  const [card, change] = REVIEW_SCOPE_SETTING_LABELS[item?.field] || [String(item?.field || "Setting"), "reduced"];
+  const value = typeof item?.value === "string" && item.value ? ': <code>' + escapeHtml(item.value) + '</code>' : '';
+  return escapeHtml(card) + ' — ' + escapeHtml(change) + value;
+}
+
+// The notice token of the reduction the owner accepted with the notice button (cleared when the notice changes).
+function reviewScopeAcceptedByButton(notice) {
+  return Boolean(notice?.token && state.reviewScopeAcceptedToken === notice.token);
+}
+
+// Project configuration was changed outside Settings and tries to reduce the owner-authorized review scope. The
+// fields still show the effective (owner) scope. Nothing is reduced unless the owner removes the paths or accepts.
 function renderReviewScopeNotice(notice, watchAllow = []) {
   if (!notice) return "";
   const paths = Array.isArray(notice.paths) ? notice.paths : [];
+  const reducedSettings = Array.isArray(notice.settings) ? notice.settings : [];
   const inField = new Set((watchAllow || []).map(reviewScopePathKey));
-  const removable = paths.filter((item) => inField.has(reviewScopePathKey(item)));
-  const list = paths.length ? '<ul>' + paths.map((item) => '<li><code>' + escapeHtml(item) + '</code></li>').join("") + '</ul>' : "";
-  if (notice.damaged && !paths.length) {
+  const outsideField = paths.filter((item) => !inField.has(reviewScopePathKey(item)));
+  if (notice.damaged && !paths.length && !reducedSettings.length) {
     return '<div class="review-scope-notice" role="alert" data-review-scope-notice><strong>Owner review authority needs your confirmation.</strong><p>The signed review scope could not be fully verified. The field below shows the last scope Context Room could recover, and it stays in effect. Check it, then Save settings to sign it again.</p></div>';
   }
+  const accepted = reviewScopeAcceptedByButton(notice);
+  const items = paths.map((item) => '<li><code>' + escapeHtml(item) + '</code>' + (outsideField.some((other) => other === item) ? ' (project scope, not listed in the field)' : '') + '</li>')
+    .concat(reducedSettings.map((item) => '<li>' + describeReviewScopeSetting(item) + '</li>'));
+  const what = paths.length && reducedSettings.length
+    ? 'stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') + ' and reduce agent startup settings'
+    : paths.length ? 'stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') : 'reduce agent startup settings';
   return '<div class="review-scope-notice" role="alert" data-review-scope-notice>' +
-    '<strong>Project configuration tries to stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') + '.</strong>' +
-    list +
-    '<p>The field below still shows the scope you approved, and it stays in effect. Save settings with these paths still listed and they stay in review: the reduction is discarded. To accept the reduction, remove them from the field' + (paths.length > removable.length ? ' and from the folder watch modes' : '') + ', then Save settings.</p>' +
-    (removable.length ? '<button class="secondary" type="button" data-apply-review-scope-reduction="' + escapeHtml(JSON.stringify(removable)) + '">Remove ' + (removable.length === 1 ? 'it' : 'them') + ' from the field</button>' : '') +
+    '<strong>Changed outside Settings: project configuration tries to ' + what + '.</strong>' +
+    '<p><code>.context-room/config.json</code> was edited outside Settings, probably by an agent or a tool, not by you here. Nothing is reduced until you decide.</p>' +
+    '<ul>' + items.join("") + '</ul>' +
+    '<p><strong>Keep:</strong> Save settings without removing anything. Everything listed stays in review, as you approved it, and the change is discarded.</p>' +
+    (paths.length ? '<p><strong>Accept:</strong> ' + (outsideField.length ? 'press Accept the reduction' : 'remove the paths from the field, or press Accept the reduction') + ', then Save settings.</p>' : '') +
+    (reducedSettings.length ? '<p>Startup settings: to drop one, change it in ' + [...new Set(reducedSettings.map((item) => (REVIEW_SCOPE_SETTING_LABELS[item.field] || ["Settings"])[0]))].map(escapeHtml).join(" or ") + ', then Save settings.</p>' : '') +
+    (paths.length ? (accepted
+      ? '<p data-review-scope-accepted><strong>Reduction accepted.</strong> Save settings to apply it.</p>'
+      : '<button class="secondary" type="button" data-apply-review-scope-reduction>Accept the reduction</button>') : '') +
   '</div>';
 }
 
-function applyReviewScopeReductionToField(button) {
-  let paths = [];
-  try { paths = JSON.parse(button.dataset.applyReviewScopeReduction || "[]"); } catch { paths = []; }
+function applyReviewScopeReductionToField() {
+  const notice = activeSettingsForPanel()?.reviewScopeNotice;
+  const paths = Array.isArray(notice?.paths) ? notice.paths : [];
+  if (!notice?.token || !paths.length) return;
+  state.reviewScopeAcceptedToken = notice.token;
   const field = el("watchAllow");
-  if (!field || !paths.length) return;
-  const drop = new Set(paths.map(reviewScopePathKey));
-  field.value = field.value.split("\n").filter((line) => !drop.has(reviewScopePathKey(line))).join("\n");
-  field.dispatchEvent(new Event("input", { bubbles: true }));
-  setStatus("removed from the field: " + paths.join(", ") + " · Save settings to accept the reduction");
+  if (field) {
+    const drop = new Set(paths.map(reviewScopePathKey));
+    field.value = field.value.split("\n").filter((line) => !drop.has(reviewScopePathKey(line))).join("\n");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  const holder = document.querySelector("[data-review-scope-notice] [data-apply-review-scope-reduction]");
+  if (holder) holder.outerHTML = '<p data-review-scope-accepted><strong>Reduction accepted.</strong> Save settings to apply it.</p>';
+  updateSettingsSaveState();
+  setStatus("reduction accepted: " + paths.join(", ") + " · Save settings to apply it");
 }
 
-// Paths the configuration tried to remove but the owner kept in the field: a save keeps them in review.
-function reviewScopePathsKeptBySave(notice, watchAllow = []) {
+// The owner's decision on a pending reduction, sent with Save settings. A path is accepted only by a visible gesture:
+// the Accept button, or removing it from the field where it was shown. Everything else stays in review.
+function reviewScopeDecisionForSave(notice, watchAllow = []) {
   const paths = Array.isArray(notice?.paths) ? notice.paths : [];
+  if (!notice?.token) return { decision: null, kept: [] };
+  const shown = new Set((activeSettingsForPanel()?.watchAllow || []).map(reviewScopePathKey));
   const inField = new Set((watchAllow || []).map(reviewScopePathKey));
-  return paths.filter((item) => inField.has(reviewScopePathKey(item)));
+  const all = reviewScopeAcceptedByButton(notice);
+  const acceptPaths = paths.filter((item) => all || (shown.has(reviewScopePathKey(item)) && !inField.has(reviewScopePathKey(item))));
+  return { decision: { token: notice.token, acceptPaths }, kept: paths.filter((item) => !acceptPaths.includes(item)) };
 }
 
 function renderSettingsDisclosure({ id, title, copy, status = "", scope = "", body = "", trackDirty = false } = {}) {
@@ -18100,7 +18143,7 @@ function updateSettingsSaveState() {
     holder.innerHTML = count
       ? '<strong>Unsaved changes</strong><span>' + count + ' setting group' + (count === 1 ? '' : 's') + ' changed</span>'
       : scopeDecision
-        ? '<strong>Your decision is needed</strong><span>Documents to review: keep the scope shown or remove the paths, then Save settings.</span>'
+        ? '<strong>Your decision is needed</strong><span>Documents to review: Save settings keeps what you approved; accept the reduction first to apply it.</span>'
         : '<strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span>';
   }
   const selected = selectedGlobalProjectSettingsContext();
@@ -19441,7 +19484,7 @@ function renderSettingsPanel() {
   }
   wireShortcutRecorder();
   holder.querySelectorAll("[data-remove-watch-rule]").forEach((button) => button.addEventListener("click", () => removeWatchRuleFromSettings(button.dataset.removeWatchRule).catch((error) => setStatus(error.message))));
-  holder.querySelectorAll("[data-apply-review-scope-reduction]").forEach((button) => button.addEventListener("click", () => applyReviewScopeReductionToField(button)));
+  holder.querySelectorAll("[data-apply-review-scope-reduction]").forEach((button) => button.addEventListener("click", () => applyReviewScopeReductionToField()));
   previewSelectedFileTheme();
   wireSettingsDirtyTracking(holder);
   holder.querySelector('[data-owner-device-settings]')?.addEventListener('click', () => import('/assets/connected-devices.mjs').then(module => module.openOwnerDeviceSettings(api)).catch(error => setStatus(error.message)));
@@ -19779,7 +19822,7 @@ async function removeWatchRuleFromSettings(relPath) {
   await refreshAfterWatchMutation(result.settings, "folder watch rule removed");
 }
 
-async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appearance, shortcuts, sounds, explorer, keptScopeNote = "" }) {
+async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appearance, shortcuts, sounds, explorer, keptScopeNote = "", reviewScopeDecision = null }) {
   const selected = selectedGlobalProjectSettingsContext();
   const requests = [api("/api/context-hub/preferences", {
     method: "POST",
@@ -19791,7 +19834,7 @@ async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appe
     requests.push(api("/api/context-hub/project-settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId: selected.worktree.id, expectedRevision: selected.payload.revision, settings: projectSettings, reviewGate }),
+      body: JSON.stringify({ projectId: selected.worktree.id, expectedRevision: selected.payload.revision, settings: projectSettings, reviewGate, ...(reviewScopeDecision ? { reviewScopeDecision } : {}) }),
     }));
   }
   const [preferencesResult, projectResult = null] = await Promise.all(requests);
@@ -19824,8 +19867,10 @@ async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appe
 async function saveSettings() {
   const activeSettings = activeSettingsForPanel();
   const watchAllow = linesFromTextarea("watchAllow");
-  const keptScopePaths = el("watchAllow") ? reviewScopePathsKeptBySave(activeSettings?.reviewScopeNotice, watchAllow) : [];
-  const keptScopeNote = keptScopePaths.length ? " · still in review, reduction discarded: " + keptScopePaths.join(", ") : "";
+  const scopeDecision = el("watchAllow") ? reviewScopeDecisionForSave(activeSettings?.reviewScopeNotice, watchAllow) : { decision: null, kept: [] };
+  const reviewScopeDecision = scopeDecision.decision;
+  const keptScopeNote = (scopeDecision.kept.length ? " · still in review, reduction discarded: " + scopeDecision.kept.join(", ") : "")
+    + (reviewScopeDecision?.acceptPaths?.length ? " · reduction accepted: " + reviewScopeDecision.acceptPaths.join(", ") : "");
   const reviewGate = {
     operations: [...document.querySelectorAll("[data-review-gate-operation]:checked")].map((input) => input.value),
   };
@@ -19890,6 +19935,7 @@ async function saveSettings() {
         sounds,
         explorer,
         keptScopeNote,
+        reviewScopeDecision,
       });
       return;
     }
@@ -19897,7 +19943,7 @@ async function saveSettings() {
       api("/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ settings: { watchAllow, watchRules: state.settings.watchRules || [], startupContext, startupSkills, startupHooks, appearance, shortcuts, sounds, explorer, markdownTemplates, hubCards, hubSections } }),
+        body: JSON.stringify({ settings: { watchAllow, watchRules: state.settings.watchRules || [], startupContext, startupSkills, startupHooks, appearance, shortcuts, sounds, explorer, markdownTemplates, hubCards, hubSections }, ...(reviewScopeDecision ? { reviewScopeDecision } : {}) }),
       }),
       api("/api/review-gate", {
         method: "POST",

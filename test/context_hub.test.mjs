@@ -4358,6 +4358,66 @@ test("Hub project settings name a pending raw scope reduction and let the owner 
   assert.equal(tamper(), false);
 });
 
+test("Hub project settings: an unchanged save keeps an allowedPaths reduction made outside Settings; only an accepted decision signs it", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-allowed-reduction-"));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = path.join(base, "Target project");
+  for (const folder of ["docs", "notes"]) {
+    fs.mkdirSync(path.join(targetRoot, folder), { recursive: true });
+    fs.writeFileSync(path.join(targetRoot, folder, "a.md"), `# ${folder}\n`);
+  }
+  initializeContextRoomProject(targetRoot, { title: "Target project", allowedPaths: ["docs/", "notes/"], watchAllow: ["docs/", "notes/"] });
+  const target = registerContextHubProject(targetRoot);
+  registerContextHubProject(hostRoot);
+  const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
+  const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
+  const { buildContextRoomDoctorReport, readResolvedContextRoomSettings } = await import("../src/context_room.mjs");
+  const configPath = path.join(targetRoot, ".context-room", "config.json");
+  const reduceAllowed = () => {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    raw.allowedPaths = ["docs/"];
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+  };
+  const form = (settings, watchAllow = settings.watchAllow) => ({
+    watchAllow,
+    watchRules: settings.watchRules || [],
+    startupContext: settings.startupContext,
+    startupSkills: settings.startupSkills,
+    startupHooks: settings.startupHooks,
+  });
+  const post = (payload) => fetch(origin + "/api/context-hub/project-settings", { method: "POST", headers, body: JSON.stringify({ projectId: target.id, ...payload }) });
+  const tamper = () => buildContextRoomDoctorReport(targetRoot, { readOnly: true }).issues.some((issue) => issue.type === "review_authority_tamper");
+
+  reduceAllowed();
+  const pending = await (await fetch(settingsUrl)).json();
+  assert.deepEqual(pending.settings.reviewScopeNotice.paths, ["notes/"]);
+  assert.ok(pending.settings.reviewScopeNotice.token);
+  const keep = await post({ expectedRevision: pending.revision, settings: form(pending.settings) });
+  assert.equal(keep.status, 200, await keep.clone().text());
+  assert.equal((await keep.json()).settings.reviewScopeNotice, null);
+  assert.ok(readResolvedContextRoomSettings(targetRoot, { readOnly: true }).allowedPaths.includes("notes/"), "the keep gesture does not sign the agent's reduction");
+  assert.ok(readMemoryWebappSettings(targetRoot).allowedPaths.includes("notes/"), "the configuration gets the signed scope back");
+  assert.equal(tamper(), false);
+
+  reduceAllowed();
+  const again = await (await fetch(settingsUrl)).json();
+  const confirm = await post({
+    expectedRevision: again.revision,
+    settings: form(again.settings, ["docs/"]),
+    reviewScopeDecision: { token: again.settings.reviewScopeNotice.token, acceptPaths: ["notes/"] },
+  });
+  assert.equal(confirm.status, 200, await confirm.clone().text());
+  const confirmed = readResolvedContextRoomSettings(targetRoot, { readOnly: true });
+  assert.equal(confirmed.allowedPaths.includes("notes/"), false, "the accepted reduction is signed");
+  assert.deepEqual(confirmed.watchAllow, ["docs/"]);
+  assert.equal(tamper(), false);
+});
+
 test("turning on agent instructions in project settings keeps the project healthy", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-instructions-"));
   withHubHome(t, path.join(base, "hub"));

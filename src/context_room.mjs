@@ -185,6 +185,7 @@ import {
   inspectOwnerTrustedState,
   inspectOwnerReviewScope,
   ownerReviewAuthorityLockPaths,
+  ownerReviewScopeSaveBase,
 } from "./review_authority.mjs";
 
 export { DOC_METADATA_KINDS, DOC_METADATA_STATUSES, parseDocMetadata } from "./doc_metadata.mjs";
@@ -15270,6 +15271,7 @@ export function writeMemoryWebappSettings(root = process.cwd(), next = {}, {
   migrateLegacyReview = false,
   expectedRootIdentity = null,
   beforeMutation = null,
+  base = null,
 } = {}) {
   const projectRoot = assertExistingProjectRoot(root);
   validateProjectConfigShape(next, "settings update");
@@ -15278,7 +15280,8 @@ export function writeMemoryWebappSettings(root = process.cwd(), next = {}, {
   const current = state.snapshot.exists
     ? normalizeMemoryWebappSettings(state.raw, { ...defaults, projectOnly: false })
     : defaults;
-  let settings = normalizeMemoryWebappSettings(next, current);
+  // base: what fields absent from `next` keep (an owner save while a scope reduction waits keeps the signed scope).
+  let settings = normalizeMemoryWebappSettings(next, base || current);
   if (migrateLegacyReview) settings = settingsWithUnifiedReviewPaths(settings, { stripLegacy: true });
   if (typeof beforeMutation === "function") beforeMutation({ root: projectRoot, path: MEMORY_WEBAPP_SETTINGS });
   atomicWriteManagedProjectControlFile(
@@ -16140,10 +16143,12 @@ function stripHubCardRuntimeFields(card) {
 }
 
 // An entry with a "." or ".." segment (".", "./", "..", "docs/..") never matches a file: saved, it gives an empty or dead review scope.
+// One leading "./" is dropped first, as the configuration reader does: "./docs/" is docs/ and stays valid.
 export function deadReviewScopePathEntry(value) {
   const text = String(value ?? "").replaceAll("\\", "/").trim();
   if (!text) return false;
-  return text.split("/").some((segment) => segment === "." || segment === "..");
+  if (/^\.\/*$/.test(text)) return true;
+  return text.replace(/^\.\//, "").split("/").some((segment) => segment === "." || segment === "..");
 }
 
 function assertNoDeadReviewScopePaths(field, values) {
@@ -18334,7 +18339,26 @@ export function ownerReviewScopeNotice(root, { expectedRootIdentity = null } = {
     .filter((item) => ["allowedPaths", "watchAllow", "watchRules"].includes(item.field))
     .map((item) => String(item.value || ""))
     .filter(Boolean))];
-  return { fields, paths, damaged: fields.includes("authority") };
+  // Reductions that are not review paths (startup context, skills): named so the owner sees each one.
+  const settings = authority.reductions
+    .filter((item) => /^startup(Context|Skills)\./.test(item.field))
+    .map((item) => ({ field: item.field, value: item.value }));
+  // token: binds an owner decision to the exact reduction shown, so a stale page cannot accept a newer one.
+  const token = hashContent(JSON.stringify(authority.reductions));
+  return { fields, paths, settings, damaged: fields.includes("authority"), token };
+}
+
+// Base for an owner save of project settings. While project configuration tries to reduce the signed review scope,
+// fields the save does not send keep the signed scope; only paths the owner accepted in Settings are reduced.
+function ownerScopeSaveContext(root, decision, { expectedRootIdentity = null } = {}) {
+  const current = readMemoryWebappSettings(root, { expectedRootIdentity });
+  const notice = ownerReviewScopeNotice(root, { expectedRootIdentity });
+  if (!notice?.fields?.some((field) => field !== "authority")) return { current, base: null, pending: false };
+  const acceptPaths = Array.isArray(decision?.acceptPaths) ? decision.acceptPaths.map((item) => String(item || "")).filter(Boolean) : [];
+  if (acceptPaths.length && decision?.token !== notice.token) {
+    throw sharedRequestError("The review scope reduction changed before this save. Reload Settings and decide again.", 409, "review_scope_decision_stale");
+  }
+  return { current, pending: true, base: ownerReviewScopeSaveBase(root, current, { acceptPaths, expectedRootIdentity }) };
 }
 
 function contextHubProjectSettingsResponse(project, { hooks = null, preferencesPath = null } = {}) {
@@ -24342,17 +24366,18 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       delete projectInput.sounds;
       delete projectInput.explorer;
       delete projectInput.reviewScopeNotice;
+      delete projectInput.reviewScopeDecision;
       assertNoDeadReviewScopePaths("allowedPaths", projectInput.allowedPaths);
       assertNoDeadReviewScopePaths("watchAllow", projectInput.watchAllow);
-      const currentSettings = readMemoryWebappSettings(project.root, { expectedRootIdentity: project.rootIdentity });
+      // A pending raw reduction: the save rewrites the configuration from the signed scope, reduced only where the owner accepted it.
+      const { current: currentSettings, base: scopeBase, pending: pendingReduction } = ownerScopeSaveContext(project.root, body.reviewScopeDecision, { expectedRootIdentity: project.rootIdentity });
       const nextSettings = normalizeMemoryWebappSettings(projectInput, currentSettings);
-      // A save that matches the reduced configuration still is the owner's decision on the reduction: sign it.
-      const pendingReduction = currentPayload.settings.reviewScopeNotice?.fields?.some((field) => field !== "authority");
       if (pendingReduction || JSON.stringify(nextSettings) !== JSON.stringify(currentSettings) || currentSettings.reviewPaths?.length || Object.prototype.hasOwnProperty.call(currentSettings, "reviewAgentInstructions")) {
         const writtenSettings = writeMemoryWebappSettings(project.root, projectInput, {
           migrateLegacyReview: true,
           expectedRootIdentity: project.rootIdentity,
           beforeMutation: beforeManagedControlMutation,
+          base: scopeBase,
         });
         authorizeOwnerReviewScope(project.root, writtenSettings, { actor: requestIdentity?.sub || "human-ui" });
       }
@@ -25656,8 +25681,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     delete projectInput.sounds;
     delete projectInput.explorer;
     delete projectInput.reviewScopeNotice;
+    delete projectInput.reviewScopeDecision;
     assertNoDeadReviewScopePaths("allowedPaths", projectInput.allowedPaths);
     assertNoDeadReviewScopePaths("watchAllow", projectInput.watchAllow);
+    const { base: scopeBase } = ownerScopeSaveContext(root, body.reviewScopeDecision, { expectedRootIdentity });
     const requestedComputerRoot = normalizeExplorerSettings(incoming.explorer).computerRoot;
     if (!pathEntryExists(requestedComputerRoot) || !fs.statSync(requestedComputerRoot).isDirectory()) {
       throw sharedRequestError(`Computer Explorer root is not a folder: ${requestedComputerRoot}`, 400, "context_hub_computer_root_invalid");
@@ -25666,6 +25693,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       migrateLegacyReview: true,
       expectedRootIdentity,
       beforeMutation: beforeManagedControlMutation,
+      base: scopeBase,
     });
     authorizeOwnerReviewScope(root, projectSettings, { actor: requestIdentity?.sub || "human-ui" });
     const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts, sounds: incoming.sounds, explorer: incoming.explorer }, globalPreferencesPath);
