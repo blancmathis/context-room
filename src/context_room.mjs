@@ -1337,6 +1337,8 @@ export function listProjectExplorerPage(root = process.cwd(), {
       return [{ path: relPath, name: entry.name, type: "file-candidate" }];
     }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
   }
+  // The settings folder is not documentation: the tree and its search never list it.
+  entries = entries.filter((entry) => !/^\.context-room(\/|$)/.test(entry.path ?? entry));
   const pageCandidates = entries.slice(offset, offset + pageSize);
   const page = pageCandidates.flatMap((entry) => {
     if (entry?.type === "directory") return [entry];
