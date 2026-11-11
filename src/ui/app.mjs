@@ -1274,6 +1274,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .doc-link-modifier-active .markdown-path[data-doc-link-path] { cursor: pointer; border-color: color-mix(in srgb, var(--accent) 54%, transparent); background-color: color-mix(in srgb, var(--accent) 5%, transparent); }
     .doc-link-modifier-active .markdown-path[data-doc-link-path]:hover, .doc-link-modifier-active .markdown-path[data-doc-link-path].doc-link-hover-target { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 72%, transparent); background-color: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent); animation: docLinkClickableSweep 1.1s ease-in-out infinite; }
     @keyframes docLinkClickableSweep { 0% { background-size: 0 2px; background-position: 0 100%; } 46% { background-size: 100% 2px; background-position: 0 100%; } 100% { background-size: 0 2px; background-position: 100% 100%; } }
+    .markdown-doc-link-missing { color: var(--muted); cursor: default; }
     .markdown-doc-link { color: var(--file-list); border-bottom: 1px solid color-mix(in srgb, var(--file-list) 42%, transparent); text-decoration: none; }
     .markdown-inline-code.markdown-path { color: var(--file-list); }
     .markdown-editor-shell { position: relative; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); isolation: isolate; }
@@ -24140,6 +24141,9 @@ function renderMarkdownPlainInline(value, options = {}) {
       const label = renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
+      if (options.reader && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[2])) {
+        return hubDocLinkMissing(link[2]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[2]) + '">' + label + '</span>' : label;
+      }
       return escapeHtml(part);
     }
     return escapeHtml(part).replace(/(^|[\s([{])((?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)?[A-Za-z0-9_./@~-]*[A-Za-z0-9_@~-]+\.[A-Za-z0-9_-]+(?:#[A-Za-z0-9_.-]+)?|(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)[A-Za-z0-9_./@~-]+)/g, (match, prefix, rawPath) => {
@@ -24216,7 +24220,41 @@ function currentDocumentDirectory() {
 }
 
 function isKnownContextRoomFile(filePath) {
-  return state.files.some((file) => file.path === filePath);
+  return state.files.some((file) => file.path === filePath) || (IS_GLOBAL_CONTEXT_ROOM && hubFileKnown(filePath) === true);
+}
+
+// The Hub keeps no flat file list (state.files is empty). A link target is checked against the
+// folder listing of the linked project instead: true, false, or null while that listing loads.
+const hubLinkDirectoriesRequested = new Set();
+function hubFileKnown(filePath) {
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+  if (!project || !filePath) return null;
+  const directory = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+  const key = globalProjectExplorerPageKey(project, { directory });
+  const page = state.globalProjectExplorerDetails.get(key);
+  if (page?.entries?.some((entry) => entry.path === filePath && entry.type !== "directory")) return true;
+  if (page && page.nextCursor == null) return false;
+  if (!hubLinkDirectoriesRequested.has(key)) {
+    hubLinkDirectoriesRequested.add(key);
+    void loadHubLinkDirectory(project, directory).catch(() => {});
+  }
+  return null;
+}
+
+async function loadHubLinkDirectory(project, directory) {
+  let page = await loadGlobalProjectExplorerPage(project, { directory });
+  for (let pages = 1; page?.nextCursor != null && pages < 8; pages += 1) {
+    page = await loadGlobalProjectExplorerPage(project, { directory, cursor: page.nextCursor, force: true });
+  }
+  if (page && state.page === "file" && state.mode === "view" && !state.dirty) renderViewer();
+}
+
+function hubDocLinkMissing(rawTarget) {
+  const target = cleanMarkdownDocLinkTarget(rawTarget);
+  if (!target || !isMarkdownDocLinkTarget(target) || target.startsWith("/")) return false;
+  const directory = currentDocumentDirectory();
+  const candidates = /^\.{1,2}\//.test(target) ? [normalizeDocPath(directory ? directory + "/" + target : target)] : [normalizeDocPath(target), directory ? normalizeDocPath(directory + "/" + target) : ""];
+  return candidates.every((candidate) => !candidate || hubFileKnown(candidate) === false);
 }
 
 function wireMarkdownDocLinks(root = document) {
