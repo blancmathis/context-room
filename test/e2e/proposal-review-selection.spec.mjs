@@ -459,7 +459,7 @@ test("@smoke one Explorer click selects the project before refresh finishes and 
 test("@smoke the home lists projects in a stable order and Cmd+K goes to a project", async ({ page }) => {
   const { origin } = fixture();
   trackRequests(page);
-  await page.goto(origin + "/?hub=1&workspace=workspace-home-projects&view=hub");
+  await page.goto(origin + "/?hub=1&workspace=workspace-home-projects&view=hub&explorer=collapsed");
   await waitForBoot(page);
   const rows = page.locator("#contextHubHomeProjectList .context-hub-home-project");
   const titles = () => rows.locator(".global-project-row-title strong").allTextContents();
@@ -507,7 +507,7 @@ test("@smoke the home says what changed in reviews since the last visit", async 
   await page.goto(origin + "/?hub=1&workspace=workspace-last-visit&view=hub");
   await bootWithFullReviews();
   const since = page.locator("#contextHubSinceLastVisit");
-  await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
   await expect(since).toBeHidden();
 
   await page.reload();
@@ -525,7 +525,7 @@ test("@smoke the home says what changed in reviews since the last visit", async 
 
 test("@smoke the Context destination shows what the agent sees, by agent", async ({ page }) => {
   const { origin } = fixture();
-  await page.goto(origin + "/?hub=1&workspace=workspace-agent-context&view=hub");
+  await page.goto(origin + "/?hub=1&workspace=workspace-agent-context&view=hub&explorer=collapsed");
   await waitForBoot(page);
   await page.locator("#contextHubHomeProjectList .context-hub-home-project", { hasText: "Atlas" }).getByRole("button", { name: /^Context/ }).click();
   const cost = page.locator(".context-cost");
@@ -3185,6 +3185,6 @@ test("@smoke the project menu inspects that project when Explorer has no selecti
     openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: project.projectKey });
   }, projects.atlas.id);
   await page.locator("#explorerContextMenu").getByRole("menuitem", { name: "View startup environment" }).click();
-  await expect(page.locator("#contextHealth")).not.toContainText("Select a project in Explorer.");
+  await expect(page.locator("#contextHealthPanel")).toBeVisible();
   await expect(page.locator("#contextHealth [data-global-inspection-provider]")).toHaveCount(1);
 });

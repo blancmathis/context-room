@@ -640,13 +640,25 @@ test.describe('Notebooks space', () => {
     const start = async () => {
       runtime = createMemoryServer({ root }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
       await page.goto(`http://127.0.0.1:${runtime.server.address().port}/?hub=1&view=hub`);
-      await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
+      await openNotebooksTab(page);
     };
     await start();
     return { root, spaceRoot, errors, start, stop, async close() {
       try { if (!page.isClosed()) await page.goto('about:blank'); }
       finally { await stop(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); }
     } };
+  }
+  // Notebooks is a section of the Explorer; the top bar opens it while the Explorer is closed.
+  // A phone has no room for that button in the top bar: open the Explorer first, then the section.
+  async function openNotebooksTab(page) {
+    await page.waitForFunction(() => Boolean(state.contextHub), null, { timeout: 45000 });
+    const closed = page.locator('[data-notebooks-open]');
+    if (await closed.isVisible()) await closed.click();
+    else {
+      if (await page.locator('.app.sidebar-collapsed').count()) await page.locator('#explorerOpen:visible, #sidebarToggle:visible').first().click();
+      await page.locator('[data-global-explorer-mode="notebooks"]').click();
+    }
+    await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
   }
   async function newNotebookWithInk(page, f) {
     await page.locator('#notebookSpacePanel').getByRole('button', { name: 'New notebook', exact: true }).click();
@@ -700,7 +712,7 @@ test.describe('Notebooks space', () => {
       // Opening the space by its id (link, bookmark) shows no Context, To review or Shared of a project.
       const origin = new URL(page.url()).origin;
       await page.goto(`${origin}/?hub=1&view=hub&project=${encodeURIComponent(space.id)}`);
-      await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
+      await openNotebooksTab(page);
       await expect(page.locator('#globalExplorerScope strong', { hasText: /^Notebooks$/ })).toHaveCount(0);
       await expect(page.locator('#globalProjectList')).not.toContainText('Notebooks');
       await expect(page.locator('#contextHubHomeProjectList .context-hub-home-project-destinations')).toHaveCount(1);

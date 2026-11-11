@@ -332,7 +332,8 @@ test("@perf a manual Refresh during a Shared open's background refresh reuses it
 test("Back from a selected project leaves no project selected in the Explorer or the cards", async ({ page }) => {
   const hub = await fixture();
   try {
-    await page.goto(hub.origin + "/?hub=1&view=hub");
+    // The home cards show only while the Explorer is collapsed.
+    await page.goto(hub.origin + "/?hub=1&view=hub&explorer=collapsed");
     await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
     const card = page.locator("li.context-hub-home-project", { has: page.locator("strong", { hasText: "Beacon" }) });
     await card.locator('[data-context-hub-project-destination="context"]').click();

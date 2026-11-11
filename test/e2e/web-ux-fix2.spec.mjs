@@ -89,7 +89,8 @@ test("@layout the Keep Shared/Local buttons reach 44px and the Explorer button f
 });
 
 test("@layout at 1440px the Projects list shows four projects without clipping the last", async ({ page }) => {
-  await openAtlas(page, 1440, 900, "&explorer=expanded");
+  // The home list shows only while the Explorer is collapsed: the Explorer carries the projects otherwise.
+  await openAtlas(page, 1440, 900, "&explorer=collapsed");
   await page.evaluate(() => { const list = document.querySelector(".context-hub-home-projects"); const row = list.querySelector(".context-hub-home-project"); while (list.children.length < 4) list.append(row.cloneNode(true)); });
   const list = page.locator(".context-hub-home-projects");
   await expect(list).toBeVisible();
