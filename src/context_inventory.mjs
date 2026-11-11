@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { listContextHubProjects } from "./context_hub.mjs";
 import {
   buildAgentReviewQueue,
+  buildDocQaReport,
   buildContextRoomDoctorReport,
   listMemoryFiles,
   listStartupContextFiles,
@@ -478,6 +479,15 @@ function defaultListProviderHookSources(root, _folder, provider) {
 }
 
 export function createContextInventoryReaders(overrides = {}) {
+  // The default review-queue reader builds a read-only report; the default
+  // doctor reader reuses it. The inventory keeps only doctor issues, which do
+  // not depend on that report, so the report is built once per inventory.
+  const queueReports = new Map();
+  const readQueueReport = (root) => {
+    const report = buildDocQaReport(root, { readOnly: true });
+    queueReports.set(root, report);
+    return report;
+  };
   return Object.freeze({
     listProjects: (options) => listContextHubProjects({ ...options, readOnly: true }),
     readSettings: (root) => readMemoryWebappSettings(root),
@@ -493,8 +503,8 @@ export function createContextInventoryReaders(overrides = {}) {
     readDocument: (root, relPath) => readMemoryFile(root, relPath, { readOnly: true }),
     readReviewState: (root) => readDocReviewState(root, { readOnly: true }),
     readGlobalReviewLedger: (root) => readGlobalReviewLedger(root, { readOnly: true }),
-    readReviewQueue: (root) => buildAgentReviewQueue(root, { readOnly: true }),
-    readDoctor: (root) => buildContextRoomDoctorReport(root, { readOnly: true }),
+    readReviewQueue: (root) => buildAgentReviewQueue(root, { readOnly: true, report: readQueueReport(root) }),
+    readDoctor: (root) => buildContextRoomDoctorReport(root, { readOnly: true, ...(queueReports.has(root) ? { docqa: queueReports.get(root) } : {}) }),
     readSharedConnection: (root) => readSharedProjectConnection(root),
     readSharedStatus: (root) => sharedContextStatus(root),
     verifySharedMain: (repository, options) => readSharedMainRevision(repository, options),
