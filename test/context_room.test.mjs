@@ -2323,6 +2323,9 @@ test("Settings names a pending raw scope reduction and refuses dead scope paths"
     assert.equal(body.code, "review_scope_path_invalid");
     assert.match(body.error, new RegExp(`${field} cannot be "\\.\\."`));
   }
+  const emptied = await fetch(`${base}/api/settings`, { method: "POST", headers, body: JSON.stringify({ settings: { ...narrowed, watchAllow: [".//docs/"] } }) });
+  assert.equal(emptied.status, 400, "an entry the path cleaning empties is refused");
+  assert.equal((await emptied.json()).code, "review_scope_path_invalid");
   assert.ok(ownerReviewScopeNotice(root).paths.includes("notes/"), "a refused save signs nothing");
 
   const saved = await fetch(`${base}/api/settings`, {
@@ -9442,7 +9445,7 @@ test("initializeContextRoomProject refuses allowedPaths '.' and './' instead of 
     assert.equal(fs.existsSync(path.join(project, ".context-room/config.json")), false, "nothing is saved");
     // A leading "./" (shell completion) is read as docs/: it is a valid entry, not a dead one.
     for (const value of ["./docs/", "./docs", ".\\docs\\"]) assert.equal(deadReviewScopePathEntry(value), false, value);
-    for (const value of ["docs/.", "./..", "././docs/"]) assert.equal(deadReviewScopePathEntry(value), true, value);
+    for (const value of ["docs/.", "./..", "././docs/", ".//docs/", "/docs/"]) assert.equal(deadReviewScopePathEntry(value), true, value);
     const saved = initializeContextRoomProject(project, { title: "Dot", allowedPaths: ["./docs/"], watchAllow: ["./docs/"] });
     assert.deepEqual(saved.config.allowedPaths, ["docs/"]);
     assert.deepEqual(saved.config.watchAllow, ["docs/"]);

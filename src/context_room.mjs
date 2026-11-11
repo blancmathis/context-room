@@ -16144,10 +16144,11 @@ function stripHubCardRuntimeFields(card) {
 
 // An entry with a "." or ".." segment (".", "./", "..", "docs/..") never matches a file: saved, it gives an empty or dead review scope.
 // One leading "./" is dropped first, as the configuration reader does: "./docs/" is docs/ and stays valid.
+// An entry the path cleaning empties (".//docs/" becomes the absolute "/docs/") is dead too.
 export function deadReviewScopePathEntry(value) {
   const text = String(value ?? "").replaceAll("\\", "/").trim();
   if (!text) return false;
-  if (/^\.\/*$/.test(text)) return true;
+  if (/^\.\/*$/.test(text) || sanitizePathList([text]).length === 0) return true;
   return text.replace(/^\.\//, "").split("/").some((segment) => segment === "." || segment === "..");
 }
 

@@ -18026,20 +18026,17 @@ function reviewScopePathKey(value) {
   return String(value || "").trim().replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
-const REVIEW_SCOPE_SETTING_LABELS = {
-  "startupContext.enabled": ["Agent instructions", "discovery turned off"],
-  "startupContext.projectOnly": ["Agent instructions", "limited to this project"],
-  "startupContext.fileNames": ["Agent instructions", "ancestor filename removed"],
-  "startupContext.globalPaths": ["Agent instructions", "global instruction path removed"],
-  "startupSkills.enabled": ["Local skill discovery", "discovery turned off"],
-  "startupSkills.projectOnly": ["Local skill discovery", "limited to this project"],
-  "startupSkills.folderNames": ["Local skill discovery", "skill folder removed"],
-};
+const REVIEW_SCOPE_CARDS = { startupContext: "Agent instructions", startupSkills: "Local skill discovery" };
+const REVIEW_SCOPE_CHANGES = { enabled: "discovery turned off", projectOnly: "limited to this project", fileNames: "ancestor filename removed", globalPaths: "global instruction path removed", folderNames: "skill folder removed" };
+
+function reviewScopeSettingCard(item) {
+  return REVIEW_SCOPE_CARDS[String(item?.field || "").split(".")[0]] || "Setting";
+}
 
 function describeReviewScopeSetting(item) {
-  const [card, change] = REVIEW_SCOPE_SETTING_LABELS[item?.field] || [String(item?.field || "Setting"), "reduced"];
+  const change = REVIEW_SCOPE_CHANGES[String(item?.field || "").split(".")[1]] || "reduced";
   const value = typeof item?.value === "string" && item.value ? ': <code>' + escapeHtml(item.value) + '</code>' : '';
-  return escapeHtml(card) + ' — ' + escapeHtml(change) + value;
+  return escapeHtml(reviewScopeSettingCard(item)) + ' — ' + change + value;
 }
 
 // The notice token of the reduction the owner accepted with the notice button (cleared when the notice changes).
@@ -18053,28 +18050,22 @@ function renderReviewScopeNotice(notice, watchAllow = []) {
   if (!notice) return "";
   const paths = Array.isArray(notice.paths) ? notice.paths : [];
   const reducedSettings = Array.isArray(notice.settings) ? notice.settings : [];
-  const inField = new Set((watchAllow || []).map(reviewScopePathKey));
-  const outsideField = paths.filter((item) => !inField.has(reviewScopePathKey(item)));
+  const wrap = (body) => '<div class="review-scope-notice" role="alert" data-review-scope-notice>' + body + '</div>';
   if (notice.damaged && !paths.length && !reducedSettings.length) {
-    return '<div class="review-scope-notice" role="alert" data-review-scope-notice><strong>Owner review authority needs your confirmation.</strong><p>The signed review scope could not be fully verified. The field below shows the last scope Context Room could recover, and it stays in effect. Check it, then Save settings to sign it again.</p></div>';
+    return wrap('<strong>Owner review authority needs your confirmation.</strong><p>The signed review scope could not be fully verified. The field below shows the last scope Context Room could recover, and it stays in effect. Check it, then Save settings to sign it again.</p>');
   }
-  const accepted = reviewScopeAcceptedByButton(notice);
-  const items = paths.map((item) => '<li><code>' + escapeHtml(item) + '</code>' + (outsideField.some((other) => other === item) ? ' (project scope, not listed in the field)' : '') + '</li>')
-    .concat(reducedSettings.map((item) => '<li>' + describeReviewScopeSetting(item) + '</li>'));
-  const what = paths.length && reducedSettings.length
-    ? 'stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') + ' and reduce agent startup settings'
-    : paths.length ? 'stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') : 'reduce agent startup settings';
-  return '<div class="review-scope-notice" role="alert" data-review-scope-notice>' +
-    '<strong>Changed outside Settings: project configuration tries to ' + what + '.</strong>' +
+  const inField = new Set((watchAllow || []).map(reviewScopePathKey));
+  const count = paths.length === 1 ? 'this path' : paths.length + ' paths';
+  const editable = reducedSettings.filter((item) => !String(item.field).endsWith(".projectOnly"));
+  const cards = [...new Set(editable.map(reviewScopeSettingCard))].join(" or ");
+  const hint = (editable.length ? 'Startup settings: to drop one, change it in ' + cards + ', then Save settings. ' : '') + (editable.length < reducedSettings.length ? '"Limited to this project" has no control here: only Keep is possible.' : '');
+  return wrap('<strong>Changed outside Settings: project configuration tries to ' + [paths.length && 'stop reviewing ' + count, reducedSettings.length && 'reduce agent startup settings'].filter(Boolean).join(' and ') + '.</strong>' +
     '<p><code>.context-room/config.json</code> was edited outside Settings, probably by an agent or a tool, not by you here. Nothing is reduced until you decide.</p>' +
-    '<ul>' + items.join("") + '</ul>' +
+    '<ul>' + paths.map((item) => '<li><code>' + escapeHtml(item) + '</code>' + (inField.has(reviewScopePathKey(item)) ? '' : ' (project scope, not listed in the field)') + '</li>').concat(reducedSettings.map((item) => '<li>' + describeReviewScopeSetting(item) + '</li>')).join("") + '</ul>' +
     '<p><strong>Keep:</strong> Save settings without removing anything. Everything listed stays in review, as you approved it, and the change is discarded.</p>' +
-    (paths.length ? '<p><strong>Accept:</strong> ' + (outsideField.length ? 'press Accept the reduction' : 'remove the paths from the field, or press Accept the reduction') + ', then Save settings.</p>' : '') +
-    (reducedSettings.length ? '<p>Startup settings: to drop one, change it in ' + [...new Set(reducedSettings.map((item) => (REVIEW_SCOPE_SETTING_LABELS[item.field] || ["Settings"])[0]))].map(escapeHtml).join(" or ") + ', then Save settings.</p>' : '') +
-    (paths.length ? (accepted
-      ? '<p data-review-scope-accepted><strong>Reduction accepted.</strong> Save settings to apply it.</p>'
-      : '<button class="secondary" type="button" data-apply-review-scope-reduction>Accept the reduction</button>') : '') +
-  '</div>';
+    (paths.length ? '<p><strong>Accept:</strong> ' + (paths.every((item) => inField.has(reviewScopePathKey(item))) ? 'remove the paths from the field, or ' : '') + 'press Accept the reduction, then Save settings.</p>' : '') +
+    (hint ? '<p>' + hint + '</p>' : '') +
+    (paths.length ? (reviewScopeAcceptedByButton(notice) ? '<p data-review-scope-accepted><strong>Reduction accepted.</strong> Save settings to apply it.</p>' : '<button class="secondary" type="button" data-apply-review-scope-reduction>Accept the reduction</button>') : ''));
 }
 
 function applyReviewScopeReductionToField() {
