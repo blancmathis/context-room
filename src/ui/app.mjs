@@ -383,12 +383,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
     /* Hub home shortcuts sit in the top bar, on the home only; "Notebooks" shows while the Explorer is closed. */
-    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action, .app:not(.sidebar-collapsed) [data-notebooks-open] { display: none; }
+    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
     #contextHubSinceLastVisit:not([hidden]) + .muted { display: none; }
     /* Phone: the Explorer button is the way to Notebooks; the status stays on screen. */
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebooks-open] { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
-    .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
+    .app:not(.sidebar-collapsed) #contextHubProjectsPanel, .app:not(.sidebar-collapsed) [data-notebooks-open] { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
     .context-hub-home-project { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
     .context-hub-home-project > .context-hub-home-project-main { flex: 1 1 220px; }
@@ -7084,7 +7084,8 @@ function renderGlobalExplorerContextMenu(x, y) {
     ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
       + (folderReviews.length ? '<button class="secondary" type="button" data-global-context-snooze-reviews>Snooze reviews… <span class="context-menu-count">' + folderReviews.length + '</span></button>' : '')
       + (target.kind === "project"
-        ? '<button class="secondary" type="button" data-global-context-priority="top">Move project to top</button>'
+        ? '<button class="secondary" type="button" data-global-context-review>To review</button>'
+          + '<button class="secondary" type="button" data-global-context-priority="top">Move project to top</button>'
           + '<button class="secondary" type="button" data-global-context-priority="up">Move project up</button>'
           + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
         : "")
@@ -7187,6 +7188,10 @@ function renderGlobalExplorerContextMenu(x, y) {
   menu.querySelector("[data-global-context-startup]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
     openGlobalProjectInspection("startup", project);
+  });
+  menu.querySelector("[data-global-context-review]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    openContextHubProjectDestination(project.projectKey, "review").catch((error) => setStatus(error.message));
   });
   menu.querySelector("[data-global-context-inspect]")?.addEventListener("click", () => {
     const worktree = globalProjectSelectedWorktree(project);
@@ -12234,7 +12239,8 @@ function readPersistedNavigationState(root = state.root) {
       historyIndex: raw.version >= 4 && Number.isInteger(raw.historyIndex) ? raw.historyIndex : -1,
       activeProjectLocationId: raw.version >= 4 && typeof raw.activeProjectLocationId === "string" ? raw.activeProjectLocationId : "",
       globalExplorerProjectKey: raw.version >= 4 && typeof raw.globalExplorerProjectKey === "string" ? raw.globalExplorerProjectKey : "",
-      globalExplorerMode: raw.version >= 4 && typeof raw.globalExplorerMode === "string" ? raw.globalExplorerMode : "projects",
+      // A load always shows a project list: the Notebooks section is never restored.
+      globalExplorerMode: raw.version >= 4 && typeof raw.globalExplorerMode === "string" && raw.globalExplorerMode !== "notebooks" ? raw.globalExplorerMode : "projects",
       explorerDocumentView: raw.version >= 6 && raw.explorerDocumentView === "related" ? "related" : "location",
       graphState: raw.version >= 5 && raw.graphState && typeof raw.graphState === "object" ? raw.graphState : null,
     };

@@ -1276,11 +1276,17 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
   })) }));
   const near = (a, b) => Math.abs(a - b) <= 2;
   // Explorer open: it is the only project list and nothing is selected, so the queue starts right under the top bar at full width.
-  const open = await boxes();
-  expect(open.contextHubProjectsPanel.visible).toBe(false);
-  expect(open.contextHealthPanel.visible).toBe(false);
-  expect(near(open.reviewQueuePanel.top, open["workspace-chrome"].bottom), JSON.stringify(open)).toBe(true);
-  expect(open.reviewQueuePanel.right - open.reviewQueuePanel.left, JSON.stringify(open)).toBeGreaterThanOrEqual(open.homeWidth - 2);
+  // The first draw of the inspection panel can come after the boot: wait for the state, do not read it once.
+  await expect.poll(async () => {
+    const open = await boxes();
+    const broken = [
+      !open.contextHubProjectsPanel.visible || "the home project list is hidden",
+      !open.contextHealthPanel.visible || "inspection is hidden",
+      near(open.reviewQueuePanel.top, open["workspace-chrome"].bottom) || "the queue starts under the top bar",
+      open.reviewQueuePanel.right - open.reviewQueuePanel.left >= open.homeWidth - 2 || "the queue takes the full width",
+    ].filter((entry) => entry !== true);
+    return broken.length ? [...broken, JSON.stringify(open)] : [];
+  }).toEqual([]);
   // The home shortcuts sit in the top bar; "Notebooks" is there only while the Explorer is closed.
   await expect(page.locator(".workspace-dock [data-home-explorer]")).toBeVisible();
   await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
@@ -1313,17 +1319,86 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
   }).toEqual([]);
   // One column below 1280 px: the queue comes before the project list.
   await page.setViewportSize({ width: 1100, height: 900 });
-  const tops = await page.evaluate(() => ["#reviewQueuePanel", "#contextHubProjectsPanel", "#contextHealthPanel"]
-    .map((selector) => document.querySelector(selector))
-    .filter((element) => element?.offsetParent)
-    .map((element) => Math.round(element.getBoundingClientRect().top)));
-  expect(tops.length).toBe(3);
-  expect(tops).toEqual([...tops].sort((a, b) => a - b));
+  // The resize can draw the home again, and that hides the inspection panel (no project is chosen): show it
+  // again, as above, and read the three tops once the new layout is in place.
+  await expect.poll(async () => {
+    const tops = await page.evaluate(() => {
+      document.getElementById("contextHealthPanel").hidden = false;
+      return ["#reviewQueuePanel", "#contextHubProjectsPanel", "#contextHealthPanel"]
+        .map((selector) => document.querySelector(selector))
+        .filter((element) => element?.offsetParent)
+        .map((element) => Math.round(element.getBoundingClientRect().top));
+    });
+    return tops.length === 3 && tops.every((top, index) => !index || top >= tops[index - 1]) ? "3 panels in order" : JSON.stringify(tops);
+  }).toBe("3 panels in order");
+  // Between 981 and 1279 px too, an open Explorer is the only project list.
+  await page.evaluate(() => setExplorerCollapsedFromUser(false));
+  await expect(page.locator("#globalProjectList .global-project-row").first()).toBeVisible();
+  await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
+  await page.evaluate(() => setExplorerCollapsedFromUser(true));
+  await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
   // Explorer closed: the top bar opens it on Notebooks.
   await page.locator("[data-notebooks-open]").click();
   await expect(page.locator(".app")).not.toHaveClass(/sidebar-collapsed/);
   await expect(page.locator("#notebookSpacePanel").getByRole("button", { name: "New notebook", exact: true })).toBeVisible();
   await expect(page.locator("[data-notebooks-open]")).toBeHidden();
+});
+
+test("@layout a reload always shows a project list: the Explorer opens on Projects and says Loading until the list is there", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  const workspace = new URL(page.url()).searchParams.get("workspace");
+  expect(workspace).toBeTruthy();
+  let release = () => {};
+  let held = Promise.resolve();
+  await page.route(/\/api\/context-hub(\/catalog)?(\?.*)?$/, async (route) => { await held; await route.continue(); });
+  const projectsTab = page.locator('[data-global-explorer-mode="projects"]');
+  // A reload keeps the view in the URL. A link to the workspace without a view restores the saved navigation state.
+  for (const load of [() => page.reload(), () => page.goto(`${data.origin}/?hub=1&workspace=${workspace}`)]) {
+    await page.locator('[data-global-explorer-mode="notebooks"]').click();
+    await expect(page.locator("#globalProjectList")).toBeHidden();
+    // Save the navigation state as a page hide does.
+    await page.evaluate(() => persistNavigationState({ syncUrl: false }));
+    held = new Promise((resolve) => { release = resolve; });
+    await load();
+    // The Hub has not answered yet: the Explorer is on Projects and says that the list is loading.
+    await expect(projectsTab).toHaveClass(/active/);
+    await expect(page.locator('[data-global-explorer-mode="notebooks"]')).not.toHaveClass(/active/);
+    await expect(page.locator("#globalProjectCount")).toHaveText("Loading…");
+    await expect(page.locator("#notebookSpacePanel")).toBeHidden();
+    release();
+    await waitForBoot(page);
+    await expect(projectsTab).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#notebookSpacePanel")).toBeHidden();
+    // Explorer open or closed, the screen shows a project list: the Explorer one or the home one.
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("#globalProjectList .global-project-row, #contextHubHomeProjectList .context-hub-home-project")].filter((row) => row.offsetParent).length)).toBeGreaterThan(0);
+    await page.evaluate(() => setExplorerCollapsedFromUser(false));
+  }
+});
+
+test("@layout with the Explorer open, the menu of a project leads to its review queue, its context and its documents", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  // The home list, with its Context / To review / Documents buttons, is hidden while the Explorer is open.
+  await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
+  const projectKey = await page.evaluate((projectId) => {
+    const project = state.contextHub.projects.find((item) => item.id === projectId || item.worktrees?.some((worktree) => worktree.id === projectId));
+    if (!project) throw new Error("Missing project fixture");
+    const event = new MouseEvent("contextmenu", { clientX: 200, clientY: 200 });
+    Object.defineProperty(event, "target", { value: document.body });
+    openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: project.projectKey });
+    return project.projectKey;
+  }, data.projects.atlas.id);
+  const menu = page.locator("#explorerContextMenu");
+  for (const name of ["To review", "View startup environment", "Open project"]) await expect(menu.getByRole("menuitem", { name, exact: true })).toBeVisible();
+  await menu.getByRole("menuitem", { name: "To review", exact: true }).click();
+  await expect(menu).toBeHidden();
+  await expect.poll(() => page.evaluate(() => state.sharedProposalProject)).toBe(projectKey);
+  await expect(page.locator("#reviewQueueHeading")).toBeFocused();
 });
 
 test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {
