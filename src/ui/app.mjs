@@ -8569,7 +8569,11 @@ async function openContextHubProjectDestination(projectKey, destination) {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
   if (!project) return;
   const worktree = globalProjectSelectedWorktree(project);
+  // A newer destination (a second Go to, a "To review" click) owns the page and the focus now:
+  // the older one must not render or move focus when its open ends late.
+  const destinationSeq = state.contextHubDestinationSeq = (state.contextHubDestinationSeq || 0) + 1;
   await openContextHubProject(worktree?.id || project.id, { pushHistory: true });
+  if (destinationSeq !== state.contextHubDestinationSeq) return;
   if (state.globalExplorerProjectKey !== projectKey) return;
   // On drawer viewports, opening a project shows the Explorer over the page; close it for page destinations.
   if (destination !== "documents" && !isExplorerDesktopViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
