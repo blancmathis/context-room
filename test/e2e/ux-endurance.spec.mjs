@@ -40,7 +40,7 @@ async function waitForWorkspaceBackgroundIdle(page) {
     projectSettingsBusy: Boolean(state.globalProjectSettingsLoading?.size || state.globalProjectSettingsPrefetching?.size),
     projectAttentionBusy: Boolean(state.contextAttentionLoading),
     registrationBusy: Boolean(state.workspaceRegistrationPromise),
-    presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued),
+    presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued || state.sessionStateTimer),
     runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise || state.runtimeContextHubRefreshTimer),
     hostedRefreshBusy: Boolean(state.hostedReviewRefreshPromise || state.hostedReviewRefreshTimer || state.hostedReviewRefreshPending),
     snapshotRefreshBusy: Boolean(state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing),
@@ -218,7 +218,7 @@ function attachFailureGuards(page) {
     if (message.type() === "error") failures.push(`console: ${message.text()}`);
   });
   page.on("response", (response) => {
-    if ([403, 409].includes(response.status()) || response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
+    if ([403, 404, 409].includes(response.status()) || response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
   });
   return { failures, requestCount: () => requests };
 }
@@ -252,15 +252,17 @@ function consumeExpectedDuplicateRegistrationFailures(failures, startIndex) {
   const consumedPaths = new Set();
   for (let index = startIndex; index < failures.length; index += 1) {
     // Since #92 a read against the not-yet-registered duplicate answers 403
-    // file_path_not_allowed instead of a plain 500; both are the same transient read.
-    const match = failures[index].match(/^http (403|409|500): (\S+)$/);
+    // file_path_not_allowed instead of a plain 500. Since 06a2864 it answers 404
+    // file_not_found when the path would be readable if it existed (the duplicate
+    // has no project root yet). All are the same transient read.
+    const match = failures[index].match(/^http (403|404|409|500): (\S+)$/);
     if (!match) continue;
     const pathname = new URL(match[2]).pathname;
     if (!expectedPaths.has(pathname)) continue;
     expect(consumedPaths.has(pathname), `${pathname} fails at most once while the duplicate workspace registers`).toBe(false);
     consumedPaths.add(pathname);
     consumedIndexes.add(index);
-    const statusText = { 403: "Forbidden", 409: "Conflict", 500: "Internal Server Error" }[match[1]];
+    const statusText = { 403: "Forbidden", 404: "Not Found", 409: "Conflict", 500: "Internal Server Error" }[match[1]];
     const expectedConsole = `console: Failed to load resource: the server responded with a status of ${match[1]} (${statusText})`;
     if (failures[index + 1] === expectedConsole) consumedIndexes.add(index + 1);
   }
@@ -279,6 +281,8 @@ test("@smoke duplicate registration consumes only its transient stale file reads
     "http 403: http://127.0.0.1/api/file/review-base?path=docs%2FREADME.md",
     "console: Failed to load resource: the server responded with a status of 403 (Forbidden)",
     "http 403: http://127.0.0.1/api/reports",
+    "http 404: http://127.0.0.1/api/reports",
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)",
   ];
 
   consumeExpectedDuplicateRegistrationFailures(failures, 1);
@@ -289,6 +293,8 @@ test("@smoke duplicate registration consumes only its transient stale file reads
     "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
     "pageerror: unexpected duplicate failure",
     "http 403: http://127.0.0.1/api/reports",
+    "http 404: http://127.0.0.1/api/reports",
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)",
   ]);
 });
 
@@ -675,6 +681,7 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");
   expect(workspaceId(page.url())).toBe(atlasWorkspace);
 
+  consumeRetriedAttentionBusy(guard.failures); consumeRetriedAttentionBusy(duplicateGuard.failures);
   expect(guard.failures, guard.failures.join("\n")).toEqual([]);
   expect(duplicateGuard.failures, duplicateGuard.failures.join("\n")).toEqual([]);
   await testInfo.attach("workspace-diagnostics", {
