@@ -482,11 +482,18 @@ export function createContextInventoryReaders(overrides = {}) {
   // The default review-queue reader builds a read-only report; the default
   // doctor reader reuses it. The inventory keeps only doctor issues, which do
   // not depend on that report, so the report is built once per inventory.
+  // The doctor reader takes the report out: a readers object kept for several
+  // inventories never serves a report from an earlier call, and keeps none.
   const queueReports = new Map();
   const readQueueReport = (root) => {
     const report = buildDocQaReport(root, { readOnly: true });
     queueReports.set(root, report);
     return report;
+  };
+  const takeQueueReport = (root) => {
+    const report = queueReports.get(root);
+    queueReports.delete(root);
+    return report ? { docqa: report } : {};
   };
   return Object.freeze({
     listProjects: (options) => listContextHubProjects({ ...options, readOnly: true }),
@@ -504,7 +511,7 @@ export function createContextInventoryReaders(overrides = {}) {
     readReviewState: (root) => readDocReviewState(root, { readOnly: true }),
     readGlobalReviewLedger: (root) => readGlobalReviewLedger(root, { readOnly: true }),
     readReviewQueue: (root) => buildAgentReviewQueue(root, { readOnly: true, report: readQueueReport(root) }),
-    readDoctor: (root) => buildContextRoomDoctorReport(root, { readOnly: true, ...(queueReports.has(root) ? { docqa: queueReports.get(root) } : {}) }),
+    readDoctor: (root) => buildContextRoomDoctorReport(root, { readOnly: true, ...takeQueueReport(root) }),
     readSharedConnection: (root) => readSharedProjectConnection(root),
     readSharedStatus: (root) => sharedContextStatus(root),
     verifySharedMain: (repository, options) => readSharedMainRevision(repository, options),
