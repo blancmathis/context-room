@@ -23120,17 +23120,19 @@ function scrollToMarkdownAnchor(anchor) {
 
 // Large documents render one section per H1/H2 with content-visibility:auto. Sections not yet shown have only an
 // estimated height, so the first jump lands off target once the real sizes appear. Align again over a few frames.
-let anchorSettleToken = 0;
+let anchorSettleToken = 0, settlingAnchor = "";
 function settleAnchorScroll(target, frames = 10) {
   const token = ++anchorSettleToken; // a newer jump cancels the older alignment
+  settlingAnchor = target.dataset.headingId;
   let previous = null;
   let stable = 0;
   const step = (left) => {
-    if (token !== anchorSettleToken || !target.isConnected) return;
+    if (token !== anchorSettleToken) return;
+    if (!target.isConnected) return void (settlingAnchor = "");
     const top = target.getBoundingClientRect().top;
     stable = previous !== null && Math.abs(top - previous) < 1 ? stable + 1 : 0;
     previous = top;
-    if (stable >= 2 || left <= 0) return;
+    if (stable >= 2 || left <= 0) return void (settlingAnchor = "");
     target.scrollIntoView({ block: "start" });
     window.requestAnimationFrame(() => step(left - 1));
   };
@@ -24141,7 +24143,7 @@ function renderMarkdownPlainInline(value, options = {}) {
       const label = renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
-      if (options.reader && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[2])) {
+      if (options.reader && !state.files.length && isMarkdownDocLinkTarget(link[2])) {
         return hubDocLinkMissing(link[2]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[2]) + '">' + label + '</span>' : label;
       }
       return escapeHtml(part);
@@ -24220,33 +24222,89 @@ function currentDocumentDirectory() {
 }
 
 function isKnownContextRoomFile(filePath) {
-  return state.files.some((file) => file.path === filePath) || (IS_GLOBAL_CONTEXT_ROOM && hubFileKnown(filePath) === true);
+  return state.files.some((file) => file.path === filePath) || (!state.files.length && hubFileKnown(filePath) === true);
 }
 
-// The Hub keeps no flat file list (state.files is empty). A link target is checked against the
-// folder listing of the linked project instead: true, false, or null while that listing loads.
-const hubLinkDirectoriesRequested = new Set();
-function hubFileKnown(filePath) {
+// Hub: state.files is empty. Walk the open file's project down from the root in the Explorer cache;
+// only folders listed by their parent are read (no 404). A cleared cache or failed read is read again.
+const hubLinkPending = new Set();
+let hubLinkDraining = false;
+function hubLinkProject() {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
-  if (!project || !filePath) return null;
-  const directory = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
-  const key = globalProjectExplorerPageKey(project, { directory });
-  const page = state.globalProjectExplorerDetails.get(key);
-  if (page?.entries?.some((entry) => entry.path === filePath && entry.type !== "directory")) return true;
-  if (page && page.nextCursor == null) return false;
-  if (!hubLinkDirectoriesRequested.has(key)) {
-    hubLinkDirectoriesRequested.add(key);
-    void loadHubLinkDirectory(project, directory).catch(() => {});
+  return project && state.activeProjectLocationId && state.activeProjectLocationId === (globalProjectSelectedWorktree(project)?.id || project.id) ? project : null;
+}
+
+// true, false, null, or the folder to read first.
+function hubLinkWalk(project, filePath) {
+  const parts = filePath.split("/");
+  let directory = "";
+  for (let index = 0; index < parts.length; index += 1) {
+    const page = state.globalProjectExplorerDetails.get(globalProjectExplorerPageKey(project, { directory }));
+    if (!page) return directory;
+    const childPath = directory ? directory + "/" + parts[index] : parts[index];
+    const entry = page.entries?.find((item) => item.path === childPath);
+    const last = index === parts.length - 1;
+    if (!entry) return page.nextCursor == null && !parts[index].startsWith(".") ? false : null;
+    if (last || entry.type !== "directory") return last && entry.type !== "directory";
+    directory = childPath;
   }
   return null;
 }
 
+function hubFileKnown(filePath) {
+  const project = hubLinkProject();
+  if (!project || !filePath) return null;
+  const known = hubLinkWalk(project, filePath);
+  if (typeof known !== "string") return known;
+  hubLinkPending.add(filePath);
+  if (!hubLinkDraining) {
+    hubLinkDraining = true;
+    queueMicrotask(() => void drainHubLinks(globalProjectExplorerCacheKey(project)));
+  }
+  return null;
+}
+
+// Read the folders level by level, then redraw once.
+async function drainHubLinks(scope) {
+  const current = () => { const project = hubLinkProject(); return project && globalProjectExplorerCacheKey(project) === scope ? project : null; };
+  const selected = state.selected;
+  const tries = new Map();
+  let loaded = false;
+  try {
+    for (let round = 0, project; round < 16 && (project = current()); round += 1) {
+      const directories = new Set();
+      for (const filePath of hubLinkPending) {
+        const known = hubLinkWalk(project, filePath);
+        if (typeof known === "string" && (tries.get(known) || 0) < 2) directories.add(known);
+        else hubLinkPending.delete(filePath);
+      }
+      if (!directories.size) break;
+      const pages = await Promise.all([...directories].map((directory) => loadHubLinkDirectory(project, directory).catch(() => null)));
+      [...directories].forEach((directory, index) => pages[index] ? (loaded = true) : tries.set(directory, (tries.get(directory) || 0) + 1));
+      // A failed read is tried once more.
+      if (!pages.some(Boolean)) await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  } finally {
+    hubLinkPending.clear();
+    hubLinkDraining = false;
+  }
+  if (!loaded || state.selected !== selected || !current() || state.page !== "file" || state.mode !== "view" || state.dirty) return;
+  const top = el("docReader")?.scrollTop, anchor = settlingAnchor;
+  renderViewer();
+  // A jump still aligning restarts on the new heading.
+  if ((!anchor || !scrollToMarkdownAnchor(anchor)) && top && el("docReader")) el("docReader").scrollTop = top;
+}
+
 async function loadHubLinkDirectory(project, directory) {
+  const key = globalProjectExplorerPageKey(project, { directory });
   let page = await loadGlobalProjectExplorerPage(project, { directory });
+  // The Explorer may be reading it already.
+  for (let wait = 0; !page && wait < 50 && state.globalProjectExplorerLoading.has(key); wait += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  page ||= state.globalProjectExplorerDetails.get(key);
   for (let pages = 1; page?.nextCursor != null && pages < 8; pages += 1) {
     page = await loadGlobalProjectExplorerPage(project, { directory, cursor: page.nextCursor, force: true });
   }
-  if (page && state.page === "file" && state.mode === "view" && !state.dirty) renderViewer();
+  return page;
 }
 
 function hubDocLinkMissing(rawTarget) {

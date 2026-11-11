@@ -24,9 +24,10 @@ async function fixture() {
   const projects = {};
   for (const [name, files] of Object.entries({
     Alpha: {
-      "README.md": "# Alpha\n\nRead the [Guide](docs/guide.md) and the [Deep notes](./docs/deep/notes.md).\nAlso the [Gone page](docs/gone.md).\n",
-      "docs/guide.md": "# Guide\n\nHello guide.\n",
+      "README.md": "# Alpha\n\nRead the [Guide](docs/guide.md) and the [Deep notes](./docs/deep/notes.md).\nAlso the [Gone page](docs/gone.md) and the [Old page](old/gone.md).\nSee the [Far part](docs/guide.md#far-part).\n",
+      "docs/guide.md": "# Guide\n\nHello guide.\n\n" + "Filler line.\n\n".repeat(120) + "## Far part\n\nThe [Other](other/page.md) and [Back](../README.md).\n\n" + "Filler line.\n\n".repeat(60),
       "docs/deep/notes.md": "# Deep notes\n",
+      "docs/other/page.md": "# Other page\n",
     },
   })) {
     const root = path.join(base, name);
@@ -59,22 +60,43 @@ const view = (page) => page.locator("#explorerViewPanel");
 
 test("@links a relative link in a Hub document opens the target; a link to a missing file is greyed", async ({ page }) => {
   const hub = await fixture();
+  // No folder read may answer 404: a missing folder means a missing file, never a request for it.
+  const failures = [];
+  const listings = [];
+  page.on("response", (response) => {
+    if (response.url().includes("/api/") && [404, 409].includes(response.status())) failures.push(response.status() + " " + response.url());
+    if (response.url().includes("/project-explorer?")) listings.push(new URL(response.url()).searchParams.get("path") || "");
+  });
+  // The first read of docs/ fails: it must be read again (no state kept from a failed read).
+  let failDocs = true;
+  await page.route(/project-explorer\?.*path=docs(&|$)/, (route) => {
+    if (!failDocs) return route.continue();
+    failDocs = false;
+    return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "test failure" }) });
+  });
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
     await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
     await page.locator("[data-home-explorer]").click();
     await view(page).locator(".hl-select", { hasText: "Alpha" }).click();
-    await view(page).locator("a.hl-file", { hasText: "README.md" }).click();
     const reader = page.locator("#docReader");
+    await view(page).locator("a.hl-file", { hasText: "README.md" }).click();
     await expect(reader).toContainText("Read the", { timeout: 15_000 });
-    // Two real links are clickable; the dead one is a greyed label, not raw markdown.
-    await expect(reader.locator("a[data-doc-link-path]")).toHaveCount(2);
-    await expect(reader.locator(".markdown-doc-link-missing")).toHaveText("Gone page");
+    await expect.poll(() => failDocs).toBe(false);
+    // Three real links are clickable; the dead ones (missing file, missing folder) are greyed labels, not raw markdown.
+    await expect(reader.locator("a[data-doc-link-path]")).toHaveCount(3, { timeout: 15_000 });
+    await expect(reader.locator(".markdown-doc-link-missing")).toHaveText(["Gone page", "Old page"]);
     await expect(reader.locator("a", { hasText: "Gone page" })).toHaveCount(0);
     await expect(reader).not.toContainText("](");
     if (process.env.CR_LINKS_SHOT) await page.screenshot({ path: process.env.CR_LINKS_SHOT });
-    await reader.locator("a[data-doc-link-path]", { hasText: "Guide" }).click();
+    // An anchor link: the reader redraws once for docs/other/ and keeps the anchor in view.
+    await reader.locator("a[data-doc-link-path]", { hasText: "Far part" }).click();
     await expect(page.locator("#docReader")).toContainText("Hello guide.", { timeout: 15_000 });
+    await expect(page.locator("#docReader a[data-doc-link-path]", { hasText: "Other" })).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.locator("#docReader a[data-doc-link-path]", { hasText: "Back" })).toHaveCount(1);
+    await expect(page.locator('#docReader [data-heading-id="far-part"]')).toBeInViewport();
+    expect(listings).not.toContain("old");
+    expect(failures).toEqual([]);
   } finally {
     await hub.close();
   }
