@@ -649,10 +649,15 @@ test.describe('Notebooks space', () => {
     } };
   }
   // Notebooks is a section of the Explorer; the top bar opens it while the Explorer is closed.
+  // A phone has no room for that button in the top bar: open the Explorer first, then the section.
   async function openNotebooksTab(page) {
     await page.waitForFunction(() => Boolean(state.contextHub), null, { timeout: 45000 });
     const closed = page.locator('[data-notebooks-open]');
-    await (await closed.isVisible() ? closed : page.locator('[data-global-explorer-mode="notebooks"]')).click();
+    if (await closed.isVisible()) await closed.click();
+    else {
+      if (await page.locator('.app.sidebar-collapsed').count()) await page.locator('#explorerOpen:visible, #sidebarToggle:visible').first().click();
+      await page.locator('[data-global-explorer-mode="notebooks"]').click();
+    }
     await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
   }
   async function newNotebookWithInk(page, f) {
