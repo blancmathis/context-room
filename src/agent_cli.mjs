@@ -13,6 +13,7 @@ import { inspectLocalProposal, listLocalProposals } from "./local_proposals.mjs"
 
 import {
   appendAgentAnnotation,
+  buildAgentReviewQueue,
   buildContextRoomDoctorReport,
   buildDocQaReport,
   CONFIG_FILE,
@@ -1481,7 +1482,13 @@ export function explainAgentSelector(target, { selector = "", kind = "", provide
   const needle = String(selector || "").trim();
   if (!needle) throw new ContextRoomCliError("missing-selector", "A context explanation requires a path, resource id, label, review id, or proposal branch.", { exitCode: 2 });
   const report = buildDocQaReport(target.root);
-  const environment = buildAgentEnvironment(target, { provider, report });
+  // The inventory reads the review queue and doctor issues. Both reuse this
+  // report instead of rebuilding it; doctor issues do not depend on it.
+  const readers = {
+    readReviewQueue: (root) => buildAgentReviewQueue(root, { readOnly: true, report }),
+    readDoctor: (root) => buildContextRoomDoctorReport(root, { readOnly: true, docqa: report }),
+  };
+  const environment = buildAgentEnvironment(target, { provider, report, readers });
   const resources = [
     ...environment.instructions.map((item) => ({ kind: "instruction", ...item })),
     ...environment.skills.map((item) => ({ kind: "skill", ...item })),
