@@ -21,14 +21,28 @@ async function reachSameProjectPair(page) {
   return bar;
 }
 
+// A click on a file of the queue starts the flow at that file. The first file
+// of the flow order (instructions, memory, docs, provider settings) gives the
+// whole queue in that order.
+async function startFlow(page) {
+  const rows = page.locator('#reviewQueue [data-review-lever]');
+  await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+  await page.waitForFunction(() => state.contextHubReviewQueueReady === true, null, { timeout: 30_000 });
+  // The first file of the flow order, not the first row on screen: the rows follow the order of the queue.
+  const first = await page.evaluate(() => reviewFlowCandidates()
+    .map((item, order) => ({ id: item.id, lever: REVIEW_FLOW_LEVERS[reviewFlowLever(item.localReview)].order, order }))
+    .sort((left, right) => left.lever - right.lever || left.order - right.order)[0]?.id || '');
+  const row = page.locator('#reviewQueue [data-context-room-review=' + JSON.stringify(first) + ']');
+  // The queue shows a sample of a long list: a first file that is not on screen starts the flow directly.
+  if (await row.count()) await row.click();
+  else expect(await page.evaluate((id) => startReviewFlow(id), first)).toBe(true);
+}
+
 // Only "Later" and "Stop" here: the fixture is shared, so this test must not decide any review.
 test('@smoke review flow walks pending files across projects and ends with a summary', async ({ page }) => {
   const data = fixture();
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await expect(start).toContainText(/Review one after another · \d+ files/);
-  await start.click();
+  await startFlow(page);
 
   const bar = page.locator('#reviewFlowBar');
   await expect(bar).toBeVisible({ timeout: 30_000 });
@@ -48,7 +62,7 @@ test('@smoke review flow walks pending files across projects and ends with a sum
   await expect.poll(() => requests.includes('GET /api/context-hub/review-queue')).toBe(true);
   expect(requests).not.toContain('POST /api/context-hub/refresh');
   await panel.locator('[data-review-flow-panel="close"]').click();
-  await expect(start).toBeVisible();
+  await expect(panel).toBeHidden();
 });
 
 // Accept never waits for the server write: the next file opens while the save
@@ -65,9 +79,7 @@ test('@smoke review flow accept opens the next file at once and keeps a failed s
     });
   }
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = await reachSameProjectPair(page);
   await page.keyboard.press('a');
   await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
@@ -98,9 +110,7 @@ const flowResults = (page) => page.evaluate((key) => JSON.parse(window.sessionSt
 test('@smoke review flow saves cut by a reload end as saved or not saved, never saving', async ({ page }) => {
   const data = fixture();
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   await reachSameProjectPair(page);
   await page.evaluate((key) => {
     const flow = JSON.parse(window.sessionStorage.getItem(key));
@@ -132,9 +142,7 @@ test('@smoke review flow decision sent on pagehide that does not land is visible
   const hung = [];
   await page.route(/\/api\/file(\/[a-z-]+)?\?/, (request) => (holdOpen ? hung.push(request) : request.fallback()));
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   await reachSameProjectPair(page);
   // The next file never finishes opening, so the save never starts in the page.
   holdOpen = true;
@@ -167,9 +175,7 @@ test('@smoke review flow pagehide sends the review even when the base never answ
   const hung = [];
   await page.route(/\/api\/file(\/[a-z-]+)?\?/, (request) => (holdOpen ? hung.push(request) : request.fallback()));
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   await reachSameProjectPair(page);
   holdOpen = true;
   await page.evaluate(() => {
@@ -203,9 +209,7 @@ test('@smoke review flow pagehide sends the review even when the base never answ
 test('@smoke review flow pagehide sends the review of a decision whose base is on its way', async ({ page }) => {
   const data = fixture();
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = await reachSameProjectPair(page);
   await page.evaluate(() => {
     window.__decisionCalls = [];
@@ -243,9 +247,7 @@ test('@smoke review flow project change reads cached reports, not a full recompu
     if (url.pathname === '/api/reports') reports.push(url.search);
   });
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = page.locator('#reviewFlowBar');
   for (const step of [2, 3]) {
     await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
@@ -273,9 +275,7 @@ test('@smoke review flow previous shows the earlier decision and lets it change'
     });
   }
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = await reachSameProjectPair(page);
   await page.keyboard.press('a');
   await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
@@ -314,9 +314,7 @@ test('@smoke review flow previous shows the earlier decision and lets it change'
 test('@smoke review flow focus refreshes reports without a full recompute', async ({ page }) => {
   const data = fixture();
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = page.locator('#reviewFlowBar');
   await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
   await page.keyboard.press('l');
@@ -351,9 +349,7 @@ test('@smoke review flow shows skipped documentation checks instead of an empty 
     await route.fulfill({ json: { documentChecks: [], documentChecksSuperseded: true } });
   });
   await page.goto(`${data.origin}/?hub=1&view=hub`);
-  const start = page.locator('[data-review-flow-panel="start"]');
-  await expect(start).toBeVisible({ timeout: 30_000 });
-  await start.click();
+  await startFlow(page);
   const bar = page.locator('#reviewFlowBar');
   await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
   // The shown file carries a review whose checks are still running.

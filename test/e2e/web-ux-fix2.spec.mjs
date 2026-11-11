@@ -36,7 +36,7 @@ for (const [width, height] of [[390, 844], [800, 900]]) {
 test("@layout the dock status stays inside the screen at 390px on the review flow", async ({ page }) => {
   await openAtlas(page, 390, 844, "");
   if (await page.locator(".app").evaluate((node) => !node.classList.contains("sidebar-collapsed"))) await page.locator("#sidebarToggle").click();
-  await page.getByRole("button", { name: /Review one after another/ }).first().click();
+  await page.locator("#reviewQueue [data-review-lever]").first().click();
   await expect(page.locator("#contextPanelToggle")).toBeVisible();
   const box = await page.evaluate(() => {
     const status = document.querySelector("#status").getBoundingClientRect();

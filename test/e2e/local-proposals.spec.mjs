@@ -157,6 +157,7 @@ test("@smoke local proposal review accepts a correction and rejects rendered HTM
     await imageReview.getByRole("button", { name: "Save and accept file" }).click();
     await expect(imageReview).toHaveCount(0); await expect(asset).toHaveCount(0);
     expect(fs.readFileSync(path.join(root, "docs/drawing.png")).equals(Buffer.from(png, "base64"))).toBe(false);
+    await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
     await page.getByRole("button", { name: "Clean up older changes", exact: true }).click();
     const cleanup = page.getByRole("dialog", { name: "Review cleanup" });
     await expect(cleanup.getByRole("checkbox")).not.toBeChecked();

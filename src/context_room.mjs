@@ -8162,7 +8162,7 @@ export function migrateLisiereNotebook(root, options = {}) {
 /** The registered Notebooks space, or a clear refusal that names the way to create it. */
 export function requireContextHubNotebookSpace() {
   const root = registeredContextHubNotebookSpace();
-  if (!root) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root. migrate --notebooks-to-space creates it itself.", 409, "context_hub_notebook_space_missing");
+  if (!root) throw sharedRequestError("Create the Notebooks space first (Hub › Go to › New note) or pass --root. migrate --notebooks-to-space creates it itself.", 409, "context_hub_notebook_space_missing");
   return root;
 }
 

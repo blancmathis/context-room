@@ -436,6 +436,8 @@ async function assertWorkbenchGutters(page, data, width) {
 
   await expectHorizontalPadding(page, ".workspace-dock", width <= 980 ? { left: 48, right: 12 } : 12);
   await expectHorizontalPadding(page, "#reviewQueuePanel > header", gutter);
+  await expectHorizontalPadding(page, ".review-queue-tools > summary", gutter);
+  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
   await expectHorizontalPadding(page, ".context-room-review-toolbar", gutter);
   await expectHorizontalPadding(page, "#reviewQueue :is(.context-room-proposal-row, .context-hub-review-item, .review-item)", gutter, { first: true });
   const hubFolders = await page.locator("#hubFolders").evaluate((node) => {
@@ -573,6 +575,7 @@ async function assertWorkbenchGutters(page, data, width) {
     await waitForReady(page);
     await closeExplorerDrawer(page);
 
+    await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
     await page.locator("#contextRoomReviewProjectFilter").click();
     const picker = "#contextHubProjectPicker:not([hidden])";
     await expectHorizontalPadding(page, `${picker} .context-hub-project-picker-head`, compact ? 12 : 20);
