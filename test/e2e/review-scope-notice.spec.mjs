@@ -40,6 +40,7 @@ async function scopeHub(names = ["Alpha"]) {
       authorityPath,
       witnessPath: authorityPath.replace(/\.json$/, ".signed"),
       watchAllow: () => JSON.parse(fs.readFileSync(configPath, "utf8")).watchAllow,
+      allowedPaths: () => JSON.parse(fs.readFileSync(configPath, "utf8")).allowedPaths,
       // As an agent or a tool would: config.json loses notes/ without going through Settings.
       reduceConfig() {
         const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -52,6 +53,8 @@ async function scopeHub(names = ["Alpha"]) {
         fs.rmSync(authorityPath);
         fs.rmSync(`${authorityPath}.backup`, { force: true });
       },
+      // The signed authority itself (not config.json): what it protects, read through inspectOwnerReviewScope with an empty scope.
+      signedScope: () => inspectOwnerReviewScope(root, { allowedPaths: [], watchAllow: [] }, { readOnly: true }).reductions.filter((r) => r.field === "allowedPaths" || r.field === "watchAllow").map((r) => `${r.field}:${r.value}`).sort(),
       tamperIssue: () => buildContextRoomDoctorReport(root, { readOnly: true }).issues.some((issue) => issue.type === "review_authority_tamper"),
     };
   }
@@ -118,7 +121,7 @@ const save = (page) => page.locator("#saveSettings");
 
 test.beforeEach(async ({ page }) => { trackRequests(page); });
 
-test("@settings a reduction made outside Settings shows the notice; Keep and Save keeps the signed scope", async ({ page }) => {
+test("@smoke @settings a reduction made outside Settings shows the notice; Keep and Save keeps the signed scope", async ({ page }) => {
   const hub = await scopeHub();
   const alpha = hub.projects.Alpha;
   try {
@@ -139,6 +142,8 @@ test("@settings a reduction made outside Settings shows the notice; Keep and Sav
     await expect(page.locator("#status")).toContainText("still in review, reduction discarded: notes/");
     await expect(notice(page)).toHaveCount(0);
     expect(alpha.watchAllow()).toEqual(expect.arrayContaining(["docs/", "notes/"]));
+    expect(alpha.allowedPaths()).toEqual(expect.arrayContaining(["docs/", "notes/"]));
+    expect(alpha.signedScope()).toEqual(["allowedPaths:docs/", "allowedPaths:notes/", "watchAllow:docs/", "watchAllow:notes/"]);
     expect(alpha.tamperIssue()).toBe(false);
     await expect(page.locator("#watchAllow")).toHaveValue(/notes\//);
   } finally {
@@ -146,7 +151,7 @@ test("@settings a reduction made outside Settings shows the notice; Keep and Sav
   }
 });
 
-test("@settings Accept the reduction then Save signs the reduced scope", async ({ page }) => {
+test("@smoke @settings Accept the reduction then Save signs the reduced scope", async ({ page }) => {
   const hub = await scopeHub();
   const alpha = hub.projects.Alpha;
   try {
@@ -165,13 +170,14 @@ test("@settings Accept the reduction then Save signs the reduced scope", async (
     await expect(page.locator("#status")).toContainText("reduction accepted: notes/");
     await expect(notice(page)).toHaveCount(0);
     expect(alpha.watchAllow()).toEqual(["docs/"]);
+    expect(alpha.signedScope()).toEqual(["allowedPaths:docs/", "watchAllow:docs/"]);
     expect(alpha.tamperIssue()).toBe(false);
   } finally {
     await hub.close();
   }
 });
 
-test("@settings a deleted authority shows the missing notice; an unconfirmed Save is refused in words, Confirm then Save signs", async ({ page }) => {
+test("@smoke @settings a deleted authority shows the missing notice; an unconfirmed Save is refused in words, Confirm then Save signs", async ({ page }) => {
   const hub = await scopeHub();
   const alpha = hub.projects.Alpha;
   try {
@@ -185,7 +191,9 @@ test("@settings a deleted authority shows the missing notice; an unconfirmed Sav
     await expect(notice(page).getByRole("button", { name: "Confirm this scope" })).toBeVisible();
     await expect(page.locator("#settingsSaveState")).toContainText("Your decision is needed");
 
+    const refused = page.waitForResponse((r) => r.url().includes("/api/context-hub/project-settings") && r.request().method() === "POST");
     await save(page).click();
+    expect((await refused).status()).toBe(409);
     await expect(page.locator("#status")).toContainText("The signed review scope is missing");
     await expect(page.locator("#status")).not.toContainText("review_authority_confirmation_required");
     expect(fs.existsSync(alpha.authorityPath)).toBe(false);
@@ -196,6 +204,7 @@ test("@settings a deleted authority shows the missing notice; an unconfirmed Sav
     await save(page).click();
     await expect(page.locator("#status")).toContainText("project settings saved");
     await expect.poll(() => fs.existsSync(alpha.authorityPath)).toBe(true);
+    expect(alpha.signedScope()).toEqual(["allowedPaths:docs/", "watchAllow:docs/"]);
     await expect(notice(page)).toHaveCount(0);
     expect(alpha.tamperIssue()).toBe(false);
   } finally {
@@ -203,7 +212,7 @@ test("@settings a deleted authority shows the missing notice; an unconfirmed Sav
   }
 });
 
-test("@settings a scope confirmed on one project is not confirmed on another opened in the same page", async ({ page }) => {
+test("@smoke @settings a scope confirmed on one project is not confirmed on another opened in the same page", async ({ page }) => {
   const hub = await scopeHub(["Alpha", "Bravo"]);
   const { Alpha: alpha, Bravo: bravo } = hub.projects;
   try {
@@ -230,7 +239,9 @@ test("@settings a scope confirmed on one project is not confirmed on another ope
     await expect(notice(page)).toContainText("Owner review authority is missing");
     await expect(notice(page).locator("[data-review-scope-accepted]")).toHaveCount(0);
     await expect(notice(page).getByRole("button", { name: "Confirm this scope" })).toBeVisible();
+    const refusedBravo = page.waitForResponse((r) => r.url().includes("/api/context-hub/project-settings") && r.request().method() === "POST");
     await save(page).click();
+    expect((await refusedBravo).status()).toBe(409);
     await expect(page.locator("#status")).toContainText("The signed review scope is missing");
     expect(fs.existsSync(bravo.authorityPath)).toBe(false);
     expect(fs.existsSync(alpha.authorityPath)).toBe(false);
@@ -239,9 +250,9 @@ test("@settings a scope confirmed on one project is not confirmed on another ope
   }
 });
 
-for (const variant of ["changed", "missing"]) {
-  test.describe(`${variant} notice at 800 px`, () => {
-    test.use({ viewport: { width: 800, height: 900 } });
+for (const [variant, width] of [["changed", 800], ["missing", 800], ["changed", 1280], ["missing", 1280]]) {
+  test.describe(`${variant} notice at ${width} px`, () => {
+    test.use({ viewport: { width, height: 900 } });
 
     async function openVariant(page, hub, alpha) {
       if (variant === "missing") alpha.deleteAuthority();
@@ -269,13 +280,9 @@ for (const variant of ["changed", "missing"]) {
       }
     });
 
-    // PRODUCT DEFECT (not fixed here, tests only): at 800 px the notice buttons and Save settings are 32 px high.
-    // Cause: `.review-scope-notice button { min-height: 40px }` (src/ui/app.mjs) is below 44 px, and the `.settings-page button`
-    // / `.settings-footer button` minimums (40 px) sit in a narrower media query than 800 px, so they do not apply there at all.
-    // Remove the `test.fail` lines when the targets reach 44 px.
+    // Touch targets: the notice buttons and Save settings are at least 44 px at 800 and 1280 px.
     for (const [label, targets] of [["notice buttons", (page) => notice(page).locator("button")], ["Save settings", (page) => save(page)]]) {
       test(`@layout the ${variant} ${label} are at least 44 px`, async ({ page }) => {
-        test.fail(true, "product defect: the 800 px targets are 32 px high, below 44 px");
         const hub = await scopeHub();
         try {
           await openVariant(page, hub, hub.projects.Alpha);
@@ -284,8 +291,8 @@ for (const variant of ["changed", "missing"]) {
           for (const button of buttons) {
             const box = await button.boundingBox();
             expect(box, "button is laid out").not.toBeNull();
-            expect(box.height, await button.innerText()).toBeGreaterThanOrEqual(44);
-            expect(box.width).toBeGreaterThanOrEqual(44);
+            expect(box.height, await button.innerText()).toBeGreaterThanOrEqual(43.99); // 44 px minus sub-pixel rounding
+            expect(box.width).toBeGreaterThanOrEqual(43.99);
           }
         } finally {
           await hub.close();

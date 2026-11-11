@@ -864,7 +864,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-scope-notice strong { color: var(--label-strong); font-size: 14px; line-height: 1.35; }
     .review-scope-notice p { margin: 0; color: var(--text); font-size: 13px; line-height: 1.55; }
     .review-scope-notice ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
-    .review-scope-notice button { justify-self: start; min-height: 40px; }
+    .review-scope-notice button.secondary { justify-self: start; min-height: 44px; }
+    .settings-footer button.primary { min-height: 44px; }
     .settings-concept-help { min-width: 0; display: grid; justify-items: start; margin-top: 3px; }
     .settings-concept-help-button { min-height: 28px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 7px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--label-strong); font-family: inherit; font-size: 12px; font-weight: 650; line-height: 1.2; cursor: pointer; }
     .settings-concept-help-button:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
