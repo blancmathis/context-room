@@ -925,7 +925,8 @@ test("@smoke a location to confirm asks for an explicit same-folder confirmation
   expect(panel.hubList).toContain("Moved volume");
   expect(panel.text).toContain("Is this still the folder you registered?");
   expect(panel.text).toContain("Pair drawing tablets again afterward.");
-  await page.locator("#contextHealth [data-context-hub-confirm-location]").click();
+  // The inspection panel waits for the Agents view; the queue's location list confirms it.
+  await page.locator(".context-hub-location-list [data-context-hub-confirm-location]").click();
   const dialog = page.getByRole("dialog", { name: "Confirm the location of Moved volume?" });
   await expect(dialog).toBeVisible();
   const accept = dialog.locator("[data-confirm-accept]");
