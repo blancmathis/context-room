@@ -124,7 +124,8 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
     response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
   }).on("error", reject));
   expect(projectPage.status).toBe(200);
-  expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(5_600);
+  // Raised 5 600 -> 7 900 on 2026-11-13 for R3b (agent files per level, Recent docs, review groups, 820 px drawer): 7 167, limit +10 %.
+  expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(7_900);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();

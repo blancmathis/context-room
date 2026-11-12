@@ -61,3 +61,16 @@ test('the Hub keeps each project page in project-pages.json next to the preferen
     assert.equal(readProjectPage('local:a', preferences).stored, false, 'a damaged file falls back to the default');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a project key such as __proto__ is a plain entry and never changes Object.prototype', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-project-page-'));
+  try {
+    const preferences = path.join(dir, 'preferences.json');
+    writeProjectPage('local:a', { tiles: [{ type: 'all', size: 'full' }] }, preferences);
+    const written = writeProjectPage('__proto__', { tiles: [{ type: 'recent', size: 'half' }] }, preferences);
+    assert.equal(Object.prototype.tiles, undefined);
+    assert.deepEqual(readProjectPage('__proto__', preferences), written);
+    assert.equal(readProjectPage('local:a', preferences).page.tiles[0].type, 'all', 'the other pages stay');
+    assert.ok(Object.hasOwn(JSON.parse(fs.readFileSync(projectPagesPath(preferences), 'utf8')).projects, '__proto__'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

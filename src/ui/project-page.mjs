@@ -83,9 +83,20 @@ const CSS = `
 .pp-edit button,.pp-add button{min-width:34px;min-height:34px}
 .pp-add{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--muted)}
 .pp-empty{color:var(--muted);margin:0}
+#reviewQueuePanel.pp-none{display:none!important}
+.pp-group{display:flex;align-items:center;gap:10px;padding:14px 0 4px;cursor:pointer}
+.pp-group button{margin-left:auto}
+.pp-levels{display:grid;gap:6px;margin-bottom:12px}
+.pp-levels h3,.pp-recent h3{margin:0;font-size:14px}
+.pp-levels summary{display:flex;flex-wrap:wrap;gap:4px 10px;padding:8px 0;cursor:pointer}
+.pp-levels summary span,.pp-list small{color:var(--muted)}
+.pp-list{display:grid;gap:2px;margin:0;padding:0;list-style:none}
+.pp-list li{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;min-height:36px}
+.pp-list li>span:last-child{margin-left:auto;color:var(--muted)}
+.pp-link{border:0;background:none;color:var(--accent);font:inherit;padding:4px 0;cursor:pointer;text-align:left}
 @media (max-width:980px){#projectPageHead .pp-back{display:inline-flex}}
 @media (max-width:639px){.pp-grid>li.pp-half{grid-column:span 2}}
-@media (pointer:coarse){.pp-edit button,.pp-add button,#projectPageHead button,.pp-tiles-head button{min-height:44px;min-width:44px}}
+@media (pointer:coarse){.pp-edit button,.pp-add button,#projectPageHead button,.pp-tiles-head button,.pp-link,.pp-group button{min-height:44px;min-width:44px}}
 `;
 
 const ICONS = {
@@ -99,7 +110,16 @@ ICONS.all = ICONS.folder;
 /* global state, el, escapeHtml, api, setStatus, renderGlobalProjectExplorer, renderContextHealth, openContextHubProject,
    openGlobalProjectInspection, openContextHubProjectPicker, returnToGlobalContextHubHome, globalProjectSelectedWorktree,
    globalProjectExplorerPageKey, globalProjectExpandedFolderKey, loadGlobalProjectExplorerPage, isExplorerCollapsed,
-   isExplorerDesktopViewport, setExplorerCollapsedFromUser */
+   isExplorerDesktopViewport, setExplorerCollapsedFromUser, applyExplorerCollapsed, agentContextProvider, AGENT_PROVIDER_LABELS,
+   formatTokenEstimate, contextHubReviewItems, contextHubProjectForItem, openGlobalProjectExplorer */
+
+const reviewCount = (project) => Number(project?.localReviewCount || 0) + Number(project?.sharedProposalCount || 0);
+const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
+const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
+  + '<small>' + escapeHtml(detail) + '</small>' + (right ? '<span>' + escapeHtml(right) + '</span>' : '') + '</li>';
+const levelMarkup = (level) => '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml(LEVEL_NAMES[level.level] || level.level + '/') + '</strong><span>'
+  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + '</span></summary><ul class="pp-list">'
+  + (level.files.length ? level.files.map((file) => fileRow(file, (file.kind === 'skill' ? 'Skill · ' : '') + (file.path || file.locator), formatTokenEstimate(file.startupTokens))).join('') : '<li class="pp-empty">No agent file here.</li>') + '</ul></details>';
 
 export function createProjectPage() {
   const style = document.createElement('style');
@@ -116,6 +136,16 @@ export function createProjectPage() {
   tiles.hidden = true;
   queue?.before(head);
   queue?.after(tiles);
+  // « What agents load »: the agent files of each level (global, root, subfolders) with their tokens, above the checks.
+  const levelsBox = document.createElement('section');
+  levelsBox.className = 'pp-levels';
+  levelsBox.id = 'projectAgentLevels';
+  levelsBox.hidden = true;
+  el('contextHealth')?.before(levelsBox);
+  const levels = new Map();
+  let levelsShown = '';
+  let recent = null;
+  let entered = '';
   const pages = new Map();
   let editing = false;
 
@@ -231,17 +261,65 @@ export function createProjectPage() {
     renderGlobalProjectExplorer();
   }
 
-  function openTile(project, tile) {
+  function openFile(project, filePath) {
     const worktree = globalProjectSelectedWorktree(project);
-    if (tile.type === 'file') {
-      listedInProject(project, tile.path, 'file').then((found) => {
-        if (!found) return setStatus(tile.path + ' is not in this project any more');
-        if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
-        return openContextHubProject(worktree?.id || project.id, { filePath: tile.path });
-      }).catch((error) => setStatus(error.message));
-    } else if (tile.type === 'folder') void revealFolder(project, tile.path).catch((error) => setStatus(error.message));
+    listedInProject(project, filePath, 'file').then((found) => {
+      if (!found) return setStatus(filePath + ' is not in this project any more');
+      if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
+      return openContextHubProject(worktree?.id || project.id, { filePath });
+    }).catch((error) => setStatus(error.message));
+  }
+
+  // « Recent docs » lists the newest docs of this project under the shortcuts; a second press hides it.
+  function toggleRecent(project) {
+    const worktree = globalProjectSelectedWorktree(project);
+    if (!worktree?.root) return setStatus('This project has no local copy on this device');
+    const key = worktree.id;
+    if (recent?.key === key) recent = null;
+    else {
+      recent = { key, files: null };
+      api('/api/context-hub/project-recent?projectId=' + encodeURIComponent(key))
+        .then((data) => { if (recent?.key === key) recent.files = data.files || []; }, (error) => { if (recent?.key === key) recent.error = error.message; })
+        .finally(sync);
+    }
+    sync();
+  }
+
+  function recentMarkup(project) {
+    if (!recent || recent.key !== globalProjectSelectedWorktree(project)?.id) return '';
+    const when = (value) => new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return '<div class="pp-recent" id="projectRecentDocs"><h3>Recent docs</h3>' + (recent.error ? '<p class="pp-empty">' + escapeHtml(recent.error) + '</p>'
+      : !recent.files ? '<p class="pp-empty">Reading…</p>'
+      : recent.files.length ? '<ul class="pp-list">' + recent.files.map((file) => fileRow({ path: file.path, name: file.path.split('/').pop() }, file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '', when(file.updatedAt))).join('') + '</ul>'
+      : '<p class="pp-empty">No doc yet.</p>') + '</div>';
+  }
+
+  function syncLevels(project) {
+    const worktree = project && state.projectAgentsOpen ? globalProjectSelectedWorktree(project) : null;
+    levelsBox.hidden = !worktree?.root;
+    if (levelsBox.hidden) return void (levelsShown = '');
+    const provider = agentContextProvider();
+    const key = worktree.id + '|' + provider;
+    if (!levels.has(key)) {
+      levels.set(key, null);
+      api('/api/context-hub/project-agents?projectId=' + encodeURIComponent(worktree.id) + '&provider=' + encodeURIComponent(provider))
+        .then((data) => levels.set(key, data), (error) => levels.set(key, { error: error.message }))
+        .finally(sync);
+    }
+    const data = levels.get(key);
+    // Drawn again only when its data changes, so an open or closed level stays as the person left it.
+    const shown = key + (data ? data.error ? ':error' : ':ready' : ':loading');
+    if (shown === levelsShown) return;
+    levelsShown = shown;
+    levelsBox.innerHTML = '<h3>Per level · ' + escapeHtml(AGENT_PROVIDER_LABELS[provider] || provider) + '</h3>'
+      + (!data ? '<p class="pp-empty">Reading agent files…</p>' : data.error ? '<p class="pp-empty">' + escapeHtml(data.error) + '</p>' : data.levels.map(levelMarkup).join(''));
+  }
+
+  function openTile(project, tile) {
+    if (tile.type === 'file') openFile(project, tile.path);
+    else if (tile.type === 'folder') void revealFolder(project, tile.path).catch((error) => setStatus(error.message));
     else if (tile.type === 'agents') openAgents(project);
-    else if (tile.type === 'recent') openContextHubProjectPicker(null, { purpose: 'open' });
+    else if (tile.type === 'recent') toggleRecent(project);
     else {
       showTree();
       window.requestAnimationFrame(() => el('globalProjectList')?.querySelector('.global-project-tree-entry')?.focus());
@@ -287,13 +365,24 @@ export function createProjectPage() {
       else back?.removeAttribute(name);
     }
     head.hidden = tiles.hidden = !project;
+    const toReview = reviewCount(project);
+    // A project with nothing to review has no « To review » band (not while its count is still unknown).
+    queue?.classList.toggle('pp-none', project?.localReviewCount != null && !toReview);
+    syncLevels(project);
+    group();
     if (!project) {
       editing = false;
+      entered = '';
       return;
     }
+    // Below 981 px the Explorer is a drawer: entering a project closes it, so it never covers the page.
+    if (entered !== project.projectKey) {
+      entered = project.projectKey;
+      if (!isExplorerDesktopViewport()) applyExplorerCollapsed(true);
+    }
     if (!pages.has(project.projectKey)) void load(project);
-    const toReview = Number(project.localReviewCount || 0) + Number(project.sharedProposalCount || 0);
-    head.innerHTML = '<button class="secondary pp-back" type="button" data-pp-home>‹ To review</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
+    const all = (state.contextHub?.projects || []).reduce((sum, item) => sum + reviewCount(item), 0);
+    head.innerHTML = '<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
       + '<span class="pp-count">' + (toReview ? toReview + ' to review' : 'Nothing to review') + '</span>'
       + '<button class="secondary pp-agents" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>';
     const list = tilesOf(project);
@@ -302,7 +391,38 @@ export function createProjectPage() {
       .filter((tile) => !keys.has(projectTileKey(tile)));
     tiles.innerHTML = '<div class="pp-tiles-head"><h2 id="projectTilesHeading">Shortcuts</h2><button class="secondary" type="button" data-tiles-edit aria-pressed="' + editing + '">' + (editing ? 'Done' : 'Edit') + '</button></div>'
       + (list.length ? '<ul class="pp-grid">' + list.map((tile, index) => tileMarkup(tile, index, list.length)).join('') + '</ul>' : '<p class="pp-empty">No shortcut. Edit adds one; ⋯ › Pin to project page in the tree pins a file or a folder.</p>')
-      + (editing && addable.length ? '<div class="pp-add">Add: ' + addable.map((tile) => '<button class="secondary" type="button" data-tile-add="' + escapeHtml(JSON.stringify(tile)) + '">' + escapeHtml(tileName(tile)) + '</button>').join('') + '</div>' : '');
+      + (editing && addable.length ? '<div class="pp-add">Add: ' + addable.map((tile) => '<button class="secondary" type="button" data-tile-add="' + escapeHtml(JSON.stringify(tile)) + '">' + escapeHtml(tileName(tile)) + '</button>').join('') + '</div>' : '')
+      + recentMarkup(project);
+  }
+
+  // On « To review » (all projects), one heading per project run: « Name · N », then Open project ›.
+  const reviewList = el('reviewQueue');
+  const watcher = new MutationObserver(group);
+  function group() {
+    if (!reviewList) return;
+    watcher.disconnect();
+    for (const node of reviewList.querySelectorAll(':scope > .pp-group')) node.remove();
+    if (!currentProject()) {
+      const items = new Map(contextHubReviewItems().map((item) => [item.id, item]));
+      const rows = [...reviewList.querySelectorAll(':scope > [data-context-room-review-entry]')];
+      const owners = rows.map((row) => contextHubProjectForItem(items.get(row.dataset.contextRoomReviewEntry)));
+      const counts = new Map();
+      for (const owner of owners) if (owner) counts.set(owner.projectKey, (counts.get(owner.projectKey) || 0) + 1);
+      rows.forEach((row, index) => {
+        const owner = owners[index];
+        if (!owner || owner.projectKey === owners[index - 1]?.projectKey) return;
+        const header = document.createElement('div');
+        header.className = 'pp-group';
+        header.dataset.ppGroup = owner.projectKey;
+        header.innerHTML = '<strong>' + escapeHtml(owner.title || owner.id) + ' · ' + counts.get(owner.projectKey) + '</strong><button class="secondary" type="button">Open project ›</button>';
+        header.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void openGlobalProjectExplorer(owner).catch((error) => setStatus(error.message));
+        });
+        row.before(header);
+      });
+    }
+    watcher.observe(reviewList, { childList: true });
   }
 
   head.addEventListener('click', (event) => {
@@ -315,8 +435,15 @@ export function createProjectPage() {
     }
   });
 
+  levelsBox.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-pp-open]');
+    const project = currentProject();
+    if (button && project) openFile(project, button.dataset.ppOpen);
+  });
+
   function closeAgents() {
     state.projectAgentsOpen = false;
+    levels.clear();
     renderContextHealth();
     sync();
   }
@@ -331,6 +458,7 @@ export function createProjectPage() {
       sync();
       return;
     }
+    if (button.dataset.ppOpen) return openFile(project, button.dataset.ppOpen);
     const tile = button.dataset.projectTile && tilesOf(project).find((item) => projectTileKey(item) === button.dataset.projectTile);
     if (tile) return openTile(project, tile);
     const list = tilesOf(project);

@@ -15497,7 +15497,8 @@ export function writeProjectPage(projectKey, next, preferencesPath = null, { exp
       error.code = "project_page_stale";
       throw error;
     }
-    const projects = readProjectPagesFile(target);
+    // A null-prototype copy: a key such as "__proto__" stays a plain entry and never reaches Object.prototype.
+    const projects = Object.assign(Object.create(null), readProjectPagesFile(target));
     const page = normalizeProjectPage(next);
     if (!Object.hasOwn(projects, projectKey) && Object.keys(projects).length >= 500) throw new Error("Too many project pages are kept.");
     projects[projectKey] = page;
@@ -24408,6 +24409,39 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         startupHooks: settings.startupHooks?.enabled !== false,
       },
     });
+    return;
+  }
+  if (req.method === "GET" && ["/api/context-hub/project-agents", "/api/context-hub/project-recent"].includes(url.pathname)) {
+    const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
+    if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
+    const project = registeredContextHubWorktree(requestedProjectId);
+    if (!project || project.mode === "shared") {
+      throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
+    }
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    if (url.pathname.endsWith("/project-recent")) {
+      // The newest docs of this project, for the « Recent docs » shortcut of its page.
+      const files = listMemoryFiles(project.root, { readOnly: true, metadataOnly: true, expectedRootIdentity: project.rootIdentity })
+        .filter((file) => file.exists && file.updatedAt && !file.path.startsWith("~") && !resolveExternalPath(file.path))
+        .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
+        .slice(0, 8)
+        .map((file) => ({ path: file.path, updatedAt: file.updatedAt }));
+      sendJson(res, 200, { files });
+      return;
+    }
+    // What agents load, per level: the effective context at the root and at each subfolder that adds agent files.
+    const target = contextApiTarget(root, url);
+    const { agentLevelFolders, groupAgentLevels } = await import("./context_levels.mjs");
+    const folders = [".", ...agentLevelFolders(target.root, target.provider, { skip: (name) => shouldSkipProjectDiscoveryDirectory(name) })];
+    const results = [];
+    for (const folder of folders) {
+      const contextUrl = new URL(url);
+      contextUrl.searchParams.set("folder", folder);
+      contextUrl.searchParams.set("refresh", "0");
+      contextUrl.searchParams.set("allowStale", "1");
+      results.push({ folder, effective: await contextApiResult(root, contextUrl, "effective") });
+    }
+    sendJson(res, 200, { provider: target.provider, levels: groupAgentLevels(results, { root: target.root }) });
     return;
   }
   if (["GET", "POST"].includes(req.method) && url.pathname === "/api/context-hub/project-settings") {
