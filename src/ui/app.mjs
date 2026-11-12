@@ -3649,6 +3649,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <div id="globalProjectExplorer" class="global-project-explorer" hidden>
         <div class="global-explorer-modes" role="group" aria-label="Explorer scope">
           <button class="global-explorer-mode active" type="button" data-global-explorer-mode="projects">Projects</button>
+          <button class="global-explorer-mode" type="button" data-global-explorer-mode="project" hidden></button>
           <button class="global-explorer-mode" type="button" data-global-explorer-mode="computer">Computer</button>
         </div>
         <div id="notebookSpacePanel" class="notebook-space-panel" hidden>
@@ -3734,13 +3735,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               <details id="reviewQueueTools" class="review-queue-tools">
               <summary>Filter and clean up</summary>
               <div class="context-hub-review-toolbar context-room-review-toolbar">
-                <div class="context-hub-review-filter">
-                  <span>Project</span>
-                  <button id="contextRoomReviewProjectFilter" class="context-hub-project-trigger" type="button" data-context-hub-project-picker-trigger="room-home" aria-haspopup="dialog" aria-controls="contextHubProjectPicker" aria-expanded="false">
-                    <span class="context-hub-project-trigger-label">All projects</span>
-                    <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
-                  </button>
-                </div>
                 <label class="context-hub-review-filter">
                   <span>Review type</span>
                   <select id="contextRoomReviewSourceFilter" aria-label="Filter reviews by source">
@@ -4318,7 +4312,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.activeProjectLocationId = "";
 	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
 	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
-	// Wide Hub home: Project inspection sits under the home project list, in one side column.
+	// Wide Hub home: « What agents load » sits under the home project list, in one side column.
 	if (IS_GLOBAL_CONTEXT_ROOM && typeof ResizeObserver === "function") {
 		const projects = document.getElementById("contextHubProjectsPanel");
 		if (projects) new ResizeObserver(() => projects.parentElement.style.setProperty("--projects-h", projects.offsetHeight + "px")).observe(projects);
@@ -6806,9 +6800,11 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
   state.activeProjectLocationId = nextLocationId;
-  // The review filter is its own scope: opening a project does not narrow the queue.
+  // The project page shows « To review » of this project only.
+  state.sharedProposalProject = project.projectKey;
   state.contextHubSelection = "";
   if (switchingSelection) {
+    state.projectAgentsOpen = false;
     state.globalProjectSearch = "";
     state.globalInspectionView = "";
     state.globalProjectSelectionGeneration += 1;
@@ -7067,6 +7063,7 @@ function renderGlobalExplorerContextMenu(x, y) {
         : "")
       + (target.kind === "project" ? '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>' : '')
       + (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-local-graph>Open local graph</button>' : '')
+      + (target.kind === "file" || target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-pin>Pin to project page</button>' : '')
       + '<button class="secondary" type="button" data-global-context-health title="Review configuration, documentation, hook, and review-safety issues for this project">View Context health</button>'
       + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')
@@ -7119,6 +7116,10 @@ function renderGlobalExplorerContextMenu(x, y) {
     toggleGlobalExplorerContextFolder(target);
   });
   menu.querySelector("[data-global-context-copy]")?.addEventListener("click", () => copyGlobalExplorerContextPath(absolutePath));
+  menu.querySelector("[data-global-context-pin]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    loadProjectPage().then((page) => page?.pin(project, target)).catch((error) => setStatus(error.message));
+  });
   menu.querySelector("[data-global-context-open-project]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
     const worktree = globalProjectSelectedWorktree(project);
@@ -8646,8 +8647,11 @@ function renderGlobalProjectExplorer() {
   if (!explorer || !scope || !listLabel || !search || !count || !list) return;
   explorer.hidden = !IS_GLOBAL_CONTEXT_ROOM;
   if (!IS_GLOBAL_CONTEXT_ROOM) return;
+  syncProjectPage();
+  // The project page module names the project tab and turns Projects into the way back.
+  const section = state.globalExplorerMode === "computer" ? "computer" : state.globalExplorerMode === "project" && state.globalExplorerProjectKey ? "project" : "projects";
   document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => {
-    const active = button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects");
+    const active = button.dataset.globalExplorerMode === section;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
@@ -8676,7 +8680,7 @@ function renderGlobalProjectExplorer() {
     search.setAttribute("aria-label", related ? "Search related files" : "Search project files");
     if (clearSearch) clearSearch.title = related ? "Clear related-file search" : "Clear project file search";
     scope.hidden = false;
-    updateGlobalExplorerMarkup(scope, '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects" title="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
+    updateGlobalExplorerMarkup(scope, '<span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
       + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"'));
     listLabel.textContent = related ? "Related" : selectedProject.mode === "shared" ? "Shared files" : "Files";
     const relatedGraph = state.explorerRelatedGraphs.get(explorerRelatedGraphKey(selectedProject));
@@ -8738,6 +8742,7 @@ async function returnToGlobalContextHubHome() {
   state.globalExplorerMode = "projects";
   state.globalExplorerProjectKey = "";
   state.globalProjectSearch = "";
+  state.projectAgentsOpen = false;
   renderGlobalProjectExplorer();
   renderContextRoomGlobalReviewQueue();
   renderSharedProposalWorkspace();
@@ -9759,10 +9764,9 @@ function renderContextRoomGlobalReviewQueue() {
   const queueElement = el("reviewQueue");
   const summary = el("reviewSummary");
   const limit = el("contextRoomReviewLimit");
-  const projectFilter = el("contextRoomReviewProjectFilter");
   const sourceFilter = el("contextRoomReviewSourceFilter");
   const search = el("contextRoomReviewSearch");
-  if (!queueElement || !summary || !limit || !projectFilter || !sourceFilter || !search) return;
+  if (!queueElement || !summary || !limit || !sourceFilter || !search) return;
   renderReviewFlowPanel();
   renderReviewFlowBar();
   renderReviewHistoryPanel();
@@ -9847,17 +9851,9 @@ function renderContextRoomGlobalReviewQueue() {
   const localReviewCount = reviews.filter((item) => item.type === "local").length;
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
   const hiddenReviewCount = Math.max(0, renderedReviews.length - visibleReviews.length);
-  const projectLabel = projectFilter.querySelector(".context-hub-project-trigger-label");
-  const projectFilterField = projectFilter.closest(".context-hub-review-filter");
-  if (projectFilterField) projectFilterField.hidden = !IS_GLOBAL_CONTEXT_ROOM;
-  if (projectLabel) projectLabel.textContent = selectedProject?.title || "All projects";
-  projectFilter.title = IS_GLOBAL_CONTEXT_ROOM
-    ? (selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Filter by project")
-    : selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Current project";
   sourceFilter.value = state.contextHubSource;
   search.placeholder = IS_GLOBAL_CONTEXT_ROOM ? "Search reviews or projects…" : "Search this project…";
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
-  projectFilter.disabled = Boolean(state.sharedContextBusy);
   sourceFilter.disabled = Boolean(state.sharedContextBusy);
   search.disabled = Boolean(state.sharedContextBusy);
   const reviewToolbar = queueElement.closest(".docqa-panel")?.querySelector(".context-room-review-toolbar");
@@ -16671,9 +16667,10 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
   const project = globalInspectionProject();
   const worktree = project ? globalProjectSelectedWorktree(project) : null;
   const heading = panel.querySelector("h2");
-  if (heading) heading.textContent = "Project inspection";
-  // Nothing to inspect until a project is chosen: the panel stays out of the home.
-  panel.hidden = !project;
+  if (heading) heading.textContent = "What agents load";
+  // Nothing to inspect until a project is chosen, and only once asked: « What agents load › » opens it, Close shuts it.
+  panel.hidden = !project || !state.projectAgentsOpen;
+  syncProjectPage();
   if (!project) {
     state.globalInspectionView = "";
     holder.innerHTML = "";
@@ -17213,6 +17210,7 @@ function openGlobalProjectInspection(view, project) {
   if (!project || !["health", "startup"].includes(view)) return;
   state.globalInspectionTarget = { projectKey: project.projectKey, selectedKey: workspaceSelectedProject()?.projectKey || "" };
   state.globalInspectionView = view;
+  state.projectAgentsOpen = true;
   renderContextHealth();
   loadGlobalProjectInspection(project).catch((error) => setStatus(error.message));
   window.requestAnimationFrame(() => el("contextHealth")?.querySelector('[data-global-inspection-disclosure="' + view + '"]')?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
@@ -24231,6 +24229,14 @@ function isKnownContextRoomFile(filePath) {
 }
 
 // Hub: state.files is empty. Links are checked by a module loaded with the first relative link of a doc.
+// The project page (head, tiles, « What agents load ») is an on-demand module with its own size limit.
+let projectPage = null;
+function loadProjectPage() {
+  return projectPage ||= import("/assets/project-page.mjs").then((module) => module.createProjectPage(), () => projectPage = null);
+}
+function syncProjectPage() {
+  if (IS_LOCAL && IS_GLOBAL_CONTEXT_ROOM && (projectPage || state.globalExplorerProjectKey || state.projectAgentsOpen)) loadProjectPage().then((page) => page?.sync());
+}
 let hubLinks = null, hubLinksLoading = null;
 const hubLinkTargets = new Set();
 function hubDocLinkMissing(rawTarget) {
@@ -27459,7 +27465,11 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
     if (!state.computerExplorer) loadComputerExplorer().catch((error) => setStatus(error.message));
     return;
   }
-  const activeProject = workspaceSelectedProject();
+  if (mode === "projects" && state.globalExplorerProjectKey) {
+    void returnToGlobalContextHubHome().catch((error) => setStatus(error.message));
+    return;
+  }
+  const activeProject = mode === "project" ? (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey) || workspaceSelectedProject() : null;
   state.globalExplorerMode = activeProject ? "project" : "projects";
   state.globalExplorerProjectKey = activeProject?.projectKey || "";
   renderGlobalProjectExplorer();
@@ -27468,12 +27478,6 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
     loadGlobalProjectExplorerPage(activeProject).catch((error) => setStatus(error.message));
   }
 }));
-el("globalExplorerScope")?.addEventListener("click", (event) => {
-  if (event.target.closest("[data-global-explorer-back]")) {
-    void returnToGlobalContextHubHome().catch((error) => setStatus(error.message));
-    return;
-  }
-});
 el("globalExplorerScope")?.addEventListener("change", (event) => {
   const select = event.target.closest("[data-global-project-worktree]");
   if (!select) return;

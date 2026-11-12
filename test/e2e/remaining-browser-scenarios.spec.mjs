@@ -168,8 +168,7 @@ async function refreshHubFixture(data) {
 async function openProjectManagerFromHome(page) {
   if (await page.locator("#sharedProposalWorkspaceHeading").getByText("Manage projects", { exact: true }).isVisible()) return;
   await expect(page.locator("#home")).toBeVisible();
-  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
-  await page.locator("#contextRoomReviewProjectFilter").click();
+  await page.keyboard.press("ControlOrMeta+k");
   const picker = page.locator("#contextHubProjectPicker");
   await expect(picker).toBeVisible();
   await picker.getByRole("button", { name: "Manage projects…", exact: true }).click();

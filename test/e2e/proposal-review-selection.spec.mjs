@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import http from "node:http";
 import { test, expect } from "@playwright/test";
+
+// The project page scopes « To review » to its project; no project open = all projects.
+function reviewScope(page) {
+  return page.evaluate(() => (state.contextHub?.projects || []).find((project) => project.projectKey === state.sharedProposalProject)?.title || "All projects");
+}
+
 // This suite simulates terminal authority/flash responses with page.route.
 // Let Playwright own those mocked requests, including the next navigation.
 // Real API and worker interaction stays enabled in the PWA/integration suites.
@@ -441,7 +447,7 @@ test("@smoke one Explorer click selects the project before refresh finishes and 
   try {
     expect([projects.atlas.id, projects.atlas.worktreeId]).toContain(posted.projectId);
     await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
-    await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
+    await expect.poll(() => reviewScope(page)).toBe("Atlas");
     await expect(page).toHaveURL((url) => (
       [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project"))
       && url.searchParams.get("view") === "hub"
@@ -478,20 +484,19 @@ test("@smoke the home lists projects in a stable order and Cmd+K goes to a proje
   await expect(page.locator("#reviewQueueHeading")).toBeFocused();
   await expect(page.locator("#reviewQueue")).not.toContainText("Beacon");
 
-  // Going to another project keeps the review filter; a reload restores it.
-  const filterLabel = page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label");
+  // Going to another project scopes « To review » to it; a reload keeps it.
   await page.keyboard.press("ControlOrMeta+k");
   await page.locator("#contextHubProjectPickerSearch").fill("Beacon");
   await page.keyboard.press("Enter");
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
-  await expect(filterLabel).toHaveText("Atlas");
+  await expect.poll(() => reviewScope(page)).toBe("Beacon");
   // A reload cuts requests still in flight and a pending save of the current place, and then restores the
   // previous place (same cut as the notebooks toolbars test). Reload only once the page is quiet.
   await waitForQuiet(page);
   await page.reload();
   await waitForBoot(page);
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
-  await expect(filterLabel).toHaveText("Atlas");
+  await expect.poll(() => reviewScope(page)).toBe("Beacon");
 });
 
 test("@smoke the home says what changed in reviews since the last visit", async ({ page }) => {
@@ -564,12 +569,12 @@ test("@smoke a failed Explorer project refresh restores the project and Review Q
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await projectRequest;
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
-  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
+  await expect.poll(() => reviewScope(page)).toBe("Atlas");
   await expect(page).toHaveURL((url) => [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project")));
 
   releaseProjectRefresh();
   await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
-  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
+  await expect.poll(() => reviewScope(page)).toBe("All projects");
   await expect(page).toHaveURL((url) => !url.searchParams.has("project") && url.searchParams.get("view") === "hub");
   await expect(page.locator("#status")).toContainText("Project refresh failed");
 });

@@ -116,6 +116,14 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   }).on("error", reject));
   expect(hubLinks.status).toBe(200);
   expect(zlib.brotliCompressSync(hubLinks.body).length).toBeLessThan(1_900);
+  // The project page (R3a: head, tiles, « What agents load ») loads on demand too, with its own limit: 4 563 on 2026-11-12, limit +10 %.
+  const projectPage = await new Promise((resolve, reject) => http.get(new URL("/assets/project-page.mjs", samples[0].jsUrls[0]), (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
+  }).on("error", reject));
+  expect(projectPage.status).toBe(200);
+  expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(5_000);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();

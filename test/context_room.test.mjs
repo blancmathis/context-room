@@ -541,7 +541,8 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
   assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
-  assert.doesNotMatch(globalProjectOpenSource, /state\.sharedProposalProject =|state\.contextHubSource =/, "opening a project leaves the Review Queue filter alone");
+  assert.match(globalProjectOpenSource, /state\.sharedProposalProject = project\.projectKey;/, "the project page shows To review of this project only");
+  assert.doesNotMatch(globalProjectOpenSource, /state\.contextHubSource =/, "opening a project leaves the review type alone");
   assert.ok(contextHubProjectOpenSource.indexOf("window.history.pushState") < contextHubProjectOpenSource.indexOf('api("/api/context-hub/project"'));
   assert.match(script, /function renderGlobalProjectInspection\([\s\S]*const project = workspaceSelectedProject\(\)/);
   assert.match(script, /function selectedGlobalSettingsProject\(\)[\s\S]*return workspaceSelectedProject\(\)/);
@@ -583,8 +584,9 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function renderGlobalInspectionDisclosure\([\s\S]*<details class="global-project-inspection-disclosure"[\s\S]*<summary>/);
   assert.match(script, /data-global-inspection-disclosure[\s\S]*state\.globalInspectionView === view[\s\S]*state\.globalInspectionView = ""/);
   assert.match(html, /\.global-project-inspection-disclosure\[open\] \.global-project-inspection-disclosure-chevron/);
-  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*panel\.hidden = !project;[\s\S]*Context health[\s\S]*Agent environment/);
-  assert.match(script, /heading\.textContent = "Project inspection"/);
+  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*panel\.hidden = !project \|\| !state\.projectAgentsOpen;[\s\S]*Context health[\s\S]*Agent environment/);
+  assert.match(script, /heading\.textContent = "What agents load"/);
+  assert.doesNotMatch(script, /Project inspection/);
   assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*no accepted main snapshot is cached/);
   assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*This Shared-only project has no local worktree to inspect\./);
   assert.match(script, /project\.mode !== "shared"[\s\S]*No connected local worktree is available to inspect for this project\./);

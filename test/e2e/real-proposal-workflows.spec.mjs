@@ -17,6 +17,7 @@ import {
   unregisterContextHubSharedRepository,
 } from "../../src/context_hub.mjs";
 import {
+
   connectSharedContext,
   createSharedProposal,
   disconnectSharedContext,
@@ -26,6 +27,11 @@ import {
   readSharedProjectConnection,
   sharedContextStatus,
 } from "../../src/shared_context.mjs";
+
+// The project page scopes « To review » to its project; no project open = all projects.
+function reviewScope(page) {
+  return page.evaluate(() => (state.contextHub?.projects || []).find((project) => project.projectKey === state.sharedProposalProject)?.title || "All projects");
+}
 
 function fixture() {
   const fixturePath = process.env.CONTEXT_ROOM_E2E_FIXTURE;
@@ -458,7 +464,7 @@ test.describe.serial("real proposal workflows", () => {
       expect(exactProjectPosts).toEqual([{ projectId: secondProject.id }]);
       expect(exactProjectStatuses).toEqual([201]);
       await expectProjectSharedEffectsEventually(second.project, second, secondM1);
-      await expect(exactPage.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText(second.projectTitle);
+      await expect.poll(() => reviewScope(exactPage)).toBe(second.projectTitle);
       await expect(proposalRow(exactPage, second.proposalTitle)).toHaveCount(1);
       await expect(proposalRow(exactPage, first.proposalTitle)).toHaveCount(0);
 
@@ -470,7 +476,7 @@ test.describe.serial("real proposal workflows", () => {
       expect(exactProjectPosts).toEqual([{ projectId: secondProject.id }, { projectId: secondProject.id }]);
       expect(exactProjectStatuses).toEqual([201, 201]);
       await expectProjectSharedEffectsEventually(second.project, second, secondM2);
-      await expect(exactPage.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText(second.projectTitle);
+      await expect.poll(() => reviewScope(exactPage)).toBe(second.projectTitle);
       await refreshContextHubThroughUi(exactPage);
       await expect(proposalRow(exactPage, second.proposalTitle)).toHaveCount(1);
       await exactPage.close();
@@ -564,7 +570,7 @@ test.describe.serial("real proposal workflows", () => {
       const betaDirectProposal = betaRepositoryState.proposals.find((proposal) => proposal.branch === second.proposalBranch);
       expect(betaRemoteHead).toBe(second.proposalHead);
       expect(betaDirectProposal?.head).toBe(second.proposalHead);
-      await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText(second.projectTitle);
+      await expect.poll(() => reviewScope(page)).toBe(second.projectTitle);
       await expect(proposalRow(page, second.proposalTitle), JSON.stringify({
         browser: finalRefresh.browserState,
         refreshResponse: {

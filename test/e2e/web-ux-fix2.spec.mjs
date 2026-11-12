@@ -56,7 +56,7 @@ test("@layout touch targets reach 44px at 800px", async ({ page }) => {
   expect(await small("#explorerOpen")).toEqual([]);
   await page.locator("#explorerOpen").click();
   await expect(page.locator(".app")).not.toHaveClass(/sidebar-collapsed/);
-  for (const selector of ["#sidebarToggle", ".global-explorer-mode", ".global-explorer-back", ".global-project-watch-filter"]) expect(await small(selector), selector).toEqual([]);
+  for (const selector of ["#sidebarToggle", ".global-explorer-mode", "[data-global-explorer-back]", ".global-project-watch-filter"]) expect(await small(selector), selector).toEqual([]);
   await page.locator("#sidebarToggle").click();
   await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
   await page.locator("#settingsButton").click();

@@ -715,8 +715,8 @@ test("@layout mobile controls and modal semantics remain keyboard and touch acce
   await expect(clearExplorerSearch).toBeHidden();
 
   await closeExplorerDrawer(page);
-  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
-  await page.locator("#contextRoomReviewProjectFilter").click();
+  // The project picker opens from Go to; the queue has no Project filter any more.
+  await page.keyboard.press("ControlOrMeta+k");
   const projectPicker = page.locator("#contextHubProjectPicker");
   await expect(projectPicker).toBeVisible();
   await expectTouchTarget(projectPicker.locator(".context-hub-project-picker-close"), "Project picker close");
@@ -1105,8 +1105,8 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
       }
     }
 
-    await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
-    await page.locator("#contextRoomReviewProjectFilter").click();
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.locator("#contextHubProjectPicker")).toBeVisible();
     await audit(page, testInfo, `project-picker-${width}`);
     await page.keyboard.press("Escape");
     await page.evaluate(() => window.showConfirmDialog({ title: "Geometry", body: "Verify dialog alignment.", confirmVariant: "secondary" }));
@@ -1296,8 +1296,9 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
   await expect(page.locator(".workspace-dock [data-home-explorer]")).toBeVisible();
   await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
   await expect(page.locator(".workspace-dock [data-notebook-space-new]")).toBeHidden();
-  // The Explorer has two sections, Projects and Computer. Notes without a project are one row under the projects, when there is a note.
-  await expect(page.locator("[data-global-explorer-mode]")).toHaveCount(2);
+  // With no project open, the Explorer shows two sections, Projects and Computer (the project tab appears with a project).
+  // Notes without a project are one row under the projects, when there is a note.
+  await expect(page.locator("[data-global-explorer-mode]:not([hidden])")).toHaveCount(2);
   await expect(page.locator("#notebookSpacePanel")).toBeHidden();
   // Each project row has a menu button: the order of the projects is set there.
   await page.locator("#globalProjectList [data-global-project-menu]").first().click();
