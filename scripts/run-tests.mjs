@@ -52,23 +52,30 @@ const JOB_SECONDS = {
 
 function nameShards(file, count, isolatedTests = []) {
   const source = fs.readFileSync(path.join(ROOT, file), "utf8");
-  const names = [...source.matchAll(/^test\(\s*("(?:[^"\\]|\\.)*")/gm)]
-    .map((match) => JSON.parse(match[1]));
-  if (names.length === 0) {
+  // A name is a "string" or a `template` (a test declared in a loop); `${…}` matches any text.
+  const parsed = [...source.matchAll(/^\s*test\(\s*("(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)/gm)]
+    .map((match) => match[1].startsWith('"')
+      ? { name: JSON.parse(match[1]), pattern: escapePattern(JSON.parse(match[1])) }
+      : { name: match[1].slice(1, -1), pattern: match[1].slice(1, -1).split(/\$\{[^}]*\}/).map(escapePattern).join(".+") });
+  if (parsed.length === 0) {
     throw new Error(`No tests found in ${file}`);
   }
+  // A test the name parser misses would run in no shard: refuse instead of hiding it.
+  const declared = source.match(/^\s*test\(/gm).length;
+  if (declared !== parsed.length) throw new Error(`${file}: ${declared - parsed.length} test(...) call(s) have a name the shard parser cannot read.`);
+  const names = parsed.map((item) => item.name);
   const shards = Array.from({ length: count }, () => []);
   const isolated = new Set(isolatedTests.map(item => item.name));
   if ([...isolated].some(name => !names.includes(name))) throw new Error('An isolated Shared contract was renamed or removed.');
-  names.filter((name) => !isolated.has(name))
-    .forEach((name, index) => shards[index % count].push(name));
+  parsed.filter((item) => !isolated.has(item.name))
+    .forEach((item, index) => shards[index % count].push(item.pattern));
   const weight = (JOB_SECONDS[file] ?? 1) / count;
   return [...shards.map((shard, index) => ({
     label: `${file} [${index + 1}/${count}]`,
     weight,
     args: [
       "--test",
-      `--test-name-pattern=^(?:${shard.map(escapePattern).join("|")})$`,
+      `--test-name-pattern=^(?:${shard.join("|")})$`,
       file,
     ],
   })), ...isolatedTests.map(({ label, name }) => ({
