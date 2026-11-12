@@ -51,6 +51,7 @@ test("@layout the project page shows its own review first, then shortcuts that l
     await expect(tiles.first()).toHaveAttribute("data-tile-type", "agents");
     const docsTile = page.getByRole("button", { name: "Folder docs", exact: true });
     await expect(docsTile).toBeVisible();
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible();
     const order = await page.evaluate(() => ["#projectPageHead", "#reviewQueuePanel", "#projectTiles"].map((selector) => Math.round(document.querySelector(selector).getBoundingClientRect().top)));
     expect(order, JSON.stringify(order)).toEqual([...order].sort((a, b) => a - b));
 
@@ -113,4 +114,107 @@ test("@layout shortcuts are edited on the page, pinned from the tree, and kept a
   } finally {
     await resetTiles(page, data, projectKey).catch(() => {});
   }
+});
+
+test("@layout the project page shows what agents load per level and this project's recent docs", async ({ page }) => {
+  const data = fixture();
+  let projectKey = "";
+  try {
+    projectKey = await openAtlas(page, data);
+    await resetTiles(page, data, projectKey);
+    await page.reload();
+    await waitForBoot(page);
+
+    // « What agents load »: one box per level; the root holds AGENTS.md with its tokens.
+    await page.locator("#projectPageHead [data-pp-agents]").click();
+    const root = page.locator('#projectAgentLevels [data-pp-level="root"]');
+    await expect(root).toBeVisible();
+    await expect(root.locator("summary")).toContainText("Project root");
+    await expect(root.locator("summary")).toContainText("tokens at start");
+    await expect(root.locator('[data-pp-open="AGENTS.md"]')).toBeVisible();
+    await page.locator("#contextHealthPanel [data-pp-close]").click();
+    await expect(page.locator("#projectAgentLevels")).toBeHidden();
+
+    // « Recent » lists the docs of this project, and a row opens its file.
+    await page.locator("#projectTiles [data-tiles-edit]").click();
+    const saved = page.waitForResponse((response) => response.url().includes("/api/context-hub/project-page") && response.request().method() === "POST");
+    await page.locator("#projectTiles [data-tile-add]", { hasText: "Recent" }).click();
+    expect((await saved).status()).toBe(200);
+    await page.locator("#projectTiles [data-tiles-edit]").click();
+    await page.locator('#projectTiles [data-tile-type="recent"]').click();
+    const recent = page.locator("#projectRecentDocs [data-pp-open]");
+    await expect(recent.first()).toBeVisible();
+    expect(await recent.evaluateAll((nodes) => nodes.map((node) => node.dataset.ppOpen))).toContain("docs/README.md");
+    await page.locator('#projectRecentDocs [data-pp-open="docs/README.md"]').click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/README.md");
+  } finally {
+    await resetTiles(page, data, projectKey).catch(() => {});
+  }
+});
+
+test("@layout at 820 px the Explorer does not cover the project page and the back button keeps the count", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  const head = page.locator("#projectPageHead");
+  await expect(head.locator("h2")).toHaveText("Atlas");
+  await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
+  await expect.poll(() => head.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return node.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+  })).toBe(true);
+  const total = await page.evaluate(() => state.contextHub.projects.reduce((sum, item) => sum + Number(item.localReviewCount || 0) + Number(item.sharedProposalCount || 0), 0));
+  expect(total).toBeGreaterThan(0);
+  await expect(head.locator("[data-pp-home]")).toHaveText(`‹ To review · ${total}`);
+
+  // A project with nothing to review has no « To review » band.
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
+  // A Hub snapshot may still land after boot and bring the counts back: empty the project until the band hides.
+  await expect.poll(() => page.evaluate(async () => {
+    const key = state.globalExplorerProjectKey;
+    for (const project of state.contextHub.projects) {
+      if (project.projectKey === key) Object.assign(project, { localReviewCount: 0, sharedProposalCount: 0 });
+    }
+    state.contextHub.items = state.contextHub.items.filter((item) => contextHubProjectForItem(item)?.projectKey !== key);
+    state.contextHub.workingDrafts = [];
+    syncProjectPage();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return document.getElementById("reviewQueuePanel").classList.contains("pp-none");
+  })).toBe(true);
+  await expect(page.locator("#reviewQueuePanel")).toBeHidden();
+  await expect(head.locator(".pp-count")).toHaveText("Nothing to review");
+
+  // A local proposal alone keeps the band: it is work to review.
+  const band = await page.evaluate(async () => {
+    const project = state.contextHub.projects.find((item) => item.projectKey === state.globalExplorerProjectKey);
+    state.contextHub.items.push({ type: "local-proposal", id: "e2e-proposal", projectKey: project.projectKey, projectId: project.id, title: "Proposal", fileCount: 1 });
+    syncProjectPage();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { counts: reviewCountOf(project), hidden: document.getElementById("reviewQueuePanel").classList.contains("pp-none") };
+    function reviewCountOf(item) { return Number(item.localReviewCount || 0) + Number(item.sharedProposalCount || 0); }
+  });
+  expect(band, "only a local proposal: " + JSON.stringify(band)).toEqual({ counts: 0, hidden: false });
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
+});
+
+test("@layout To review groups the files per project and Open project leads to that page", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForBoot(page);
+  const header = page.locator("#reviewQueue > .pp-group").first();
+  await expect(header).toBeVisible();
+  await expect(header.locator("strong")).toHaveText(/ · \d+$/);
+  // One header per project, and its count is the project's whole review.
+  const groups = await page.evaluate(() => [...document.querySelectorAll("#reviewQueue > .pp-group")].map((node) => {
+    const project = state.contextHub.projects.find((item) => item.projectKey === node.dataset.ppGroup);
+    const own = contextHubReviewItems().filter((item) => (item.type === "local-proposal" || item.type === "local-asset") && contextHubProjectForItem(item)?.projectKey === project.projectKey).length;
+    return { key: node.dataset.ppGroup, shown: Number(node.querySelector("strong").textContent.split(" · ").pop()), total: Number(project.localReviewCount || 0) + Number(project.sharedProposalCount || 0) + own };
+  }));
+  expect(new Set(groups.map((group) => group.key)).size, JSON.stringify(groups)).toBe(groups.length);
+  for (const group of groups) expect(group.shown, JSON.stringify(group)).toBe(group.total);
+  const title = (await header.locator("strong").textContent()).replace(/ · \d+$/, "");
+  await header.getByRole("button", { name: "Open project ›" }).click();
+  await expect(page.locator("#projectPageHead h2")).toHaveText(title);
 });

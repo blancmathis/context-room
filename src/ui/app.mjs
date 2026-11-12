@@ -24235,7 +24235,7 @@ function loadProjectPage() {
   return projectPage ||= import("/assets/project-page.mjs").then((module) => module.createProjectPage(), () => projectPage = null);
 }
 function syncProjectPage() {
-  if (IS_LOCAL && IS_GLOBAL_CONTEXT_ROOM && (projectPage || state.globalExplorerProjectKey || state.projectAgentsOpen)) loadProjectPage().then((page) => page?.sync());
+  if (IS_LOCAL && IS_GLOBAL_CONTEXT_ROOM) loadProjectPage().then((page) => page?.sync());
 }
 let hubLinks = null, hubLinksLoading = null;
 const hubLinkTargets = new Set();
