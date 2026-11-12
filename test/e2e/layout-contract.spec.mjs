@@ -1404,7 +1404,8 @@ test("@layout with the Explorer open, the menu of a project leads to its review 
 test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  // The home page: « To review » covers every project there (a project page shows its own only).
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
   await waitForBoot(page);
   const result = await page.evaluate(() => {
     const projects = state.contextHub.projects.filter((project) => project.mode !== "shared");

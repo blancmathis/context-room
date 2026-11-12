@@ -425,7 +425,7 @@ test("@smoke an exact project settings deep link remains on Settings while proje
   expect(url.searchParams.get("settings")).toBe("review-trust");
 });
 
-test("@smoke one Explorer click selects the project before refresh finishes and leaves the Review Queue filter alone", async ({ page }) => {
+test("@smoke one Explorer click selects the project before refresh finishes and scopes To review to it", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
   let markProjectRequest;
@@ -452,14 +452,20 @@ test("@smoke one Explorer click selects the project before refresh finishes and 
       [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project"))
       && url.searchParams.get("view") === "hub"
     ));
+    // The project page shows « To review » of this project only.
     const reviewQueue = page.locator("#reviewQueue");
     await expect(reviewQueue).toContainText("Atlas");
-    await expect(reviewQueue).toContainText("Beacon");
+    await expect(reviewQueue).not.toContainText("Beacon");
   } finally {
     releaseProjectRefresh();
   }
 
   await expect(page.locator("#status")).toContainText("Shared snapshot synced");
+  // Back on the home page, « To review » holds every project again.
+  await page.locator('[data-global-explorer-mode="projects"]').click();
+  await expect.poll(() => reviewScope(page)).toBe("All projects");
+  await expect(page.locator("#reviewQueue")).toContainText("Atlas");
+  await expect(page.locator("#reviewQueue")).toContainText("Beacon");
 });
 
 test("@smoke the home lists projects in a stable order and Cmd+K goes to a project", async ({ page }) => {
