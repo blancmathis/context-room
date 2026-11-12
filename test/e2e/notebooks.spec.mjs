@@ -648,26 +648,37 @@ test.describe('Notebooks space', () => {
       finally { await stop(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); }
     } };
   }
-  // Notebooks is a section of the Explorer; the top bar opens it while the Explorer is closed.
-  // A phone has no room for that button in the top bar: open the Explorer first, then the section.
+  // Notes without a project sit behind the row "No project · N notes" under the projects.
+  // The row shows only when there is a note: with none, there is nothing to open.
   async function openNotebooksTab(page) {
-    await page.waitForFunction(() => Boolean(state.contextHub), null, { timeout: 45000 });
-    const closed = page.locator('[data-notebooks-open]');
-    if (await closed.isVisible()) await closed.click();
-    else {
-      if (await page.locator('.app.sidebar-collapsed').count()) await page.locator('#explorerOpen:visible, #sidebarToggle:visible').first().click();
-      await page.locator('[data-global-explorer-mode="notebooks"]').click();
-    }
+    await page.waitForFunction(() => {
+      if (!state.contextHub) return false;
+      const space = contextHubNotebookSpace();
+      return !space || (notebookSpaceItems.spaceId === space.id && notebookSpaceItems.hub === state.contextHub && Array.isArray(notebookSpaceItems.items));
+    }, null, { timeout: 45000 });
+    if (await page.locator('.app.sidebar-collapsed').count()) await page.evaluate(() => setExplorerCollapsedFromUser(false));
+    const row = page.locator('#notebookSpaceRow');
+    if (!(await row.isVisible())) return;
+    await row.click();
     await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
   }
+  // "New note" is a button on a touch screen only; a keyboard goes through "Go to".
   async function newNotebookWithInk(page, f) {
-    await page.locator('#notebookSpacePanel').getByRole('button', { name: 'New notebook', exact: true }).click();
+    const notes = page.locator('#notebookSpacePanel');
+    const newNote = notes.getByRole('button', { name: 'New note', exact: true });
+    if (await newNote.isVisible()) await newNote.click();
+    else {
+      await page.keyboard.press('ControlOrMeta+k');
+      await page.locator('#contextHubProjectPicker').getByRole('option', { name: /^New note/ }).click();
+    }
     const dialog = page.locator('dialog.notebook-dialog[open]'); await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
     const id = await dialog.getAttribute('data-resource-id');
     await draw(page);
     await expect.poll(() => readNotebook(f.spaceRoot, id).document.objects.length).toBe(1);
     await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
     await dialog.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    if (!(await notes.isVisible())) await page.locator('#notebookSpaceRow').click();
+    await expect(notes.locator(`[data-notebook-id="${id}"]`)).toBeVisible({ timeout: 45000 });
     return { id, ink: readNotebook(f.spaceRoot, id).document.objects };
   }
 
@@ -675,8 +686,13 @@ test.describe('Notebooks space', () => {
     const f = await hubFixture(page);
     try {
       const panel = page.locator('#notebookSpacePanel');
-      await expect(panel).toContainText('A notebook for an idea that arrives. A project to go further.');
+      // No note yet: the Explorer shows no row and no tab for notes.
+      await expect(page.locator('#notebookSpaceRow')).toBeHidden();
+      await expect(page.locator('[data-global-explorer-mode="notebooks"]')).toHaveCount(0);
       const { id, ink } = await newNotebookWithInk(page, f);
+      await panel.getByRole('button', { name: 'Back to projects', exact: true }).click();
+      await expect(page.locator('#notebookSpaceRow')).toHaveText('No project · 1 note');
+      await page.locator('#notebookSpaceRow').click();
       expect(listNotebooks(f.spaceRoot).map(entry => entry.path)).toEqual([`Carnets/${id}.crnb`]);
       expect(listNotebooks(f.root)).toEqual([]);
       await expect(panel.locator(`[data-notebook-id="${id}"]`)).toContainText('Edited');

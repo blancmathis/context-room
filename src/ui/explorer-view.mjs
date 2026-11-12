@@ -331,7 +331,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
   const entriesFor = (project, dir) => listings.get(`${project.projectKey}::${dir}`) || null;
 
   // ---------- markup ----------
-  const goto = () => `<button type="button" data-explorer-home>Home</button><button type="button" data-notebook-space-new>New notebook</button><button type="button" data-context-hub-project-goto title="Go to project (⌘K)" data-hl-focus="goto">Go to… <kbd>⌘K</kbd></button>`;
+  const goto = () => `<button type="button" data-explorer-home>Home</button><button type="button" data-notebook-space-new>New note</button><button type="button" data-context-hub-project-goto title="Go to project (⌘K)" data-hl-focus="goto">Go to… <kbd>⌘K</kbd></button>`;
 
   function viewMenu() {
     const options = (list, current) => list.map(([id, label]) => `<option value="${id}"${id === current ? ' selected' : ''}>${esc(label)}</option>`).join('');

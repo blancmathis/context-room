@@ -77,6 +77,7 @@ test("@smoke review cleanup shows that it is opening and never stacks two dialog
     await held;
     await route.continue();
   });
+  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
   const trigger = page.locator("#reviewQueuePanel [data-review-cleanup]");
   await trigger.click();
   await expect(trigger).toHaveText("Opening review cleanup…");
@@ -107,6 +108,7 @@ test("@smoke two cleanup triggers share one load", async ({ page }) => {
     other.textContent = "Manage review cleanup";
     document.body.append(other);
   });
+  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
   await page.locator("#reviewQueuePanel [data-review-cleanup]").click();
   await page.locator("#otherCleanupTrigger").click();
   release();

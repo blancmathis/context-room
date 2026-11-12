@@ -380,15 +380,18 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .global-project-row-side > span:first-child { min-width: 0; justify-self: stretch; overflow: hidden; text-overflow: ellipsis; }
-    .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
+    .global-project-row-wrap { position: relative; min-width: 0; }
+    .global-project-row-wrap .global-project-row-side { padding-right: 38px; }
+    .global-project-row-menu { position: absolute; right: 0; bottom: 0; width: 44px; height: 44px; padding: 20px 0 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .global-project-row-menu:hover, .global-project-row-menu:focus-visible, .global-project-notes-row:hover { background: var(--surface-card-hover); color: var(--text); }
+    .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
-    /* Hub home shortcuts sit in the top bar, on the home only; "Notebooks" shows while the Explorer is closed. */
+    /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen only (Go to › New note on a keyboard). */
     #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
-    #contextHubSinceLastVisit:not([hidden]) + .muted { display: none; }
-    /* Phone: the Explorer button is the way to Notebooks; the status stays on screen. */
-    @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebooks-open] { display: none; } }
+    @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
+    @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
-    .app:not(.sidebar-collapsed) #contextHubProjectsPanel, .app:not(.sidebar-collapsed) [data-notebooks-open] { display: none; }
+    .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
     .context-hub-home-project { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
     .context-hub-home-project > .context-hub-home-project-main { flex: 1 1 220px; }
@@ -406,6 +409,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
     .notebook-space-panel[data-no-projects="true"] .notebook-space-new { background: transparent; color: var(--accent); }
     .notebook-space-panel:not([hidden]) { display: grid; gap: 10px; }
+    .notebook-space-panel .global-project-explorer-summary { justify-content: flex-start; }
+    .notebook-space-panel .global-project-explorer-summary span { margin-left: auto; }
     .global-project-explorer.notebooks-mode > :not(.global-explorer-modes):not(.notebook-space-panel), .global-project-explorer:not(.notebooks-mode) > .notebook-space-panel { display: none; }
     .context-hub-welcome { display: grid; gap: 10px; justify-items: start; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
     .context-hub-welcome h2, .context-hub-welcome p { margin: 0; }
@@ -1725,35 +1730,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       FIRST VIEWPORT: actionable reviews fill the top; curated sections begin immediately below.
       FORM: a task queue followed by project-owned navigation lanes inside the established Operate surface.
     */
-    .context-hub-home { grid-column: 1 / -1; min-width: 0; min-height: 0; height: 100%; overflow: auto; background: var(--bg); }
-    .context-hub-home[hidden] { display: none !important; }
-    .context-hub-home-inner { width: min(1440px, 100%); margin: 0 auto; padding: clamp(18px, 2.4vw, 34px); }
-    .context-hub-home-intro { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
-    .context-hub-home-title { min-width: 0; }
-    .context-hub-home-title h1 { margin: 0; color: var(--text); font-size: clamp(24px, 2.6vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
-    .context-hub-home-title p { max-width: 70ch; margin: 7px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.5; }
-    .context-hub-home-summary { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
-    .context-hub-home-summary span { display: inline-flex; align-items: center; min-height: 28px; padding: 5px 9px; border-radius: 999px; background: var(--surface-floating-soft); color: var(--muted); font-size: 10px; font-weight: 780; white-space: nowrap; }
-    .context-hub-home-summary strong { margin-right: 4px; color: var(--text); font-size: 12px; }
-    .context-hub-home-section { padding-top: 24px; }
-    .context-hub-home-section + .context-hub-home-section { margin-top: 4px; }
-    .context-hub-home-section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 11px; }
-    .context-hub-home-section-copy h2 { margin: 0; color: var(--text); font-size: 17px; line-height: 1.2; letter-spacing: -0.015em !important; }
-    .context-hub-home-section-copy p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
-    .context-hub-home-section-action { min-height: 30px; border: 0; border-radius: 7px; padding: 0 9px; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 780; }
-    .context-hub-home-section-action:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
-    .context-hub-home-section-action:focus-visible,
-    .context-hub-review-row:focus-visible,
-    .context-hub-section-link:focus-visible,
-    .context-hub-project-tile:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
-    .context-hub-review-card { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-    .context-hub-review-card-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-    .context-hub-review-card-title { min-width: 0; }
-    .context-hub-review-card-title h2 { margin: 0; color: var(--text); font-size: 15px; line-height: 1.25; letter-spacing: -0.015em !important; }
-    .context-hub-review-card-title p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
-    .context-hub-review-counts { display: flex; align-items: baseline; gap: 14px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-    .context-hub-review-counts strong { margin-right: 4px; color: var(--accent); font-size: 18px; }
-    .context-hub-review-counts span:first-child strong { color: var(--accent-fg); }
+    .context-hub-review-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
     .context-hub-review-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .45fr); gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-card) 72%, transparent); }
     body.focused-review-context-room .context-room-review-toolbar { grid-template-columns: minmax(140px, .45fr) minmax(210px, 1fr); }
     .context-room-review-search { width: 100%; min-width: 0; min-height: 32px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
@@ -1887,7 +1864,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-flow-busy { color: var(--muted); font-size: 12px; }
     .review-history-panel { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
     .review-history-panel[hidden] { display: none; }
-    #reviewQueuePanel > [data-review-cleanup] { margin: 8px var(--space-4) 0; }
+    .review-queue-tools { border-bottom: 1px solid var(--line); }
+    .review-queue-tools > summary { padding: 12px var(--workbench-gutter); color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 600; line-height: 20px; }
+    .review-queue-tools [data-review-cleanup] { margin: 6px var(--space-4); }
     #reviewQueuePanel > .review-flow-panel, #reviewQueuePanel > .review-history-panel { margin-inline: var(--space-4); }
     .review-history-panel summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; font-weight: 600; }
     .review-history-hint { margin: 4px 0 8px; color: var(--muted); font-size: 12px; }
@@ -1898,9 +1877,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-history-what span { color: var(--muted); font-size: 12px; }
     .context-hub-list-limit { padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.4; }
     .context-hub-review-list.review-list { max-height: min(36vh, 340px); }
-    .review-item.context-hub-review-row { width: 100%; min-width: 0; }
-    .review-item.context-hub-review-row .review-top { align-items: center; }
-    .context-hub-review-source { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .review-item.context-hub-review-row { width: 100%; min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 10px; padding-block: 6px; }
+    .review-item.context-hub-review-row .review-top { flex: none; align-items: center; gap: 8px; }
+    .review-item.context-hub-review-row > .context-hub-review-project { flex: 0 1 auto; max-width: 30%; color: var(--text-soft); font-size: 12px; font-weight: 600; }
+    .review-item.context-hub-review-row .review-file { flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; }
+    .review-item.context-hub-review-row .review-file > .review-title { flex: none; max-width: 100%; }
+    .review-item.context-hub-review-row .review-file > .review-title + .review-path { margin-left: 8px; }
+    .review-item.context-hub-review-row .review-path { min-width: 0; margin: 0; }
+    .review-item.context-hub-review-row .context-room-review-row-state { flex: none; margin-left: auto; }
     .context-hub-review-project { min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
     .review-item.context-hub-review-row .review-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .review-item.context-hub-review-row .review-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2065,15 +2049,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-room-mode-warning button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); cursor: pointer; font-size: 10px; font-weight: 740; white-space: nowrap; }
     .context-room-mode-warning button:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--surface-card-hover); }
     .context-room-mode-warning button:disabled { opacity: .56; cursor: wait; }
-    .context-hub-home-empty { padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.45; }
-    .context-hub-home-empty strong { color: var(--good-fg); }
-    .context-hub-project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
-    .context-hub-project-tile { min-width: 0; min-height: 94px; display: grid; align-content: space-between; gap: 14px; padding: 13px; border: 0; border-radius: 12px; background: var(--surface-card); color: var(--text); text-align: left; cursor: pointer; }
-    .context-hub-project-tile:hover { background: var(--surface-card-hover); }
-    .context-hub-project-tile-top { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 9px; }
-    .context-hub-project-badges { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; }
-    .context-hub-project-tile strong { overflow: hidden; font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-    .context-hub-project-tile-meta { display: flex; flex-wrap: wrap; gap: 5px 11px; color: var(--muted); font-size: 10px; line-height: 1.3; }
     .shared-proposal-list-panel { position: relative; inset: auto; z-index: auto; width: auto; height: auto; min-height: 0; max-height: none; overflow: auto; border-right: 1px solid var(--line); background: var(--surface-sidebar); transform: none; }
     .context-hub-list-status { position: sticky; top: 0; z-index: 2; min-height: 34px; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--surface-sidebar); color: var(--muted); font-size: 10px; line-height: 1.4; }
     .context-hub-list-status[data-error="true"] { color: var(--danger-fg); }
@@ -2219,10 +2194,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .shared-proposal-overview h2 { font-size: 17px; }
       .shared-proposal-description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
       .shared-proposal-files { max-height: 56px; }
-      .context-hub-home-inner { padding: 16px 12px 24px; }
-      .context-hub-home-intro { align-items: flex-start; flex-direction: column; gap: 12px; }
-      .context-hub-home-summary { justify-content: flex-start; }
-      .context-hub-review-card-head { align-items: flex-start; flex-direction: column; gap: 8px; }
       .context-hub-review-toolbar { grid-template-columns: 1fr; }
       .context-hub-review-filter { grid-template-columns: 52px minmax(0, 1fr); }
       .context-hub-review-list.review-list { max-height: min(40vh, 320px); }
@@ -2236,7 +2207,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .context-room-mode-warning-actions { flex-wrap: wrap; }
       .context-room-proposal-content { grid-template-columns: auto minmax(0, 1fr); padding-right: 12px; }
       .context-room-proposal-state { grid-column: 2; padding-top: 0; }
-      .context-hub-project-grid { grid-template-columns: 1fr; }
       .context-hub-project-picker-modal { padding: 8px; place-items: end center; }
       .context-hub-project-picker-dialog { width: 100%; max-height: min(86dvh, 760px); border-radius: 14px 14px 10px 10px; }
       .context-hub-project-picker-head { padding: 15px 14px 11px; }
@@ -2267,8 +2237,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .docqa-panel { border-radius: 8px; background: var(--panel); box-shadow: none; }
     .docqa-panel header { align-items: center; }
     .docqa-panel h2 { font-size: 15px; }
+    #reviewQueueHeading { white-space: nowrap; }
     .review-summary { gap: 14px; flex-wrap: nowrap; }
-    .review-summary-item { min-width: 0; border: 0; border-radius: 0; background: transparent; padding: 0; display: flex; align-items: baseline; gap: 5px; }
+    .review-summary-item { flex: none; min-width: 0; border: 0; border-radius: 0; background: transparent; padding: 0; display: flex; align-items: baseline; gap: 5px; }
     .review-summary-item strong { font-size: 18px; color: var(--accent); }
     .review-summary-item:first-child strong { color: var(--accent-fg); }
     .review-summary-item span { margin: 0; font-size: 11px; text-transform: none; color: var(--muted); }
@@ -3389,6 +3360,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .graph-toolbar { padding: 10px var(--workbench-gutter-compact); }
       .graph-filterbar { gap: 8px; padding-inline: var(--workbench-gutter-compact); overflow-x: auto; flex-wrap: nowrap; }
       .review-list { max-height: none; overflow: visible; scrollbar-gutter: auto; }
+      .review-item.context-hub-review-row { flex-wrap: wrap; row-gap: 2px; }
+      .review-item.context-hub-review-row > .context-hub-review-project { order: 3; flex-basis: 100%; max-width: none; }
+      .review-queue-tools > summary { padding-inline: var(--workbench-gutter-compact); }
       .graph-list-row { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding-inline: var(--workbench-gutter-compact); }
       .graph-list-row > span:first-child { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
       .graph-list-row > small { grid-column: 1; grid-row: 2; min-width: 0; overflow-wrap: anywhere; }
@@ -3413,7 +3387,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-hub"] #sharedSkillsWizard,
     html[data-context-room-runtime-profile="hosted-hub"] #codexReferencePopover,
     html[data-context-room-runtime-profile="hosted-hub"] [data-global-explorer-mode="computer"],
-    html[data-context-room-runtime-profile="hosted-hub"] [data-global-explorer-mode="notebooks"],
+    html[data-context-room-runtime-profile="hosted-hub"] [data-notebook-space-new],
     html[data-context-room-runtime-profile="hosted-hub"] [data-context-room-mode-prompt],
     html[data-context-room-runtime-profile="hosted-hub"] #sharedContextControls,
     html[data-context-room-runtime-profile="hosted-hub"] #newDocPage,
@@ -3675,12 +3649,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <div id="globalProjectExplorer" class="global-project-explorer" hidden>
         <div class="global-explorer-modes" role="group" aria-label="Explorer scope">
           <button class="global-explorer-mode active" type="button" data-global-explorer-mode="projects">Projects</button>
-          <button class="global-explorer-mode" type="button" data-global-explorer-mode="notebooks">Notebooks</button>
           <button class="global-explorer-mode" type="button" data-global-explorer-mode="computer">Computer</button>
         </div>
         <div id="notebookSpacePanel" class="notebook-space-panel" hidden>
-          <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New notebook</button>
-          <div class="global-project-explorer-summary"><strong id="notebookSpaceHeading">Notebooks</strong><span id="notebookSpaceSummary"></span></div>
+          <div class="global-project-explorer-summary"><button class="global-explorer-back" type="button" data-notebook-space-back aria-label="Back to projects" title="Back to projects">←</button><strong id="notebookSpaceHeading">No project</strong><span id="notebookSpaceSummary"></span></div>
+          <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New note</button>
           <ul id="notebookSpaceList" class="notebook-space-list" aria-labelledby="notebookSpaceHeading"></ul>
         </div>
         <div id="globalExplorerScope" class="global-explorer-scope" hidden></div>
@@ -3690,6 +3663,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
         </div>
         <div class="global-project-explorer-summary"><strong id="globalExplorerListLabel">Projects</strong><span id="globalProjectCount">Loading…</span></div>
         <div id="globalProjectList" class="global-project-explorer-list" aria-live="polite"></div>
+        <button id="notebookSpaceRow" class="global-project-notes-row" type="button" hidden></button>
       </div>
       <div id="sidebarResizer" class="sidebar-resizer" role="separator" aria-label="Resize Explorer" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="360" aria-valuenow="272" tabindex="0"></div>
     </aside>
@@ -3701,7 +3675,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="settingsButton" class="dock-button workspace-switch" type="button" title="Open settings">Settings</button>
           <button class="dock-button hub-home-action" type="button" data-home-explorer title="Browse the files of every project" hidden>Files</button>
           <button class="dock-button hub-home-action" type="button" data-context-hub-project-goto title="Go to project, file or text (⌘K)" hidden>Go to… <kbd>⌘K</kbd></button>
-          <button class="dock-button hub-home-action" type="button" data-notebooks-open title="Open the notebooks in the Explorer" hidden>Notebooks</button>
+          <button class="dock-button hub-home-action" type="button" data-notebook-space-new title="Draw a note that belongs to no project yet" hidden>New note</button>
           <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
           <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
           <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
@@ -3754,10 +3728,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <div>
                   <h2 id="reviewQueueHeading" tabindex="-1">Review queue</h2>
                   <div id="contextHubSinceLastVisit" class="muted" hidden></div>
-                  <div class="muted">Each file stays atomic. Shared changes stay grouped by proposal.</div>
                 </div>
                 <div id="reviewSummary" class="review-summary" role="group" aria-label="review metrics"></div>
               </header>
+              <details id="reviewQueueTools" class="review-queue-tools">
+              <summary>Filter and clean up</summary>
               <div class="context-hub-review-toolbar context-room-review-toolbar">
                 <div class="context-hub-review-filter">
                   <span>Project</span>
@@ -3777,6 +3752,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
+              </details>
               <div id="reviewFlowPanel" class="review-flow-panel" role="status" hidden></div>
               <details id="reviewHistoryPanel" class="review-history-panel" hidden></details>
               <div id="contextRoomWorkingDrafts" class="context-room-other-attention" hidden></div>
@@ -7080,12 +7056,13 @@ function renderGlobalExplorerContextMenu(x, y) {
       ? '<button class="secondary" type="button" data-global-context-toggle>' + (expanded ? "Collapse" : "Expand") + "</button>"
       : "";
   const projectActions = target.scope === "project" && project
-    ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
+    ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : target.kind === "project" ? "" : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
       + (folderReviews.length ? '<button class="secondary" type="button" data-global-context-snooze-reviews>Snooze reviews… <span class="context-menu-count">' + folderReviews.length + '</span></button>' : '')
       + (target.kind === "project"
         ? '<button class="secondary" type="button" data-global-context-review>To review</button>'
           + '<button class="secondary" type="button" data-global-context-priority="top">Move project to top</button>'
           + '<button class="secondary" type="button" data-global-context-priority="up">Move project up</button>'
+          + '<button class="secondary" type="button" data-global-context-priority="down">Move project down</button>'
           + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
         : "")
       + (target.kind === "project" ? '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>' : '')
@@ -7578,12 +7555,22 @@ function renderExplorerViewPanel() {
   }).catch((error) => { explorerViewLoading = false; host.textContent = "Could not load the Files view: " + error.message; });
 }
 
+// Notes that belong to no project: one row under the projects, shown only when there is a note.
+function syncNotebookSpaceRow() {
+  const row = el("notebookSpaceRow");
+  const space = contextHubNotebookSpace();
+  const count = space && space.available !== false && notebookSpaceItems.spaceId === space.id ? (notebookSpaceItems.items || []).length : 0;
+  row.hidden = el("notebookSpacePanel").hidden || !count || state.globalExplorerMode !== "projects" || Boolean(state.globalProjectSearch.trim());
+  row.textContent = "No project · " + count + (count === 1 ? " note" : " notes");
+}
+
 function renderNotebookSpace() {
   const panel = el("notebookSpacePanel");
   const list = el("notebookSpaceList");
   const summary = el("notebookSpaceSummary");
   if (!panel || !list || !summary) return;
   panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub;
+  syncNotebookSpaceRow();
   if (panel.hidden) return;
   const space = contextHubNotebookSpace();
   if (space?.available !== false && space && (notebookSpaceItems.spaceId !== space.id || notebookSpaceItems.hub !== state.contextHub)) {
@@ -7591,7 +7578,7 @@ function renderNotebookSpace() {
   }
   const items = space && notebookSpaceItems.spaceId === space.id ? notebookSpaceItems.items : [];
   if (space?.available === false) {
-    summary.textContent = "The Notebooks folder is unavailable.";
+    summary.textContent = "The notes folder is unavailable.";
     list.innerHTML = '<li class="global-project-explorer-empty">' + escapeHtml(contextHubProjectPickerLocation(space)) + '</li>';
     return;
   }
@@ -7599,9 +7586,9 @@ function renderNotebookSpace() {
     summary.textContent = "Loading…";
     return;
   }
-  summary.textContent = notebookSpaceItems.error || (items.length ? items.length + " notebook" + (items.length === 1 ? "" : "s") : "");
+  summary.textContent = notebookSpaceItems.error || (items.length ? items.length + " note" + (items.length === 1 ? "" : "s") : "");
   if (!items.length) {
-    list.innerHTML = '<li class="global-project-explorer-empty">A notebook for an idea that arrives. A project to go further.</li>';
+    list.innerHTML = '<li class="global-project-explorer-empty">A note for an idea that arrives. A project to go further.</li>';
     return;
   }
   list.innerHTML = items.map((item, index) => {
@@ -7736,10 +7723,10 @@ function contextHubSinceLastVisitText() {
 // Identity = project location + file + version, so the same path in two projects never collides.
 const REVIEW_FLOW_KEY = "context-room:review-flow:v1";
 const REVIEW_FLOW_LEVERS = {
-  instructions: { order: 0, label: "Instructions and hooks", why: "Agents load this when a session starts.", effect: "Accepting marks this version as the instructions you approved." },
-  memory: { order: 1, label: "Memory", why: "Agents may recall this in later sessions.", effect: "Accepting marks this memory as checked." },
-  docs: { order: 2, label: "Docs", why: "Agents read this doc when a task needs it.", effect: "Accepting lets Context Room serve this version to agents." },
-  provider: { order: 3, label: "Provider", why: "This file sets how the agent runs.", effect: "Accepting marks this configuration as reviewed." },
+  instructions: { label: "Instructions and hooks", why: "Agents load this when a session starts.", effect: "Accepting marks this version as the instructions you approved." },
+  memory: { label: "Memory", why: "Agents may recall this in later sessions.", effect: "Accepting marks this memory as checked." },
+  docs: { label: "Docs", why: "Agents read this doc when a task needs it.", effect: "Accepting lets Context Room serve this version to agents." },
+  provider: { label: "Provider", why: "This file sets how the agent runs.", effect: "Accepting marks this configuration as reviewed." },
 };
 let reviewFlow;
 
@@ -7778,8 +7765,10 @@ function reviewFlowSeparateCount() {
     .filter((item) => item.type === "shared" || item.type === "local-proposal" || item.type === "local-asset").length;
 }
 
-function startReviewFlow() {
-  const items = reviewFlowCandidates().map((item, order) => {
+// A click on a file of the queue starts the flow there; the files before it come after the last one.
+function startReviewFlow(startId) {
+  // The flow follows the rows as the queue shows them.
+  const items = reviewFlowCandidates().map((item) => {
     const review = item.localReview;
     return {
       id: item.id,
@@ -7789,13 +7778,15 @@ function startReviewFlow() {
       review: { path: review.path, label: review.label || "", startupContext: review.startupContext || null, reviewReason: review.reviewReason || "", worktreeId: review.worktreeId || "" },
       currentHash: review.currentHash || "",
       lever: reviewFlowLever(review),
-      order,
     };
-  }).sort((left, right) => REVIEW_FLOW_LEVERS[left.lever].order - REVIEW_FLOW_LEVERS[right.lever].order || left.order - right.order);
-  if (!items.length) return;
+  });
+  const first = items.findIndex((item) => item.id === startId);
+  if (first < 0) return false;
+  items.push(...items.splice(0, first));
   reviewFlow = { startedAt: new Date().toISOString(), items, index: 0, results: {}, done: false, busy: false };
   saveReviewFlow();
   openReviewFlowItem().catch((error) => setStatus(error.message));
+  return true;
 }
 
 async function openReviewFlowItem() {
@@ -8305,18 +8296,15 @@ function renderReviewFlowPanel() {
     panel.hidden = false;
     return;
   }
-  if (flow) {
+  if (flow && (flow.index > 0 || Object.keys(flow.results).length)) {
     setReviewFlowMarkup(panel, '<strong>Review in progress</strong><p>' + (flow.index + 1) + ' of ' + flow.items.length + '.</p>'
       + '<div class="review-flow-actions"><button type="button" class="primary" data-review-flow-panel="continue">Continue</button>'
       + '<button type="button" class="quiet-button" data-review-flow-panel="stop">Stop</button></div>');
     panel.hidden = false;
     return;
   }
-  const count = state.contextHubReviewQueueReady ? reviewFlowCandidates().length : 0;
-  setReviewFlowMarkup(panel, count > 1
-    ? '<button type="button" class="primary" data-review-flow-panel="start">Review one after another · ' + count + ' files</button>'
-    : count === 1 ? '<p>Review one after another starts from 2 files.</p>' : "");
-  panel.hidden = count < 1;
+  setReviewFlowMarkup(panel, "");
+  panel.hidden = true;
 }
 
 // Recent decisions: local review receipts across projects, with "Undo this acceptance".
@@ -8659,13 +8647,14 @@ function renderGlobalProjectExplorer() {
   explorer.hidden = !IS_GLOBAL_CONTEXT_ROOM;
   if (!IS_GLOBAL_CONTEXT_ROOM) return;
   document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => {
-    const active = button.dataset.globalExplorerMode === (["computer", "notebooks"].includes(state.globalExplorerMode) ? state.globalExplorerMode : "projects");
+    const active = button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects");
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
   if (search.value !== state.globalProjectSearch) search.value = state.globalProjectSearch;
   if (clearSearch) clearSearch.hidden = !state.globalProjectSearch.trim();
   explorer.classList.toggle("notebooks-mode", state.globalExplorerMode === "notebooks");
+  syncNotebookSpaceRow();
   if (state.globalExplorerMode === "notebooks") return;
   if (state.globalExplorerMode === "computer") {
     search.placeholder = "Search explorer...";
@@ -8722,15 +8711,14 @@ function renderGlobalProjectExplorer() {
     : "Loading…";
   updateGlobalExplorerMarkup(list, projects.length
       ? projects.map((project) => {
-        const local = project.mode !== "shared" && project.available;
         const attention = contextHubProjectAttentionLabel(project);
         const selected = project.projectKey === state.sharedProposalProject;
         const worktree = globalProjectSelectedWorktree(project);
-        return '<a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">'
+        return '<div class="global-project-row-wrap"><a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">'
           + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
           + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
-          + '<span class="global-project-row-side"><span>' + escapeHtml(attention) + '</span><span class="global-project-row-action">' + (local ? "Open →" : "Details →") + '</span></span>'
-          + '</a>';
+          + '<span class="global-project-row-side"><span>' + escapeHtml(attention) + '</span></span>'
+          + '</a><button class="global-project-row-menu" type="button" data-global-project-menu="' + escapeHtml(project.projectKey) + '" aria-haspopup="menu" aria-label="Project actions · ' + escapeHtml(project.title || project.id) + '">⋯</button></div>';
       }).join("")
     : state.contextHub
       ? (allProjects.length || needle
@@ -8778,9 +8766,12 @@ function contextHubProjectPickerChoices() {
   const needle = searchFold(state.contextHubProjectPickerQuery.trim());
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
+  const open = state.contextHubProjectPickerPurpose === "open";
+  // "New note" is an action of "Go to": a keyboard-only way to draw a note outside a project.
+  const actions = open && IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB && "new note".includes(needle) ? [{ gotoKind: "action", name: "New note" }] : [];
   return {
     projects,
-    choices: needle || state.contextHubProjectPickerPurpose === "open" ? [...projects, ...gotoDocumentChoices()] : [null, ...projects],
+    choices: needle || open ? [...projects, ...actions, ...gotoDocumentChoices()] : [null, ...projects],
   };
 }
 
@@ -8817,6 +8808,9 @@ function renderGotoPickerOption(item, index, active) {
   if (item.gotoKind === "more") {
     return '<button ' + id + ' data-goto-kind="more"><span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>Show ' + item.hidden + ' more</strong></span></span></button>';
   }
+  if (item.gotoKind === "action") {
+    return '<button ' + id + ' data-goto-kind="action"><span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>' + item.name + '</strong></span><span class="context-hub-project-picker-option-location">Draw a note that belongs to no project yet</span></span></button>';
+  }
   const detail = item.gotoKind === "text"
     ? '<span class="context-hub-project-picker-option-location goto-snippet">' + gotoSnippetMarkup(item) + '</span>'
     : '<span class="context-hub-project-picker-option-location" title="' + escapeHtml(item.path) + '">' + escapeHtml(item.path) + '</span>';
@@ -8826,7 +8820,7 @@ function renderGotoPickerOption(item, index, active) {
 }
 
 function gotoGroupLabel(kind) {
-  return kind === "file" ? "Files" : kind === "text" ? "In text" : "Projects";
+  return kind === "file" ? "Files" : kind === "text" ? "In text" : kind === "action" ? "Actions" : "Projects";
 }
 
 function resetGotoSearch() {
@@ -8948,6 +8942,11 @@ function activateContextHubProjectPickerIndex(index) {
     renderContextHubProjectPicker();
     return;
   }
+  if (item?.gotoKind === "action") {
+    closeContextHubProjectPicker({ restoreFocus: false });
+    createSpaceNotebook().catch((error) => setStatus(error.message));
+    return;
+  }
   if (item?.gotoKind === "file" || item?.gotoKind === "text") {
     if (state.sharedContextBusy) return;
     closeContextHubProjectPicker({ restoreFocus: false });
@@ -9006,7 +9005,7 @@ function renderContextHubProjectPicker() {
           + '</button>';
       })
     : null;
-  const grouped = openPurpose && gotoCount && optionMarkup
+  const grouped = openPurpose && optionMarkup && choices.some((item) => item?.gotoKind)
     ? optionMarkup.map((markup, index) => ({ markup, kind: choices[index]?.gotoKind === "more" ? choices[index].moreFor : choices[index]?.gotoKind || "project" }))
         .reduce((groups, entry) => {
           const last = groups.at(-1);
@@ -9153,7 +9152,7 @@ function contextRoomReviewIsSelectable(item) {
 function renderContextRoomReviewRow(item) {
   const project = contextHubProjectForItem(item);
   const projectLabel = project?.title || item.projectTitle || item.projectId || item.title || "Project";
-  if (item.type === "local-proposal" || item.type === "local-asset") return '<div class="context-room-review-entry" data-selected="' + String(state.contextRoomSelectedReviews.has(item.id)) + '" data-context-room-review-entry="' + escapeHtml(item.id) + '"><button type="button" class="review-item context-hub-review-row" data-context-room-review="' + escapeHtml(item.id) + '"><div class="review-top"><span class="context-hub-source" data-source="local">' + (item.type === "local-asset" ? 'Image or attachment' : 'Local proposal') + '</span><span>' + escapeHtml(projectLabel) + '</span></div><div class="review-title">' + escapeHtml(item.title) + '</div><div class="review-path">' + item.fileCount + ' changed files · ready for review</div></button></div>';
+  if (item.type === "local-proposal" || item.type === "local-asset") return '<div class="context-room-review-entry" data-selected="' + String(state.contextRoomSelectedReviews.has(item.id)) + '" data-context-room-review-entry="' + escapeHtml(item.id) + '"><button type="button" class="review-item context-hub-review-row" data-context-room-review="' + escapeHtml(item.id) + '"><div class="review-top"><span class="context-hub-source" data-source="local">' + (item.type === "local-asset" ? 'Image or attachment' : 'Local proposal') + '</span><span>' + escapeHtml(projectLabel) + '</span></div><span class="review-file"><strong class="review-title">' + escapeHtml(item.title) + '</strong><span class="review-path">' + item.fileCount + ' changed files · ready for review</span></span></button></div>';
   const active = state.contextHubSelection === item.id ? " active" : "";
   const selected = state.contextRoomSelectedReviews.has(item.id);
   const selectionMode = state.contextRoomSelectedReviews.size > 0;
@@ -9203,15 +9202,21 @@ function renderContextRoomReviewRow(item) {
   }
   const reviewTitle = item.title || item.localFile?.split("/").pop() || item.localFile || projectLabel;
   const reviewDescription = item.localFile || item.description || "Local file waiting for review.";
+  // One line: project, folder in grey, file name in bold. A title that is not the file name comes before the whole path.
+  const reviewFolder = reviewDescription.endsWith("/" + reviewTitle) ? reviewDescription.slice(0, -reviewTitle.length) : "";
+  const reviewName = '<strong class="review-title">' + escapeHtml(reviewTitle) + '</strong>';
+  const reviewFile = reviewFolder
+    ? '<span class="review-path">' + escapeHtml(reviewFolder) + '</span>' + reviewName
+    : reviewName + (reviewTitle === reviewDescription ? "" : '<span class="review-path">' + escapeHtml(reviewDescription) + '</span>');
   const localNeedsChanges = item.localReview?.reviewStatus === "needs_changes";
   const worktreeLabel = item.localReview?.worktreeLabel || "";
   const localSelectionAttributes = selectionMode
     ? ' aria-pressed="' + String(selected) + '" aria-label="' + escapeHtml(selected ? "Remove " + reviewTitle + " from selection" : "Add " + reviewTitle + " to selection") + '"'
     : '';
-  return entryStart + '<button class="review-item context-hub-review-row' + active + '" type="button" data-context-room-review="' + escapeHtml(item.id) + '"' + localSelectionAttributes + (state.sharedContextBusy ? " disabled" : "") + '>'
-    + '<div class="review-top"><span class="context-hub-review-source"><span class="context-hub-source" data-source="local">Local</span><span class="context-hub-review-project">' + escapeHtml(projectLabel) + '</span>' + (worktreeLabel ? '<span class="context-hub-worktree-label">' + escapeHtml(worktreeLabel) + '</span>' : '') + '</span><span class="context-room-review-row-state">' + staleBadge + snoozeBadge + '<span class="chip high">' + (localNeedsChanges ? "Needs changes" : "Review") + '</span></span></div>'
-    + '<div class="review-title">' + escapeHtml(reviewTitle) + '</div>'
-    + '<div class="review-path" title="' + escapeHtml(reviewDescription) + '">' + escapeHtml(reviewDescription) + '</div>'
+  return entryStart + '<button class="review-item context-hub-review-row' + active + '" type="button" data-context-room-review="' + escapeHtml(item.id) + '" data-review-lever="' + reviewFlowLever(item.localReview || { path: item.localFile }) + '" title="' + escapeHtml(reviewDescription) + '"' + localSelectionAttributes + (state.sharedContextBusy ? " disabled" : "") + '>'
+    + '<span class="context-hub-review-project" data-source="local">' + escapeHtml(projectLabel) + '</span>' + (worktreeLabel ? '<span class="context-hub-worktree-label">' + escapeHtml(worktreeLabel) + '</span>' : '')
+    + '<span class="review-file">' + reviewFile + '</span>'
+    + '<span class="context-room-review-row-state">' + staleBadge + snoozeBadge + '<span class="chip high">' + (localNeedsChanges ? "Needs changes" : "Review") + '</span></span>'
     + '</button></div>';
 }
 
@@ -9859,6 +9864,8 @@ function renderContextRoomGlobalReviewQueue() {
   // The toolbar keeps its place on a clean queue (no layout jump) unless the
   // user chose to hide it.
   if (reviewToolbar) reviewToolbar.hidden = cleanQueue && state.settings?.appearance?.hideEmptyReviewToolbar === true;
+  // The filters stay folded until one is on.
+  if (state.sharedProposalProject || state.sharedProposalSearch.trim() || state.contextHubSource !== "all") el("reviewQueueTools").open = true;
   summary.innerHTML = cleanQueue
     ? '<div class="review-summary-item"><strong>All clear</strong><span>no review pending</span></div>'
     : hubReady
@@ -27444,11 +27451,6 @@ el("clearGlobalProjectSearch")?.addEventListener("click", () => {
 document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => button.addEventListener("click", () => {
   const mode = button.dataset.globalExplorerMode;
   state.globalProjectSearch = "";
-  if (mode === "notebooks") {
-    state.globalExplorerMode = mode;
-    renderGlobalProjectExplorer();
-    return;
-  }
   if (mode === "computer") {
     state.contextHubPendingOpenGeneration += 1;
     state.globalExplorerMode = "computer";
@@ -27485,6 +27487,11 @@ el("globalExplorerScope")?.addEventListener("change", (event) => {
   openContextHubProject(select.value, { pushHistory: true }).catch((error) => setStatus(error.message));
 });
 el("globalProjectList")?.addEventListener("click", (event) => {
+  const projectMenu = event.target.closest("[data-global-project-menu]");
+  if (projectMenu) {
+    openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: projectMenu.dataset.globalProjectMenu });
+    return;
+  }
   const nativeWorkspaceLink = event.target.closest("a[href]");
   if (nativeWorkspaceLink && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
   if (nativeWorkspaceLink) event.preventDefault();
@@ -27699,7 +27706,16 @@ document.addEventListener("click", (event) => {
   if (!button || IS_HOSTED_CONTEXT_ROOM || state.sharedRecoveryBusy) return;
   showContextHubAbandonRecoveryDialog(button);
 });
+el("notebookSpaceRow")?.addEventListener("click", () => {
+  state.globalExplorerMode = "notebooks";
+  renderGlobalProjectExplorer();
+});
 el("notebookSpacePanel")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-notebook-space-back]")) {
+    state.globalExplorerMode = "projects";
+    renderGlobalProjectExplorer();
+    return;
+  }
   if (event.target.closest("[data-notebook-space-new]")) {
     createSpaceNotebook().catch((error) => setStatus(error.message));
     return;
@@ -27721,9 +27737,8 @@ if (globalThis.ContextRoomNativeOwner) {
   gotoButton?.setAttribute("title", "Go to project or file");
 }
 for (const host of [document.querySelector(".workspace-dock"), el("contextHubProjectsPanel")]) host?.addEventListener("click", (event) => {
-  if (event.target.closest("[data-notebooks-open]")) {
-    setExplorerCollapsedFromUser(false);
-    document.querySelector('[data-global-explorer-mode="notebooks"]').click();
+  if (event.target.closest("[data-notebook-space-new]")) {
+    createSpaceNotebook().catch((error) => setStatus(error.message));
     return;
   }
   if (event.target.closest("[data-home-explorer]")) {
@@ -28053,14 +28068,14 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   }
   state.contextHubSelection = item.id;
   renderContextRoomGlobalReviewQueue();
+  if (startReviewFlow(item.id)) return;
   openContextHubProject(item.projectId, {
     reviewTarget: item.localReview || (item.localFile ? { path: item.localFile } : null),
   }).catch((error) => setStatus(error.message));
 });
 el("reviewFlowPanel")?.addEventListener("click", (event) => {
   const action = event.target.closest("[data-review-flow-panel]")?.dataset.reviewFlowPanel;
-  if (action === "start") startReviewFlow();
-  else if (action === "continue") openReviewFlowItem().catch((error) => setStatus(error.message));
+  if (action === "continue") openReviewFlowItem().catch((error) => setStatus(error.message));
   else if (action === "stop") finishReviewFlow({ stopped: true });
   else if (action === "close") closeReviewFlow();
   else if (action === "proposals") {

@@ -321,7 +321,7 @@ Choose the source board ID from the inventory and an unused
 ordinary `.crnb` path in an existing Context Room project's writable, watched
 folders. Without `--root`, a free legacy board (no Lisière project) goes to
 the Notebooks space; if the space does not exist yet, the command asks to
-create it first (Hub › New notebook) or to pass `--root`. Only
+create it first (Hub › Go to › New note) or to pass `--root`. Only
 `--notebooks-to-space` (below) creates the space itself.
 
 ```bash

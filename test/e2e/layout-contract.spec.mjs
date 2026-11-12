@@ -670,7 +670,7 @@ test("@layout the 272px Explorer keeps project identity and metrics in separate 
     const title = node.querySelector(".global-project-row-title strong");
     const side = node.querySelector(".global-project-row-side");
     const metrics = side?.querySelector(":scope > span:first-child");
-    const action = side?.querySelector(".global-project-row-action");
+    const action = node.parentElement.querySelector(".global-project-row-menu");
     return {
       explorerWidth: document.querySelector(".app > aside")?.getBoundingClientRect().width || 0,
       row: rect(node),
@@ -684,7 +684,10 @@ test("@layout the 272px Explorer keeps project identity and metrics in separate 
   expect(geometry.explorerWidth).toBeCloseTo(272, 0);
   expect(geometry.title?.width || 0).toBeGreaterThan(24);
   expect(geometry.main?.bottom || 0).toBeLessThanOrEqual((geometry.side?.top || 0) + 0.5);
+  // The menu button is a 44 px target at the end of the metrics line; it takes no width from the project name.
   expect(geometry.metrics?.right || 0).toBeLessThanOrEqual((geometry.action?.left || 0) + 0.5);
+  expect(Math.min(geometry.action?.width || 0, geometry.action?.height || 0)).toBeGreaterThanOrEqual(44);
+  expect(geometry.action?.bottom || 0).toBeLessThanOrEqual((geometry.row?.bottom || 0) + 0.5);
   for (const child of [geometry.main, geometry.side]) {
     expect(child?.left || 0).toBeGreaterThanOrEqual((geometry.row?.left || 0) - 0.5);
     expect(child?.right || 0).toBeLessThanOrEqual((geometry.row?.right || 0) + 0.5);
@@ -712,6 +715,7 @@ test("@layout mobile controls and modal semantics remain keyboard and touch acce
   await expect(clearExplorerSearch).toBeHidden();
 
   await closeExplorerDrawer(page);
+  await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
   await page.locator("#contextRoomReviewProjectFilter").click();
   const projectPicker = page.locator("#contextHubProjectPicker");
   await expect(projectPicker).toBeVisible();
@@ -1101,6 +1105,7 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
       }
     }
 
+    await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
     await page.locator("#contextRoomReviewProjectFilter").click();
     await audit(page, testInfo, `project-picker-${width}`);
     await page.keyboard.press("Escape");
@@ -1287,17 +1292,19 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
     ].filter((entry) => entry !== true);
     return broken.length ? [...broken, JSON.stringify(open)] : [];
   }).toEqual([]);
-  // The home shortcuts sit in the top bar; "Notebooks" is there only while the Explorer is closed.
+  // The home shortcuts sit in the top bar. "New note" is for a screen that draws: a mouse-only screen does not show it.
   await expect(page.locator(".workspace-dock [data-home-explorer]")).toBeVisible();
   await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
-  await expect(page.locator("[data-notebooks-open]")).toBeHidden();
-  // Notebooks is a section of the Explorer, next to Projects and Computer.
-  await page.locator('[data-global-explorer-mode="notebooks"]').click();
-  await expect(page.locator("#notebookSpacePanel").getByRole("button", { name: "New notebook", exact: true })).toBeVisible();
-  await expect(page.locator("#globalProjectList")).toBeHidden();
-  await page.locator('[data-global-explorer-mode="projects"]').click();
-  await expect(page.locator("#globalProjectList")).toBeVisible();
+  await expect(page.locator(".workspace-dock [data-notebook-space-new]")).toBeHidden();
+  // The Explorer has two sections, Projects and Computer. Notes without a project are one row under the projects, when there is a note.
+  await expect(page.locator("[data-global-explorer-mode]")).toHaveCount(2);
   await expect(page.locator("#notebookSpacePanel")).toBeHidden();
+  // Each project row has a menu button: the order of the projects is set there.
+  await page.locator("#globalProjectList [data-global-project-menu]").first().click();
+  const projectMenu = page.locator("#explorerContextMenu");
+  for (const name of ["Move project to top", "Move project up", "Move project down"]) await expect(projectMenu.getByRole("menuitem", { name, exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(projectMenu).toBeHidden();
   // Explorer collapsed: the home list comes back in a side column; inspection stacks under it.
   await page.evaluate(() => setExplorerCollapsedFromUser(true));
   await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
@@ -1337,11 +1344,6 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
   await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
   await page.evaluate(() => setExplorerCollapsedFromUser(true));
   await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
-  // Explorer closed: the top bar opens it on Notebooks.
-  await page.locator("[data-notebooks-open]").click();
-  await expect(page.locator(".app")).not.toHaveClass(/sidebar-collapsed/);
-  await expect(page.locator("#notebookSpacePanel").getByRole("button", { name: "New notebook", exact: true })).toBeVisible();
-  await expect(page.locator("[data-notebooks-open]")).toBeHidden();
 });
 
 test("@layout a reload always shows a project list: the Explorer opens on Projects and says Loading until the list is there", async ({ page }) => {
@@ -1357,15 +1359,12 @@ test("@layout a reload always shows a project list: the Explorer opens on Projec
   const projectsTab = page.locator('[data-global-explorer-mode="projects"]');
   // A reload keeps the view in the URL. A link to the workspace without a view restores the saved navigation state.
   for (const load of [() => page.reload(), () => page.goto(`${data.origin}/?hub=1&workspace=${workspace}`)]) {
-    await page.locator('[data-global-explorer-mode="notebooks"]').click();
-    await expect(page.locator("#globalProjectList")).toBeHidden();
-    // Save the navigation state as a page hide does.
-    await page.evaluate(() => persistNavigationState({ syncUrl: false }));
+    // The notes view was on screen when the page went away: save the navigation state as a page hide does.
+    await page.evaluate(() => { state.globalExplorerMode = "notebooks"; persistNavigationState({ syncUrl: false }); });
     held = new Promise((resolve) => { release = resolve; });
     await load();
     // The Hub has not answered yet: the Explorer is on Projects and says that the list is loading.
     await expect(projectsTab).toHaveClass(/active/);
-    await expect(page.locator('[data-global-explorer-mode="notebooks"]')).not.toHaveClass(/active/);
     await expect(page.locator("#globalProjectCount")).toHaveText("Loading…");
     await expect(page.locator("#notebookSpacePanel")).toBeHidden();
     release();

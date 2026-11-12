@@ -4004,7 +4004,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /\/api\/context-hub\/accept/);
   assert.match(rootSource, /\/api\/context-hub\/reject/);
   assert.match(rootSource, /exact Git revision stays archived on a rejected branch/);
-  assert.match(rootSource, /Each file stays atomic\. Shared changes stay grouped by proposal\./);
+  assert.match(rootSource, /<details id="reviewQueueTools" class="review-queue-tools">\s*<summary>Filter and clean up<\/summary>/);
   assert.match(rootSource, /projectFilter\.disabled = Boolean\(state\.sharedContextBusy\)/);
   assert.match(rootSource, /project selected · Shared offline · cached @/);
   assert.match(rootSource, /repositoryId: repositorySelector/);
@@ -4859,7 +4859,7 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
   assert.ok(Buffer.byteLength(html) < 100_000);
   assert.match(bundle.js, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
   // The live picker lists every matching project, uncut; "Go to" adds its document rows after them.
-  assert.match(bundle.js, /choices: needle \|\| state\.contextHubProjectPickerPurpose === "open" \? \[\.\.\.projects, \.\.\.gotoDocumentChoices\(\)\] : \[null, \.\.\.projects\]/);
+  assert.match(bundle.js, /choices: needle \|\| open \? \[\.\.\.projects, \.\.\.actions, \.\.\.gotoDocumentChoices\(\)\] : \[null, \.\.\.projects\]/);
   assert.doesNotMatch(bundle.js, /projects\.slice\([^)]*\)[^;]*gotoDocumentChoices/);
   assert.match(bundle.js, /contextHubProjectPickerQuery = event\.target\.value/);
 });

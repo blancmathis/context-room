@@ -141,7 +141,7 @@ test('notebooks-to-space preview then apply moves only Lisière imports', async 
   const run = args => { const out = spawnSync(process.execPath, [cli, 'migrate', ...args], { encoding: 'utf8', cwd: f.root, env, timeout: 30000 }); return { ...out, data: out.status === 0 ? JSON.parse(out.stdout).data : null }; };
   // D10: a board without a project needs the space when --root is absent.
   const noSpace = run(['--import-lisiere', f.snapshot, '--legacy-board', 'board', '--path', 'Carnets/Ideas.crnb']);
-  assert.notEqual(noSpace.status, 0); assert.match(noSpace.stdout + noSpace.stderr, /Create the Notebooks space first \(Hub › New notebook\) or pass --root/);
+  assert.notEqual(noSpace.status, 0); assert.match(noSpace.stdout + noSpace.stderr, /Create the Notebooks space first \(Hub › Go to › New note\) or pass --root/);
   const saved = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   Object.assign(process.env, homes);

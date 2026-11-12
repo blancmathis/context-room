@@ -504,7 +504,7 @@ test("the global home lists projects in a stable order with three destinations a
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);
   const orderSource = script.slice(script.indexOf("function contextHubPrioritizedProjects"), script.indexOf("function globalProjectExplorerPageKey"));
-  assert.match(html, /data-global-explorer-mode="notebooks"[\s\S]*id="notebookSpacePanel"[\s\S]*data-home-explorer[\s\S]*id="reviewQueuePanel"[\s\S]*id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"/);
+  assert.match(html, /id="notebookSpacePanel"[\s\S]*id="notebookSpaceRow"[\s\S]*data-home-explorer[\s\S]*id="reviewQueuePanel"[\s\S]*id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"/);
   assert.doesNotMatch(orderSource, /localReviewCount|sharedProposalCount|lastOpenedAt|\.current/);
   assert.match(orderSource, /priorityRank[\s\S]*title/);
   assert.match(script, /function renderContextHubHomeProjects\(\)[\s\S]*local inspected[\s\S]*data-context-hub-project-destination="' \+ id/);

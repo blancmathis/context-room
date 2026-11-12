@@ -87,9 +87,11 @@ If that snapshot becomes stale, terminal, unavailable, or recovery-required duri
 
 ## Home
 
-The Hub home starts with the Notebooks section: **New notebook**, then the
-notebooks of the Notebooks space, most recently changed first, the first with
-**Resume**. The first New notebook creates the space
+The Hub home starts with the review queue. Notes that belong to no project
+stay in the Explorer: when at least one exists, the Projects list ends with the
+row **No project · N notes**. It opens them, most recently changed first, the
+first with **Resume**. **New note** is in that panel, in Go to (⌘K, "New note"),
+and in the top bar of the home on a touch screen. The first New note creates the space
 (`POST /api/context-hub/notebook-space`): a registry entry marked
 `space: "notebooks"`, at most one, kept across re-registration and location
 confirmation. The space is not a project: it has no Context, To review or
@@ -100,7 +102,7 @@ The project list follows. Each row shows the project, its location,
 an attention pill, and three destinations: Context (agent environment), To review
 (Review Queue filtered to the project), and Documents (the project's documentation map, with its files in Explorer).
 
-The order is the manual project order, then the title. Attention, opening a project,
+The order is the manual project order, then the title. The ⋯ menu of a project row in the Explorer moves it to the top, up or down; Settings › Project priority does the same by drag. Attention, opening a project,
 and refreshes never reorder the list. The header shows local coverage, for example
 `1/7 local inspected`.
 
@@ -185,7 +187,7 @@ The global queue also includes submitted local proposals and changed image asset
 
 A selection keeps the exact version that was checked: its content, mode and accepted dependencies. If a refresh brings a newer version, the row shows "Changed since selected" and the selection actions skip it until it is selected again. Accepting a selection is all-or-nothing before the first write: if any selected file changed, nothing is accepted and the changed files are listed. Once writes start, accepted files stay accepted and each file that fails is listed with its reason. A failure to record the review event after a decision is saved is a warning, not a failed decision.
 
-"Review one after another" opens the pending local files of every project in a fixed order: instructions and hooks, then memory, then docs, then provider files. A bar shows the position, why the file matters and what accepting does. Accept (A), Request changes (R) and Later (L) decide the open file and move to the next one; a held key makes one decision only. Each decision is the same human decision as in the file view. The order is frozen at the start; a file that changes meanwhile is marked and decided on the version shown. The end summary counts accepted, changes requested, later and not reached files. Shared and local proposals stay a separate step.
+A click on a local file in the review queue starts the review in a row from that file. The row covers the pending local files of every project in a fixed order: instructions and hooks, then memory, then docs, then provider files; the files before the clicked one come last. A bar shows the position, why the file matters and what accepting does. Accept (A), Request changes (R) and Later (L) decide the open file and move to the next one; a held key makes one decision only. Each decision is the same human decision as in the file view. The order is frozen at the start; a file that changes meanwhile is marked and decided on the version shown. The end summary counts accepted, changes requested, later and not reached files. Shared and local proposals stay a separate step.
 
 ## Action-changing errors
 
