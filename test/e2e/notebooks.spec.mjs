@@ -662,10 +662,11 @@ test.describe('Notebooks space', () => {
     await row.click();
     await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
   }
-  // The first note comes from "Go to" (a keyboard has no "New note" button); the next ones from the panel.
+  // "New note" is a button on a touch screen only; a keyboard goes through "Go to".
   async function newNotebookWithInk(page, f) {
     const notes = page.locator('#notebookSpacePanel');
-    if (await notes.isVisible()) await notes.getByRole('button', { name: 'New note', exact: true }).click();
+    const newNote = notes.getByRole('button', { name: 'New note', exact: true });
+    if (await newNote.isVisible()) await newNote.click();
     else {
       await page.keyboard.press('ControlOrMeta+k');
       await page.locator('#contextHubProjectPicker').getByRole('option', { name: /^New note/ }).click();

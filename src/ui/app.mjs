@@ -386,9 +386,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-menu:hover, .global-project-row-menu:focus-visible, .global-project-notes-row:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
-    /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen wider than a phone. */
+    /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen only (Go to › New note on a keyboard). */
     #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
-    @media not all and (any-pointer: coarse) { [data-notebook-space-new]:not(.notebook-space-new) { display: none; } }
+    @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
@@ -7056,7 +7056,7 @@ function renderGlobalExplorerContextMenu(x, y) {
       ? '<button class="secondary" type="button" data-global-context-toggle>' + (expanded ? "Collapse" : "Expand") + "</button>"
       : "";
   const projectActions = target.scope === "project" && project
-    ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
+    ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : target.kind === "project" ? "" : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
       + (folderReviews.length ? '<button class="secondary" type="button" data-global-context-snooze-reviews>Snooze reviews… <span class="context-menu-count">' + folderReviews.length + '</span></button>' : '')
       + (target.kind === "project"
         ? '<button class="secondary" type="button" data-global-context-review>To review</button>'
@@ -7723,10 +7723,10 @@ function contextHubSinceLastVisitText() {
 // Identity = project location + file + version, so the same path in two projects never collides.
 const REVIEW_FLOW_KEY = "context-room:review-flow:v1";
 const REVIEW_FLOW_LEVERS = {
-  instructions: { order: 0, label: "Instructions and hooks", why: "Agents load this when a session starts.", effect: "Accepting marks this version as the instructions you approved." },
-  memory: { order: 1, label: "Memory", why: "Agents may recall this in later sessions.", effect: "Accepting marks this memory as checked." },
-  docs: { order: 2, label: "Docs", why: "Agents read this doc when a task needs it.", effect: "Accepting lets Context Room serve this version to agents." },
-  provider: { order: 3, label: "Provider", why: "This file sets how the agent runs.", effect: "Accepting marks this configuration as reviewed." },
+  instructions: { label: "Instructions and hooks", why: "Agents load this when a session starts.", effect: "Accepting marks this version as the instructions you approved." },
+  memory: { label: "Memory", why: "Agents may recall this in later sessions.", effect: "Accepting marks this memory as checked." },
+  docs: { label: "Docs", why: "Agents read this doc when a task needs it.", effect: "Accepting lets Context Room serve this version to agents." },
+  provider: { label: "Provider", why: "This file sets how the agent runs.", effect: "Accepting marks this configuration as reviewed." },
 };
 let reviewFlow;
 
@@ -7767,7 +7767,8 @@ function reviewFlowSeparateCount() {
 
 // A click on a file of the queue starts the flow there; the files before it come after the last one.
 function startReviewFlow(startId) {
-  const items = reviewFlowCandidates().map((item, order) => {
+  // The flow follows the rows as the queue shows them.
+  const items = reviewFlowCandidates().map((item) => {
     const review = item.localReview;
     return {
       id: item.id,
@@ -7777,9 +7778,8 @@ function startReviewFlow(startId) {
       review: { path: review.path, label: review.label || "", startupContext: review.startupContext || null, reviewReason: review.reviewReason || "", worktreeId: review.worktreeId || "" },
       currentHash: review.currentHash || "",
       lever: reviewFlowLever(review),
-      order,
     };
-  }).sort((left, right) => REVIEW_FLOW_LEVERS[left.lever].order - REVIEW_FLOW_LEVERS[right.lever].order || left.order - right.order);
+  });
   const first = items.findIndex((item) => item.id === startId);
   if (first < 0) return false;
   items.push(...items.splice(0, first));
