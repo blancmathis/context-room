@@ -34,45 +34,85 @@ function escapePattern(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function sharedContextShards(count = 4) {
-  const source = fs.readFileSync(path.join(ROOT, SHARED_CONTEXT_TEST), "utf8");
+// Large files run as several processes, each a fixed subset of their top-level test names.
+const SPLIT_FILES = { [SHARED_CONTEXT_TEST]: 4, "test/context_hub.test.mjs": 2, "test/context_room.test.mjs": 2 };
+// Seconds per test process on a GitHub runner (Node 24, run 43255230396, 2026-11-12). Only used to balance
+// `--shard=i/n`; a missing or stale entry makes one shard slower, never skips a test. Default: 1 s.
+const JOB_SECONDS = {
+  "test/context_hub.test.mjs": 110, "test/context_room.test.mjs": 95, [SHARED_CONTEXT_TEST]: 250,
+  "test/cli_contract_regressions.test.mjs": 52, "test/revision_integrity.test.mjs": 49, "test/cli_args.test.mjs": 28,
+  "test/trust_current.test.mjs": 19, "test/context_hub_lock_wait.test.mjs": 15, "test/documentation_workflow.test.mjs": 14,
+  "test/notebook_shared.test.mjs": 13, "test/bin_context_room_shared_cli.test.mjs": 13, "test/lisiere_migration.test.mjs": 10,
+  "test/lisiere_cutover.test.mjs": 10, "test/hub_durable_identity.test.mjs": 9, "test/shared_terminal_cas.test.mjs": 8,
+  "test/documentation.test.mjs": 8, "test/shared_context_p1_regressions.test.mjs": 8, "test/lisiere_tablet_drafts.test.mjs": 7,
+  "test/agent_cli.test.mjs": 7, "test/context_cli_adapters.test.mjs": 7, "test/shared_refresh_nonblocking.test.mjs": 7,
+  "test/acceptance_timeout.test.mjs": 6, "test/location_attestation.test.mjs": 6, "test/mac_installation.test.mjs": 6,
+  "test/backup.test.mjs": 5, "test/shared_project_creation.test.mjs": 5, "test/goto_search.test.mjs": 5,
+};
+
+function nameShards(file, count, isolatedTests = []) {
+  const source = fs.readFileSync(path.join(ROOT, file), "utf8");
   const names = [...source.matchAll(/^test\(\s*("(?:[^"\\]|\\.)*")/gm)]
     .map((match) => JSON.parse(match[1]));
   if (names.length === 0) {
-    throw new Error(`No tests found in ${SHARED_CONTEXT_TEST}`);
+    throw new Error(`No tests found in ${file}`);
   }
   const shards = Array.from({ length: count }, () => []);
-  const isolated = new Set(SHARED_CONTEXT_ISOLATED_TESTS.map(item => item.name));
+  const isolated = new Set(isolatedTests.map(item => item.name));
   if ([...isolated].some(name => !names.includes(name))) throw new Error('An isolated Shared contract was renamed or removed.');
   names.filter((name) => !isolated.has(name))
     .forEach((name, index) => shards[index % count].push(name));
+  const weight = (JOB_SECONDS[file] ?? 1) / count;
   return [...shards.map((shard, index) => ({
-    label: `${SHARED_CONTEXT_TEST} [${index + 1}/${count}]`,
+    label: `${file} [${index + 1}/${count}]`,
+    weight,
     args: [
       "--test",
       `--test-name-pattern=^(?:${shard.map(escapePattern).join("|")})$`,
-      SHARED_CONTEXT_TEST,
+      file,
     ],
-  })), ...SHARED_CONTEXT_ISOLATED_TESTS.map(({ label, name }) => ({
-    label: `${SHARED_CONTEXT_TEST} [${label}]`,
+  })), ...isolatedTests.map(({ label, name }) => ({
+    label: `${file} [${label}]`,
+    weight: 2,
     args: [
       "--test",
       `--test-name-pattern=^${escapePattern(name)}$`,
-      SHARED_CONTEXT_TEST,
+      file,
     ],
     exclusive: true,
   }))];
 }
 
-function jobs() {
+function allJobs() {
   return [
     ...testFiles()
-      .filter((file) => file !== SHARED_CONTEXT_TEST)
+      .filter((file) => !SPLIT_FILES[file])
       // The CLI discovery contract performs real clones inside a one-second
       // budget. Keep that deadline while isolating its test-process I/O load.
-      .map((file) => ({ label: file, args: ["--test", file], exclusive: file === "test/cli_contract_regressions.test.mjs" })),
-    ...sharedContextShards(),
+      .map((file) => ({ label: file, weight: JOB_SECONDS[file] ?? 1, args: ["--test", file], exclusive: file === "test/cli_contract_regressions.test.mjs" })),
+    ...Object.entries(SPLIT_FILES).flatMap(([file, count]) =>
+      nameShards(file, count, file === SHARED_CONTEXT_TEST ? SHARED_CONTEXT_ISOLATED_TESTS : [])),
   ];
+}
+
+// `--shard=i/n` keeps the jobs of shard i out of n, balanced by JOB_SECONDS (longest first, into the lightest
+// shard). Every job lands in exactly one shard, so the n shards together run the whole suite once.
+function jobs(argv = process.argv.slice(2)) {
+  const option = argv.find((value) => value.startsWith("--shard="));
+  const all = allJobs();
+  if (!option) return all;
+  const match = /^--shard=(\d+)\/(\d+)$/.exec(option);
+  const index = Number(match?.[1]);
+  const count = Number(match?.[2]);
+  if (!match || count < 1 || index < 1 || index > count) throw new Error(`Invalid ${option}; expected --shard=i/n with 1 <= i <= n.`);
+  const loads = Array.from({ length: count }, () => ({ seconds: 0, jobs: [] }));
+  const ordered = [...all].sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label));
+  for (const job of ordered) {
+    const lightest = loads.reduce((best, load) => (load.seconds < best.seconds ? load : best));
+    lightest.seconds += job.weight;
+    lightest.jobs.push(job);
+  }
+  return loads[index - 1].jobs;
 }
 
 function removeTemporaryTestTree(root) {
@@ -159,6 +199,10 @@ function runJob(job) {
 
 async function main() {
   const pending = jobs();
+  if (process.argv.includes("--list")) {
+    for (const job of pending) process.stdout.write(`${job.weight}\t${job.label}\n`);
+    return;
+  }
   const queue = pending.filter((job) => !job.exclusive);
   const exclusive = pending.filter((job) => job.exclusive);
   const results = [];
