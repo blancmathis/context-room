@@ -549,7 +549,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   const computerModeHandler = script.match(/if \(mode === "computer"\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || "";
   assert.match(computerModeHandler, /state\.globalExplorerMode = "computer"/);
   assert.doesNotMatch(computerModeHandler, /globalExplorerProjectKey\s*=|activeProjectLocationId\s*=|refreshGlobalSettingsScopeFromExplorer/);
-  const projectsModeHandler = script.match(/const activeProject = workspaceSelectedProject\(\);([\s\S]*?)\n\s*\}\)\);/)?.[1] || "";
+  const projectsModeHandler = script.match(/const activeProject = mode === "project" \?[^\n]*workspaceSelectedProject\(\) : null;([\s\S]*?)\n\s*\}\)\);/)?.[1] || "";
   assert.match(projectsModeHandler, /state\.globalExplorerMode = activeProject \? "project" : "projects"/);
   assert.match(projectsModeHandler, /state\.globalExplorerProjectKey = activeProject\?\.projectKey \|\| ""/);
   assert.match(projectsModeHandler, /loadGlobalProjectExplorerPage\(activeProject\)/);
@@ -561,7 +561,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /computerExplorerExpandedFolders\.has\(folderPath\)[\s\S]*computerExplorerExpandedFolders\.delete\(folderPath\)/);
   assert.match(html, /data-global-explorer-mode="projects"[\s\S]*data-global-explorer-mode="computer"/);
   assert.match(html, /id="globalExplorerListLabel">Projects<\/strong>/);
-  assert.match(script, /data-global-explorer-back[\s\S]*state\.globalExplorerMode = "projects"/);
+  assert.match(script, /if \(mode === "projects" && state\.globalExplorerProjectKey\) \{\s*void returnToGlobalContextHubHome\(\)/, "the Projects section switch leaves the project page");
   assert.match(html, /id="computerExplorerRoot" type="text"/);
   assert.match(script, /globalProjectList[\s\S]*data-global-project-file[\s\S]*globalProjectSelectedWorktree\(project\)[\s\S]*openContextHubProject\(worktree\?\.id \|\| project\.id, \{ filePath:/);
   assert.match(script, /globalProjectList[\s\S]*addEventListener\("contextmenu"[\s\S]*openGlobalExplorerContextMenu/);
