@@ -29,9 +29,9 @@ test("@perf the review toolbar keeps its place on a clean queue unless the setti
     await expect(toolbar).toBeHidden();
     await page.locator("#reviewQueueTools > summary").click();
     await expect(toolbar).toBeVisible();
-    const top = (await page.locator("#contextRoomReviewProjectFilter").boundingBox()).y;
+    const top = (await page.locator("#contextRoomReviewSourceFilter").boundingBox()).y;
     await page.waitForTimeout(1_000);
-    expect((await page.locator("#contextRoomReviewProjectFilter").boundingBox()).y).toBe(top);
+    expect((await page.locator("#contextRoomReviewSourceFilter").boundingBox()).y).toBe(top);
 
     await page.evaluate(() => {
       state.settings = { ...state.settings, appearance: { ...state.settings.appearance, hideEmptyReviewToolbar: true } };

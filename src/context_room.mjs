@@ -14,6 +14,7 @@ import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirect
 import { withDocumentationMapBlock } from "./doc_map_block.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
+import { normalizeProjectPage } from "./ui/project-page.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNotebookImports } from "./lisiere_migration.mjs";
@@ -15467,6 +15468,46 @@ export function writeGlobalContextRoomPreferences(next = {}, preferencesPath = n
   });
 }
 
+// The tiles of each project page live next to the global preferences, in `project-pages.json`, keyed by project.
+export function projectPagesPath(preferencesPath = null) {
+  return path.join(path.dirname(resolveGlobalPreferencesPath(preferencesPath)), "project-pages.json");
+}
+
+function readProjectPagesFile(target) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(target, "utf8"));
+    return raw && typeof raw.projects === "object" && raw.projects ? raw.projects : {};
+  } catch { return {}; }
+}
+
+export function readProjectPage(projectKey, preferencesPath = null) {
+  const projects = readProjectPagesFile(projectPagesPath(preferencesPath));
+  const stored = Object.hasOwn(projects, projectKey);
+  const page = normalizeProjectPage(stored ? projects[projectKey] : null);
+  return { page, revision: hashContent(JSON.stringify(page)), stored };
+}
+
+export function writeProjectPage(projectKey, next, preferencesPath = null, { expectedRevision = null } = {}) {
+  const target = projectPagesPath(preferencesPath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  return withFilesystemLock(target + ".lock", () => {
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error("The project pages file cannot be a symbolic link.");
+    if (expectedRevision && readProjectPage(projectKey, preferencesPath).revision !== expectedRevision) {
+      const error = new Error("This project page changed on another device. It shows the newest version again.");
+      error.code = "project_page_stale";
+      throw error;
+    }
+    const projects = readProjectPagesFile(target);
+    const page = normalizeProjectPage(next);
+    if (!Object.hasOwn(projects, projectKey) && Object.keys(projects).length >= 500) throw new Error("Too many project pages are kept.");
+    projects[projectKey] = page;
+    const temporary = target + "." + randomBytes(12).toString("hex") + ".tmp";
+    try { fs.writeFileSync(temporary, JSON.stringify({ version: 1, projects }, null, 2) + "\n", { flag: "wx", mode: 0o600 }); fs.renameSync(temporary, target); }
+    finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+    return { page, revision: hashContent(JSON.stringify(page)), stored: true };
+  });
+}
+
 export function readResolvedContextRoomSettings(root = process.cwd(), { preferencesPath = null, expectedRootIdentity = null, readOnly = false } = {}) {
   const protectedSettings = effectiveOwnerReviewScope(root, readMemoryWebappSettings(root, { expectedRootIdentity }), { readOnly });
   const projectSettings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, protectedSettings), { stripLegacy: true });
@@ -23257,7 +23298,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
     return;
   }
-  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs", "/assets/hub-doc-links.mjs"].includes(url.pathname)) {
+  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs", "/assets/hub-doc-links.mjs", "/assets/project-page.mjs"].includes(url.pathname)) {
     writeHttpResponse(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL(`./ui/${path.basename(url.pathname)}`, import.meta.url)));
     return;
   }
@@ -24427,6 +24468,19 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       return;
     }
     sendJson(res, 200, payload, { headers: { etag, "server-timing": "settings;dur=0.1" } });
+    return;
+  }
+  if (url.pathname === "/api/context-hub/project-page" && ["GET", "POST"].includes(req.method)) {
+    const body = req.method === "POST" ? await readJsonBody(req) : null;
+    const projectKey = String((body ? body.project : url.searchParams.get("project")) || "");
+    if (!projectKey || projectKey.length > 400) throw sharedRequestError("project is required", 400, "project_page_invalid");
+    if (!body) {
+      sendJson(res, 200, readProjectPage(projectKey, globalPreferencesPath));
+      return;
+    }
+    if (!body.page || typeof body.page !== "object") throw sharedRequestError("page is required", 400, "project_page_invalid");
+    try { sendJson(res, 200, writeProjectPage(projectKey, body.page, globalPreferencesPath, { expectedRevision: body.expectedRevision ? String(body.expectedRevision) : null })); }
+    catch (error) { if (error?.code === "project_page_stale") throw sharedRequestError(error.message, 409, "project_page_stale"); throw error; }
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/preferences") {

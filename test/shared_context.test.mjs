@@ -123,7 +123,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /id="contextHubManageProjects"/);
   assert.match(html, /id="sharedProposalWorkspaceClose"/);
   assert.ok(html.indexOf("Review queue") < html.indexOf("<h2>Context health</h2>"));
-  assert.match(html, /data-context-hub-project-picker-trigger="room-home"/);
+  assert.doesNotMatch(html, /data-context-hub-project-picker-trigger="room-home"/);
   assert.match(html, /contextHubProjectPickerLabel/);
   assert.match(html, /id="contextHubProjectPickerSearch"/);
   assert.match(html, /id="sharedSkillsWizard"/);

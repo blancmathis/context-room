@@ -575,8 +575,7 @@ async function assertWorkbenchGutters(page, data, width) {
     await waitForReady(page);
     await closeExplorerDrawer(page);
 
-    await page.locator("#reviewQueueTools").evaluate((node) => { node.open = true; });
-    await page.locator("#contextRoomReviewProjectFilter").click();
+    await page.keyboard.press("ControlOrMeta+k");
     const picker = "#contextHubProjectPicker:not([hidden])";
     await expectHorizontalPadding(page, `${picker} .context-hub-project-picker-head`, compact ? 12 : 20);
     await expectHorizontalPadding(page, `${picker} .context-hub-project-picker-search-wrap`, compact ? 12 : 20);
@@ -644,7 +643,8 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
 
   await page.locator('[data-global-explorer-mode="computer"]').click();
   await expect(page.locator('[data-global-explorer-mode="computer"]')).toHaveClass(/active/);
-  await page.locator('[data-global-explorer-mode="projects"]').click();
+  // The project tab, next to Projects and Computer, brings the open project back.
+  await page.locator('[data-global-explorer-mode="project"]').click();
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
   expect(new URL(page.url()).searchParams.get("project")).toBe(atlasProject);
 
