@@ -182,14 +182,24 @@ export function createProjectPage() {
     return run;
   }
 
+  // The tree loader returns null while the same listing is in flight (just after a reload): wait for it.
+  async function listing(project, directory) {
+    for (let tries = 0; tries < 50; tries += 1) {
+      const details = await loadGlobalProjectExplorerPage(project, { directory });
+      if (details || !state.globalProjectExplorerLoading.has(globalProjectExplorerPageKey(project, { directory, query: '' }))) return details;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  }
+
   // A path is asked for only once its parent listing shows it: a gone path never costs a 404.
   async function listedInProject(project, path, type) {
     const parts = path.split('/');
     for (let index = 0; index < parts.length; index += 1) {
       const child = parts.slice(0, index + 1).join('/');
-      const listing = await loadGlobalProjectExplorerPage(project, { directory: parts.slice(0, index).join('/') });
+      const details = await listing(project, parts.slice(0, index).join('/'));
       const wanted = index === parts.length - 1 ? type : 'directory';
-      if (!(listing?.entries || []).some((entry) => entry.type === wanted && entry.path === child)) return false;
+      if (!(details?.entries || []).some((entry) => entry.type === wanted && entry.path === child)) return false;
     }
     return true;
   }
@@ -199,9 +209,9 @@ export function createProjectPage() {
     for (let index = 0; index < parts.length; index += 1) {
       const parent = parts.slice(0, index).join('/');
       const child = parts.slice(0, index + 1).join('/');
-      const listing = await loadGlobalProjectExplorerPage(project, { directory: parent });
+      const details = await listing(project, parent);
       // Only a folder seen in its parent's listing is asked for: a gone folder never costs a 404.
-      if (!(listing?.entries || []).some((entry) => entry.type === 'directory' && entry.path === child)) {
+      if (!(details?.entries || []).some((entry) => entry.type === 'directory' && entry.path === child)) {
         setStatus(folder + ' is not in this project any more');
         return;
       }
