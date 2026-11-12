@@ -60,3 +60,19 @@ test('agent levels: files are grouped global / root / subfolder, once each, with
   assert.equal(levels[2].files[0].path, 'app/AGENTS.md');
   assert.deepEqual(groupAgentLevels([{ folder: '.', effective: effective([], {}) }], { root }).map((level) => level.level), ['root'], 'an empty global level is left out, the root stays');
 });
+
+test('agent levels: a root reached through a link still opens its files', () => {
+  const real = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-levels-real-'));
+  const link = real + '-link';
+  try {
+    fs.symlinkSync(real, link);
+    const absolutePath = path.join(fs.realpathSync(real), 'AGENTS.md');
+    const effective = { instructions: [{ resource: { id: 'r', locator: absolutePath, metadata: { name: 'AGENTS.md', absolutePath } }, application: { scope: 'project', subtree: '.' } }], skills: [], cost: { entries: {} } };
+    const [level] = groupAgentLevels([{ folder: '.', effective }], { root: link });
+    assert.equal(level.level, 'root');
+    assert.equal(level.files[0].path, 'AGENTS.md');
+  } finally {
+    fs.rmSync(link, { force: true });
+    fs.rmSync(real, { recursive: true, force: true });
+  }
+});

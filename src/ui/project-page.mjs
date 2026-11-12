@@ -111,8 +111,11 @@ ICONS.all = ICONS.folder;
    openGlobalProjectInspection, openContextHubProjectPicker, returnToGlobalContextHubHome, globalProjectSelectedWorktree,
    globalProjectExplorerPageKey, globalProjectExpandedFolderKey, loadGlobalProjectExplorerPage, isExplorerCollapsed,
    isExplorerDesktopViewport, setExplorerCollapsedFromUser, applyExplorerCollapsed, agentContextProvider, AGENT_PROVIDER_LABELS,
-   formatTokenEstimate, contextHubReviewItems, contextHubProjectForItem, openGlobalProjectExplorer */
+   formatTokenEstimate, contextHubReviewItems, contextHubProjectForItem, openGlobalProjectExplorer,
+   contextHubPrioritizedProjects */
 
+// A copy on an unmounted disk keeps its root but is not available: no request goes to it.
+const mounted = (worktree) => Boolean(worktree?.root) && worktree.available !== false;
 const reviewCount = (project) => Number(project?.localReviewCount || 0) + Number(project?.sharedProposalCount || 0);
 const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
 const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
@@ -273,7 +276,7 @@ export function createProjectPage() {
   // « Recent docs » lists the newest docs of this project under the shortcuts; a second press hides it.
   function toggleRecent(project) {
     const worktree = globalProjectSelectedWorktree(project);
-    if (!worktree?.root) return setStatus('This project has no local copy on this device');
+    if (!mounted(worktree)) return setStatus('This project has no local copy on this device');
     const key = worktree.id;
     if (recent?.key === key) recent = null;
     else {
@@ -296,7 +299,7 @@ export function createProjectPage() {
 
   function syncLevels(project) {
     const worktree = project && state.projectAgentsOpen ? globalProjectSelectedWorktree(project) : null;
-    levelsBox.hidden = !worktree?.root;
+    levelsBox.hidden = !mounted(worktree);
     if (levelsBox.hidden) return void (levelsShown = '');
     const provider = agentContextProvider();
     const key = worktree.id + '|' + provider;
@@ -366,8 +369,7 @@ export function createProjectPage() {
     }
     head.hidden = tiles.hidden = !project;
     const toReview = reviewCount(project);
-    // A project with nothing to review has no « To review » band (not while its count is still unknown).
-    queue?.classList.toggle('pp-none', project?.localReviewCount != null && !toReview);
+    band(project);
     syncLevels(project);
     group();
     if (!project) {
@@ -398,23 +400,41 @@ export function createProjectPage() {
   // On « To review » (all projects), one heading per project run: « Name · N », then Open project ›.
   const reviewList = el('reviewQueue');
   const watcher = new MutationObserver(group);
+  // The band hides only when nothing of this project would show in it: files, local proposals, images,
+  // shared proposals, working drafts or a review in progress. Not while the queue is still unknown.
+  function band(project) {
+    const busy = (key) => reviewCount(project) || contextHubReviewItems().some((item) => contextHubProjectForItem(item)?.projectKey === key)
+      || (state.contextHub?.workingDrafts || []).some((draft) => draft.projectKey === key) || !el('reviewFlowPanel')?.hidden;
+    queue?.classList.toggle('pp-none', Boolean(project && state.contextHubReviewQueueReady && project.localReviewCount != null && !busy(project.projectKey)));
+  }
+
   function group() {
     if (!reviewList) return;
     watcher.disconnect();
     for (const node of reviewList.querySelectorAll(':scope > .pp-group')) node.remove();
-    if (!currentProject()) {
-      const items = new Map(contextHubReviewItems().map((item) => [item.id, item]));
-      const rows = [...reviewList.querySelectorAll(':scope > [data-context-room-review-entry]')];
-      const owners = rows.map((row) => contextHubProjectForItem(items.get(row.dataset.contextRoomReviewEntry)));
-      const counts = new Map();
-      for (const owner of owners) if (owner) counts.set(owner.projectKey, (counts.get(owner.projectKey) || 0) + 1);
-      rows.forEach((row, index) => {
-        const owner = owners[index];
-        if (!owner || owner.projectKey === owners[index - 1]?.projectKey) return;
+    const project = currentProject();
+    band(project);
+    if (!project) {
+      const all = contextHubReviewItems();
+      const items = new Map(all.map((item) => [item.id, item]));
+      const order = new Map(contextHubPrioritizedProjects(state.contextHub?.projects || []).map((item, index) => [item.projectKey, index]));
+      const rank = (owner) => owner ? order.get(owner.projectKey) ?? order.size : order.size + 1;
+      // One group per project, in project order (N2); rows keep their order inside a group.
+      const rows = [...reviewList.querySelectorAll(':scope > [data-context-room-review-entry]')]
+        .map((row, index) => ({ row, index, owner: contextHubProjectForItem(items.get(row.dataset.contextRoomReviewEntry)) }))
+        .sort((left, right) => rank(left.owner) - rank(right.owner) || left.index - right.index);
+      const anchor = rows[0] && document.createComment('');
+      rows[0]?.row.before(anchor);
+      for (const { row } of rows) anchor.before(row);
+      anchor?.remove();
+      // The count is the project's whole review, not the rows shown (the list stops at 80).
+      const proposals = (key) => all.filter((item) => (item.type === 'local-proposal' || item.type === 'local-asset') && contextHubProjectForItem(item)?.projectKey === key).length;
+      rows.forEach(({ row, owner }, index) => {
+        if (!owner || owner.projectKey === rows[index - 1]?.owner?.projectKey) return;
         const header = document.createElement('div');
         header.className = 'pp-group';
         header.dataset.ppGroup = owner.projectKey;
-        header.innerHTML = '<strong>' + escapeHtml(owner.title || owner.id) + ' · ' + counts.get(owner.projectKey) + '</strong><button class="secondary" type="button">Open project ›</button>';
+        header.innerHTML = '<strong>' + escapeHtml(owner.title || owner.id) + ' · ' + (reviewCount(owner) + proposals(owner.projectKey)) + '</strong><button class="secondary" type="button">Open project ›</button>';
         header.addEventListener('click', (event) => {
           event.stopPropagation();
           void openGlobalProjectExplorer(owner).catch((error) => setStatus(error.message));

@@ -48,6 +48,9 @@ function levelOf(application) {
 export function groupAgentLevels(results, { root = "" } = {}) {
   const levels = new Map([["global", []], ["root", []]]);
   const seen = new Set();
+  // File paths come from realpath: compare them to the real root too (a root under a link, /var -> /private/var).
+  let base = root;
+  try { if (root) base = fs.realpathSync(root); } catch {}
   for (const { effective } of results) {
     const entries = effective?.cost?.entries || {};
     for (const kind of ["instructions", "skills"]) {
@@ -57,7 +60,7 @@ export function groupAgentLevels(results, { root = "" } = {}) {
         const level = levelOf(application);
         const cost = entries[resource.id] || {};
         const absolute = String(resource.metadata?.absolutePath || "");
-        const relPath = root && absolute ? path.relative(root, absolute).replaceAll("\\", "/") : "";
+        const relPath = base && absolute ? path.relative(base, absolute).replaceAll("\\", "/") : "";
         if (!levels.has(level)) levels.set(level, []);
         levels.get(level).push({
           kind: kind === "skills" ? "skill" : "instruction",

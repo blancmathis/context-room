@@ -170,14 +170,32 @@ test("@layout at 820 px the Explorer does not cover the project page and the bac
 
   // A project with nothing to review has no « To review » band.
   await expect(page.locator("#reviewQueuePanel")).toBeVisible();
-  await page.evaluate(() => {
+  // A Hub snapshot may still land after boot and bring the counts back: empty the project until the band hides.
+  await expect.poll(() => page.evaluate(async () => {
+    const key = state.globalExplorerProjectKey;
     for (const project of state.contextHub.projects) {
-      if (project.projectKey === state.globalExplorerProjectKey) Object.assign(project, { localReviewCount: 0, sharedProposalCount: 0 });
+      if (project.projectKey === key) Object.assign(project, { localReviewCount: 0, sharedProposalCount: 0 });
     }
+    state.contextHub.items = state.contextHub.items.filter((item) => contextHubProjectForItem(item)?.projectKey !== key);
+    state.contextHub.workingDrafts = [];
     syncProjectPage();
-  });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return document.getElementById("reviewQueuePanel").classList.contains("pp-none");
+  })).toBe(true);
   await expect(page.locator("#reviewQueuePanel")).toBeHidden();
   await expect(head.locator(".pp-count")).toHaveText("Nothing to review");
+
+  // A local proposal alone keeps the band: it is work to review.
+  const band = await page.evaluate(async () => {
+    const project = state.contextHub.projects.find((item) => item.projectKey === state.globalExplorerProjectKey);
+    state.contextHub.items.push({ type: "local-proposal", id: "e2e-proposal", projectKey: project.projectKey, projectId: project.id, title: "Proposal", fileCount: 1 });
+    syncProjectPage();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { counts: reviewCountOf(project), hidden: document.getElementById("reviewQueuePanel").classList.contains("pp-none") };
+    function reviewCountOf(item) { return Number(item.localReviewCount || 0) + Number(item.sharedProposalCount || 0); }
+  });
+  expect(band, "only a local proposal: " + JSON.stringify(band)).toEqual({ counts: 0, hidden: false });
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
 });
 
 test("@layout To review groups the files per project and Open project leads to that page", async ({ page }) => {
@@ -188,6 +206,14 @@ test("@layout To review groups the files per project and Open project leads to t
   const header = page.locator("#reviewQueue > .pp-group").first();
   await expect(header).toBeVisible();
   await expect(header.locator("strong")).toHaveText(/ · \d+$/);
+  // One header per project, and its count is the project's whole review.
+  const groups = await page.evaluate(() => [...document.querySelectorAll("#reviewQueue > .pp-group")].map((node) => {
+    const project = state.contextHub.projects.find((item) => item.projectKey === node.dataset.ppGroup);
+    const own = contextHubReviewItems().filter((item) => (item.type === "local-proposal" || item.type === "local-asset") && contextHubProjectForItem(item)?.projectKey === project.projectKey).length;
+    return { key: node.dataset.ppGroup, shown: Number(node.querySelector("strong").textContent.split(" · ").pop()), total: Number(project.localReviewCount || 0) + Number(project.sharedProposalCount || 0) + own };
+  }));
+  expect(new Set(groups.map((group) => group.key)).size, JSON.stringify(groups)).toBe(groups.length);
+  for (const group of groups) expect(group.shown, JSON.stringify(group)).toBe(group.total);
   const title = (await header.locator("strong").textContent()).replace(/ · \d+$/, "");
   await header.getByRole("button", { name: "Open project ›" }).click();
   await expect(page.locator("#projectPageHead h2")).toHaveText(title);
