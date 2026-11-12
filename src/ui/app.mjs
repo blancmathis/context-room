@@ -388,7 +388,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
     /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen only (Go to › New note on a keyboard). */
     #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
-    @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none; } }
+    @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
