@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
@@ -62,4 +63,34 @@ test("each browser shard preserves layout, smoke, and accessibility coverage", (
   const performance = workflow.jobs.browser.steps.find((step) => step.name === "Test performance budgets");
   assert.equal(performance.if, "matrix.project == 'chromium-desktop'");
   assert.equal(performance.run, "npm run test:perf");
+});
+
+const prWorkflow = parse(readFileSync(".github/workflows/pr.yml", "utf8"));
+
+test("pull requests run the fast gate; the full matrix runs on main, nightly and on demand", () => {
+  assert.deepEqual(Object.keys(workflow.on).sort(), ["push", "schedule", "workflow_dispatch"]);
+  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.deepEqual(prWorkflow.on, { pull_request: { branches: ["main"] } });
+  assert.deepEqual(prWorkflow.concurrency, { group: "ci-${{ github.ref }}", "cancel-in-progress": true });
+  assert.deepEqual(prWorkflow.permissions, {});
+  assert.deepEqual(prWorkflow.jobs.unit.strategy.matrix.shard, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.ok(prWorkflow.jobs.unit.steps.some((step) => step.run === "npm test -- --shard=${{ matrix.shard }}/12"));
+  assert.ok(prWorkflow.jobs.browser.steps.some((step) => step.run === "npm run test:perf"));
+  assert.equal(prWorkflow.jobs.gate.name, "PR gate");
+  assert.deepEqual(prWorkflow.jobs.gate.needs, ["unit", "browser"]);
+  assert.equal(prWorkflow.jobs.gate.if, "always()");
+  for (const job of Object.values(prWorkflow.jobs)) {
+    assert.deepEqual(job.permissions, job === prWorkflow.jobs.gate ? {} : { contents: "read" });
+    for (const step of job.steps) if (step.uses) assert.match(step.uses, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/);
+  }
+});
+
+test("the PR unit shards together run every test process exactly once", () => {
+  const list = (...args) => execFileSync(process.execPath, ["scripts/run-tests.mjs", ...args, "--list"], { encoding: "utf8" })
+    .trim().split("\n").map((line) => line.split("\t")[1]);
+  const all = list();
+  const sharded = Array.from({ length: 12 }, (_, index) => list(`--shard=${index + 1}/12`)).flat();
+  assert.ok(all.length > 100);
+  assert.deepEqual([...sharded].sort(), [...all].sort());
+  assert.ok(all.includes("test/ci_workflow.test.mjs"));
 });
