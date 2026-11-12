@@ -7063,7 +7063,7 @@ function renderGlobalExplorerContextMenu(x, y) {
         : "")
       + (target.kind === "project" ? '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>' : '')
       + (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-local-graph>Open local graph</button>' : '')
-      + (target.kind === "file" || target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-pin>Pin to project page</button>' : '')
+      + (project && (target.kind === "file" || target.kind === "folder") ? '<button class="secondary" type="button" data-global-context-pin>Pin to project page</button>' : '')
       + '<button class="secondary" type="button" data-global-context-health title="Review configuration, documentation, hook, and review-safety issues for this project">View Context health</button>'
       + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')

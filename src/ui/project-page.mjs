@@ -128,36 +128,70 @@ export function createProjectPage() {
   };
   const tilesOf = (project) => pages.get(project.projectKey)?.page.tiles || defaultProjectTiles(rootFolders(project) || []);
 
-  async function load(project) {
-    if (pages.has(project.projectKey)) return;
-    pages.set(project.projectKey, { page: { version: 1, tiles: null }, revision: '', loading: true });
-    try {
-      const data = await api('/api/context-hub/project-page?project=' + encodeURIComponent(project.projectKey));
-      pages.set(project.projectKey, data);
-    } catch (error) {
-      pages.delete(project.projectKey);
-      setStatus(error.message);
-    }
-    sync();
+  // One chain per project: a save waits for the load and for the previous save,
+  // then sends the revision the server returned last, so quick edits never 409.
+  const chains = new Map();
+  const revisions = new Map();
+  const enqueue = (key, step) => {
+    const run = (chains.get(key) || Promise.resolve()).then(step);
+    chains.set(key, run);
+    return run;
+  };
+
+  function load(project) {
+    const key = project.projectKey;
+    if (pages.has(key)) return chains.get(key);
+    pages.set(key, { page: { version: 1, tiles: null }, revision: '', loading: true });
+    return enqueue(key, async () => {
+      try {
+        const data = await api('/api/context-hub/project-page?project=' + encodeURIComponent(key));
+        revisions.set(key, data.revision || '');
+        if (pages.get(key)?.loading) pages.set(key, data);
+      } catch (error) {
+        pages.delete(key);
+        setStatus(error.message);
+      }
+      sync();
+    });
   }
 
-  async function save(project, next) {
-    const stored = pages.get(project.projectKey);
-    pages.set(project.projectKey, { ...stored, page: { version: 1, tiles: next } });
+  function save(project, next) {
+    const key = project.projectKey;
+    const stored = pages.get(key);
+    pages.set(key, { ...stored, page: { version: 1, tiles: next }, loading: false });
     sync();
-    try {
-      const data = await api('/api/context-hub/project-page', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: project.projectKey, page: { tiles: next }, expectedRevision: stored?.revision || '' }),
-      });
-      pages.set(project.projectKey, data);
-    } catch (error) {
-      pages.delete(project.projectKey);
-      setStatus(error.message);
-      void load(project);
+    const run = enqueue(key, async () => {
+      try {
+        const data = await api('/api/context-hub/project-page', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ project: key, page: { tiles: next }, expectedRevision: revisions.get(key) || '' }),
+        });
+        revisions.set(key, data.revision || '');
+        if (chains.get(key) === run) pages.set(key, data);
+      } catch (error) {
+        if (chains.get(key) === run) {
+          pages.delete(key);
+          revisions.delete(key);
+          setStatus(error.message);
+          void load(project);
+        }
+      }
+      sync();
+    });
+    return run;
+  }
+
+  // A path is asked for only once its parent listing shows it: a gone path never costs a 404.
+  async function listedInProject(project, path, type) {
+    const parts = path.split('/');
+    for (let index = 0; index < parts.length; index += 1) {
+      const child = parts.slice(0, index + 1).join('/');
+      const listing = await loadGlobalProjectExplorerPage(project, { directory: parts.slice(0, index).join('/') });
+      const wanted = index === parts.length - 1 ? type : 'directory';
+      if (!(listing?.entries || []).some((entry) => entry.type === wanted && entry.path === child)) return false;
     }
-    sync();
+    return true;
   }
 
   async function revealFolder(project, folder) {
@@ -190,8 +224,11 @@ export function createProjectPage() {
   function openTile(project, tile) {
     const worktree = globalProjectSelectedWorktree(project);
     if (tile.type === 'file') {
-      if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
-      openContextHubProject(worktree?.id || project.id, { filePath: tile.path }).catch((error) => setStatus(error.message));
+      listedInProject(project, tile.path, 'file').then((found) => {
+        if (!found) return setStatus(tile.path + ' is not in this project any more');
+        if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
+        return openContextHubProject(worktree?.id || project.id, { filePath: tile.path });
+      }).catch((error) => setStatus(error.message));
     } else if (tile.type === 'folder') void revealFolder(project, tile.path).catch((error) => setStatus(error.message));
     else if (tile.type === 'agents') openAgents(project);
     else if (tile.type === 'recent') openContextHubProjectPicker(null, { purpose: 'open' });
@@ -307,7 +344,7 @@ export function createProjectPage() {
     sync,
     /** Pins a file or a folder of the tree (⋯ › Pin to project page). */
     async pin(project, target) {
-      if (!pages.has(project.projectKey)) await load(project);
+      await load(project);
       const list = tilesOf(project);
       const next = addProjectTile(list, { type: target.kind === 'folder' ? 'folder' : 'file', path: target.path, size: 'half' });
       if (next === list) return setStatus('Already on the project page');
