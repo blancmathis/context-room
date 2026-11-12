@@ -1,0 +1,86 @@
+name: PR gate
+
+# Fast gate for pull requests (about two minutes). The full matrix (Node 20, 22.23.0 and 24,
+# four browsers, Soak) runs in ci.yml on every push to main and nightly.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  unit:
+    name: Unit ${{ matrix.shard }}/12
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Test Context Room (one shard)
+        # Same private /proc as the full CI; see ci.yml.
+        env:
+          CONTEXT_ROOM_TEST_PID_NAMESPACE: "1"
+        run: npm test -- --shard=${{ matrix.shard }}/12
+
+  browser:
+    name: Chromium smoke and size budgets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Boot the app and check JS/CSS brotli budgets
+        run: npm run test:perf
+      - name: Upload Browser QA artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: playwright-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  gate:
+    name: PR gate
+    if: always()
+    needs: [unit, browser]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every PR check
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          test "$UNIT_RESULT" = success
+          test "$BROWSER_RESULT" = success

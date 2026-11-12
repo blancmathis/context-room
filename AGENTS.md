@@ -55,6 +55,12 @@ npm test
 node bin/context-room.mjs doctor --root .
 ```
 
+GitHub CI has two workflows:
+
+- `.github/workflows/pr.yml` (pull requests, about 2 min): Node 24 unit tests in 12 shards (`npm test -- --shard=i/12`), plus a Chromium boot with the JS/CSS brotli budgets (`npm run test:perf`). Its single required check is `PR gate`. A new push cancels the older run.
+- `.github/workflows/ci.yml` (push to `main`, nightly, manual; about 16 min): Node 20, 22.23.0 and 24, Browser QA on four browsers, and Soak, behind `CI gate`. A red run on `main` is fixed first.
+- `scripts/run-tests.mjs` balances shards with `JOB_SECONDS`; update it when a test file becomes much slower. `node scripts/run-tests.mjs --shard=1/12 --list` prints one shard.
+
 For package/release work, also run:
 
 ```bash

@@ -1,10 +1,13 @@
 name: CI
 
+# Full matrix: every Node runtime, four browsers and Soak (~16 min). It runs after each merge to main,
+# nightly and on demand. Pull requests run the fast gate in pr.yml instead.
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions: {}
 
