@@ -1478,6 +1478,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     #docReader[data-tap-edit] .markdown-line, #docReader[data-tap-edit].plain-text-view { cursor: text; }
     .doc-save-failed { margin: 0; padding: 6px 12px; color: var(--danger, #b42318); }
     .doc-save-failed button { border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+    @media (pointer: coarse) { .doc-save-failed button { min-height: 44px; min-width: 44px; } }
     .file-header-copy .diff-meta { white-space: normal; line-height: 1.35; }
     .file-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
     .file-actions-loading { min-width: min(340px, 44vw); min-height: 36px; justify-content: flex-end; pointer-events: none; }
@@ -15594,6 +15595,7 @@ async function selectStartupContextFile(order, options = {}) {
   }
   if (!order) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-context-" + order;
@@ -15685,6 +15687,7 @@ async function selectStartupSkillFile(folderOrder, skillName, options = {}) {
   }
   if (!folderOrder || !skillName) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-skill-" + folderOrder + "-" + skillName;
@@ -15776,6 +15779,7 @@ async function selectStartupHookFile(order, options = {}) {
   }
   if (!order) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-hook-" + order;
@@ -15851,7 +15855,7 @@ async function selectStartupHookFile(order, options = {}) {
 
 function createStartupSkillFromPanel(folderOrder) {
   if (!folderOrder) return;
-  if (state.dirty && !confirm("You have unsaved changes. Create a new skill?")) return;
+  if (!saveBeforeLeaving(() => createStartupSkillFromPanel(folderOrder), "You have unsaved changes. Create a new skill?")) return;
   state.startupSkillCreateFolder = String(folderOrder);
   renderHubFolders();
   focusStartupSkillCreateInput(folderOrder);
@@ -16547,7 +16551,7 @@ function showProposalReview({ preparingItem = null } = {}) {
     showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Return to the proposal files?")) return false;
+  if (!saveBeforeLeaving(() => showProposalReview(arguments[0]), "You have unsaved changes. Return to the proposal files?")) return false;
   const previousPage = state.page;
   const nextReviewKey = preparingItem?.id || preparingItem?.proposal || state.sharedContext?.review?.proposal || state.sharedContext?.review?.branch || "proposal";
   const reviewChanged = state.proposalReviewKey !== nextReviewKey;
@@ -17364,7 +17368,7 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
     else showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Create a new document?")) return;
+  if (!saveBeforeLeaving(() => showNewDocPage(arguments[0]), "You have unsaved changes. Create a new document?")) return;
   state.page = "new-doc";
   state.settingsOpen = false;
   state.pendingMarkdown = { title, path, directory };
@@ -20675,7 +20679,7 @@ function showSettingsPage() {
     else showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Open settings?")) return;
+  if (!saveBeforeLeaving(showSettingsPage, "You have unsaved changes. Open settings?")) return;
   state.page = "settings";
   state.settingsOpen = true;
   state.pendingMarkdown = null;
@@ -20719,6 +20723,7 @@ async function handleBrandHomeAction() {
   const homeUrl = contextRoomHomeUrl();
   if (homeUrl) {
     await waitForReviewFinalizationBeforeNavigation();
+    if (state.dirty) await flushAutosave();
     if (state.dirty && !confirm("You have unsaved changes. Return to the main Context Room?")) return;
     assignWorkspaceLocation(homeUrl);
     return;
@@ -21009,6 +21014,7 @@ async function showGraphPage(options = {}) {
     else showHome();
     return false;
   }
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Open Graph?")) return;
   const requestedScope = ["global", "project", "local"].includes(options.scope) ? options.scope : state.graphScope;
   state.graphVisualMode = Boolean(options.visual);
@@ -21962,7 +21968,7 @@ async function goHistory(delta) {
 }
 
 function goHub({ replaceProposalHistory = false, restoreProposalFocus = false } = {}) {
-  if (state.dirty && !confirm("You have unsaved changes. Return to hub?")) return;
+  if (!saveBeforeLeaving(() => goHub(arguments[0]), "You have unsaved changes. Return to hub?")) return;
   const adoptedReviewReturnUrl = state.contextRoomReviewDocumentScope
     ? contextRoomReturnUrl() || contextRoomHubReturnUrl(window.location.href)
     : "";
@@ -22023,9 +22029,11 @@ function updateHeader() {
   document.querySelector(".file-panel .file-title")?.classList.toggle("unsaved", state.dirty);
   const failed = document.querySelector(".doc-save-failed");
   if (state.saveError && state.dirty) {
-    if (!failed) document.querySelector(".file-panel > header")?.insertAdjacentHTML("afterend", '<p class="doc-save-failed" role="alert">Not saved · <button type="button" data-save-retry>Retry</button></p>');
+    if (!failed) {
+      document.querySelector(".file-panel > header")?.insertAdjacentHTML("afterend", '<p class="doc-save-failed" role="alert">Not saved · <button type="button" data-save-retry>Retry</button></p>');
+      document.querySelector("[data-save-retry]")?.addEventListener("click", () => flushAutosave());
+    }
     document.querySelector(".doc-save-failed")?.setAttribute("title", state.saveError);
-    document.querySelector("[data-save-retry]")?.addEventListener("click", () => flushAutosave());
   } else failed?.remove();
   updateActionBanner();
 }
@@ -22248,30 +22256,58 @@ function renderViewer() {
 
 // R2 « a tap edits »: no mode button. A tap or click on the rendered doc puts the caret there; the text saves
 // itself 2 s after the last key and at once when the caret leaves; leaving shows the rendered doc again.
-let docSaveTimer = 0, docSaving = null;
+let docSaveTimer = 0, docSaving = null, docFilesTimer = 0, docLeavingPage = false;
+// A disk change or conflict stops saving: « ● » stays and the conflict panel decides (no retry loop, no rebuild).
+function docSaveBlocked() {
+  return Boolean(activeFileConflict() || activeExternalChange());
+}
 function scheduleDocAutosave() {
   window.clearTimeout(docSaveTimer);
-  if (state.dirty) docSaveTimer = window.setTimeout(flushAutosave, state.autosaveDelayMs || 2000);
+  if (state.dirty && !docSaveBlocked()) docSaveTimer = window.setTimeout(flushAutosave, state.autosaveDelayMs || 2000);
 }
-function flushAutosave() {
+function flushAutosave(options = {}) {
   window.clearTimeout(docSaveTimer);
-  if (docSaving) return docSaving.then(() => state.dirty && flushAutosave());
-  if (!state.dirty || !state.selected || state.page !== "file") return Promise.resolve();
-  return docSaving = saveCurrent()
+  if (docSaving) return docSaving.then(() => state.dirty && flushAutosave(options));
+  if (!state.dirty || !state.selected || state.page !== "file" || docSaveBlocked()) return Promise.resolve();
+  return docSaving = saveCurrent({ keepalive: options.keepalive })
     .then(() => { if (state.dirty) scheduleDocAutosave(); }, (error) => { state.saveError = error.message || "Save failed"; updateHeader(); })
     .finally(() => docSaving = null);
 }
+// Another page saves the doc first; the old question stays only when the text could not be written.
+function saveBeforeLeaving(again, question) {
+  if (!state.dirty) return true;
+  if (docLeavingPage) return false;
+  if (state.page !== "file" || docSaveBlocked()) return confirm(question);
+  docLeavingPage = true;
+  flushAutosave().finally(() => {
+    docLeavingPage = false;
+    if (!state.dirty) again();
+  });
+  return false;
+}
+// The tree refreshes after a quiet pause or when the caret leaves, not after every autosave (R2 review).
+function scheduleDocFilesRefresh(now = false) {
+  window.clearTimeout(docFilesTimer);
+  if (now || docFilesTimer) docFilesTimer = window.setTimeout(() => { docFilesTimer = 0; loadFiles().catch(() => {}); }, now ? 0 : 15000);
+}
+// A doc changed by an agent is read first: no tap edits it before the review choice (spec § 4.3, R2 review).
+// A first review (a doc never accepted, nothing changed since the baseline) stays editable, as before R2.
+function docAwaitingReview(path) {
+  const item = reviewQueueItemForPath(selectedStartupContextReviewPath(path) || path);
+  return Boolean(item?.reviewRequired && !item.initialReview && !(state.reviewModePath === path && state.reviewModeStatus === "verified"));
+}
 function docTapEditable() {
   const path = state.selected || "";
-  return !IS_HOSTED_CONTEXT_ROOM && state.page === "file" && state.mode === "view" && path && !(state.openingFilePath === path && state.fileContentReadyPath !== path) && !state.selectedStartupContext && !state.selectedReadOnly && !handAnnotation
-    && !reviewActionForSelectedFile() && !activeExternalChange() && !activeFileConflict() && !isHtmlDocumentPath(path) && !isImageDocumentPath(path) && !/\.(?:mmd|mermaid)$/i.test(path);
+  return !IS_HOSTED_CONTEXT_ROOM && state.page === "file" && state.mode === "view" && path && !(state.openingFilePath === path && state.fileContentReadyPath !== path) && !state.selectedStartupContext?.readOnly && !state.selectedReadOnly && !handAnnotation
+    && !docAwaitingReview(path) && !reviewActionForSelectedFile() && !activeExternalChange() && !activeFileConflict() && !isHtmlDocumentPath(path) && !isImageDocumentPath(path);
 }
 function wireDocTapToEdit() {
-  const reader = el("docReader"), editor = el("docEditor");
+  // A Mermaid file is edited from its source text (Source or Split view).
+  const reader = el("docReader") || document.querySelector(".file-panel [data-mermaid-document].standalone .mermaid-source"), editor = el("docEditor");
   if (reader && docTapEditable()) {
     reader.dataset.tapEdit = "";
     reader.addEventListener("pointerdown", (event) => state.docTapDown = { x: event.clientX, y: event.clientY });
-    reader.addEventListener("click", editDocAtTap);
+    reader.addEventListener("click", (event) => editDocAtTap(event, reader));
   }
   if (!editor) return;
   editor.addEventListener("keydown", (event) => { if (event.key === "Escape" && !event.defaultPrevented) leaveDocEdit(true); });
@@ -22279,14 +22315,14 @@ function wireDocTapToEdit() {
     if (editor.isConnected && !document.querySelector(".file-panel")?.contains(document.activeElement)) leaveDocEdit();
   }));
 }
-function editDocAtTap(event) {
+function editDocAtTap(event, reader) {
   const down = state.docTapDown;
   state.docTapDown = null;
   if (event.button || event.defaultPrevented || isDocLinkModifierEventActive(event) || !docTapEditable() || String(window.getSelection?.() || "")
     || down && Math.hypot(event.clientX - down.x, event.clientY - down.y) >= 10
-    || event.target.closest("a, button, summary, input, select, label, nav, [data-doc-link], .mermaid-document")) return;
-  if (!docEditorCore) return void loadDocEditor().then((core) => core && editDocAtTap(event));
-  const offset = docEditorCore.readerSourceOffset(event, el("editor").value);
+    || event.target.closest("a, button, summary, input, select, label, nav, [data-doc-link], .mermaid-document:not(.standalone), .mermaid-render, figcaption, .diagram-links")) return;
+  if (!docEditorCore) return void loadDocEditor().then((core) => core && editDocAtTap(event, reader));
+  const offset = docEditorCore.readerSourceOffset(event, el("editor").value, reader);
   if (!Number.isInteger(offset)) return;
   const line = event.target.closest("[data-line-index]"), top = line?.getBoundingClientRect().top;
   state.mode = "edit";
@@ -22313,6 +22349,7 @@ async function leaveDocEdit(escape = false) {
   state.mode = "view";
   renderViewer();
   restoreReadingPlace(place);
+  if (docFilesTimer) scheduleDocFilesRefresh(true);
 }
 
 function renderFileLoadingState(file = {}) {
@@ -26176,8 +26213,10 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   const expectedContentHash = options.expectedContentHash || activeFileConflict()?.diskHash || activeExternalChange()?.diskHash || state.savedHash;
   if (!expectedContentHash) throw new Error("Refresh this file before saving it.");
   const startup = startupSelectionRequest();
+  const keepalive = Boolean(options.keepalive);
   if (startup?.type === "startup-context") {
     return api("/api/startup-context/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
@@ -26185,6 +26224,7 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   }
   if (startup?.type === "startup-skill") {
     return api("/api/startup-skills/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ folder: startup.folder, skill: startup.skill, content, expectedContentHash }),
@@ -26192,12 +26232,14 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   }
   if (startup?.type === "startup-hook") {
     return api("/api/startup-hooks/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
     });
   }
   return api("/api/file/save-reviewed", {
+    keepalive,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path, content, expectedContentHash }),
@@ -26473,7 +26515,7 @@ async function saveCurrent(options = {}) {
   try {
     const viewState = captureEditorViewState();
     const content = activeEditor().value;
-    const result = await writeSelectedDiskFile(content);
+    const result = await writeSelectedDiskFile(content, state.selected, { keepalive: options.keepalive && content.length < 60000 });
     state.saved = content;
     state.savedHash = result.contentHash;
     workspaceUpdate("file-saved", { path: state.selected });
@@ -26484,11 +26526,11 @@ async function saveCurrent(options = {}) {
     state.saveError = "";
     // While the caret is in the text, saving leaves the view alone: caret, keyboard and undo history stay (R2).
     const rebuild = state.mode !== "edit" || options.forceConflict || options.forceExternalChange;
-    await loadFiles();
     if (rebuild) {
+      await loadFiles();
       renderViewer();
       restoreEditorViewState(viewState);
-    }
+    } else scheduleDocFilesRefresh();
     updateHeader();
   } catch (error) {
     if (error.code === "file_revision_conflict") {
@@ -26997,7 +27039,7 @@ document.addEventListener("keyup", (event) => setDocLinkModifierActive(isDocLink
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     setDocLinkModifierActive(false);
-    flushAutosave();
+    flushAutosave({ keepalive: true });
     return;
   }
   if (IS_HOSTED_CONTEXT_ROOM) return;
@@ -28207,7 +28249,7 @@ window.addEventListener("blur", () => {
 window.addEventListener("popstate", () => {
   if (!state.workspaceIdentityReady) return;
   if (state.workspaceSyncedUrl && window.location.href === state.workspaceSyncedUrl) return;
-  void applyWorkspaceUrlState({ reason: "history" });
+  void flushAutosave().then(() => applyWorkspaceUrlState({ reason: "history" }));
 });
 document.addEventListener("pointerdown", unlockContextRoomAudio, { capture: true, once: true, passive: true });
 document.addEventListener("keydown", unlockContextRoomAudio, { capture: true, once: true });

@@ -7471,7 +7471,10 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /flashSavedButton\(el\("saveSettings"\), "Saved"\)/);
   // R2: a doc has no Edit, Done or Save button; it saves itself, and « ● » by the name is the only sign.
   assert.doesNotMatch(html, /data-file-mode=|type="button" data-file-save|Save your changes first/);
-  assert.match(html, /function flushAutosave\(\)/);
+  assert.match(html, /function flushAutosave\(options = \{\}\)/);
+  // R2 review: a doc in « To review » is not edited by a tap; leaving a doc for another page saves it first.
+  assert.match(html, /function docTapEditable\(\)[\s\S]{0,500}!docAwaitingReview\(path\)/);
+  assert.match(html, /saveBeforeLeaving\(\(\) => goHub\(arguments\[0\]\)/);
   assert.match(html, /\.file-title\.unsaved::after \{ content: " ●";/);
   assert.match(html, /el\("saveSettings"\)\?\.addEventListener\("click", \(\) => saveSettings\(\)\.catch\(\(error\) => setStatus\(error\.message\)\)\)/);
   assert.match(html, /function autoOpenGitDiffEnabled\(\)/);
@@ -7625,7 +7628,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /class="markdown-link-label"/);
   assert.match(html, /class="markdown-link-target"/);
   assert.match(html, /\.markdown-editor-highlight \.markdown-link-target\s*\{[^}]*color:\s*color-mix/);
-  assert.match(editorSource, /state\.markdownHighlightLastText = docEditor\.value;/);
+  assert.match(editorSource, /state\.markdownHighlightLastText = el\("editor"\)\.value;/);
   assert.doesNotMatch(html, /syncMarkdownEditorHighlight/);
   assert.match(html, /function syncMarkdownEditorScroll\(\)/);
   assert.match(html, /function scrollMarkdownViewToNeedle\(needle, type = "text"\)/);

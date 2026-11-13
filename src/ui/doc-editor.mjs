@@ -7,7 +7,7 @@ export function createDocEditor(app) {
     const docEditor = el("docEditor");
     if (!docEditor) return;
     prepareMarkdownEditorHistory(docEditor);
-    state.markdownHighlightLastText = docEditor.value;
+    state.markdownHighlightLastText = el("editor").value;
     wireEditorFind(docEditor);
     syncMarkdownEditorScroll();
     docEditor.addEventListener("beforeinput", (event) => captureMarkdownEditorHistory(docEditor, event));
@@ -41,6 +41,8 @@ export function createDocEditor(app) {
     docEditor.addEventListener("pointercancel", finishMarkdownEditorPointerSelection);
     wireMarkdownEditorDocLinks(docEditor);
     updateMarkdownEditorVisualSelection();
+    // Text typed before this module loaded counts as a change (R7 review).
+    if (docEditor.value !== el("editor").value) syncMarkdownEditorValue(docEditor);
   }
 
   function markdownEditorHistorySnapshot(editor) {
@@ -309,19 +311,14 @@ export function createDocEditor(app) {
     }
   }
 
-  // Tap on the rendered doc (R2): source offset of the tapped point. The reader hides Markdown marks, so the text
-  // before the caret is matched in order against the source line; marks it skips (#, **, [](…)) are passed over.
-  function readerSourceOffset(event, text) {
-    const reader = el("docReader");
+  // Tap on the rendered doc (R2): source offset of the tapped point (`reader` = #docReader, or the source of a
+  // Mermaid file). A rendered line hides its Markdown marks: see sourceColumnForRendered.
+  function readerSourceOffset(event, text, reader = el("docReader")) {
     const line = event.target.closest?.("[data-line-index]");
     if (line && reader?.contains(line)) {
-      const lines = String(text).split("\n"), index = Number(line.dataset.lineIndex), source = lines[index] ?? "";
+      const lines = String(text).split("\n"), index = Number(line.dataset.lineIndex);
       if (!Number.isInteger(index) || index >= lines.length) return null;
-      let column = 0;
-      for (const char of (line.textContent || "").slice(0, renderedCaretOffsetAtPoint(line, event.clientX, event.clientY))) {
-        const found = source.indexOf(char, column);
-        if (found >= 0 && found - column < 40) column = found + 1;
-      }
+      const column = sourceColumnForRendered((line.textContent || "").slice(0, renderedCaretOffsetAtPoint(line, event.clientX, event.clientY)), lines[index]);
       return lines.slice(0, index).reduce((total, current) => total + current.length + 1, 0) + column;
     }
     return reader?.matches("pre") ? Math.min(String(text).length, renderedCaretOffsetAtPoint(reader, event.clientX, event.clientY)) : null;
@@ -501,4 +498,20 @@ export function createDocEditor(app) {
   }
 
   return { wireRenderedMarkdownEditor, editorHistoryAvailable, applyMarkdownEditorHistory, markdownEditorDomPosition, updateMarkdownEditorVisualSelection, openEditorFind, readerSourceOffset };
+}
+
+// Column in a Markdown source line after the rendered text `prefix`. Each rendered character is matched in order;
+// marks the reader hides (#, **, `) are passed over, and a link target `](…)` never takes a match, however long.
+export function sourceColumnForRendered(prefix, source = "") {
+  const hidden = new Uint8Array(source.length);
+  for (const match of source.matchAll(/\]\([^)]*\)/g)) hidden.fill(1, match.index, match.index + match[0].length);
+  let column = 0;
+  for (const char of prefix) {
+    for (let at = column, seen = 0; at < source.length && seen < 40; at++) {
+      if (hidden[at]) continue;
+      if (source[at] === char) { column = at + 1; break; }
+      seen++;
+    }
+  }
+  return column;
 }

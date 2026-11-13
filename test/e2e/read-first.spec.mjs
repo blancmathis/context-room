@@ -311,3 +311,98 @@ test('explorer search matches accented names without accents', async ({ page }) 
     await expect(page.locator('#files [data-file-path="docs/Original.md"]')).toHaveCount(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+// R2 review: a tap never edits a doc that waits in « To review », even opened from the tree, outside review mode.
+test('a doc waiting in To review is not edited by a tap', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Other.md');
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    fs.writeFileSync(file, '# Other document\n\nAgent rewrote this line.\n');
+    await expect.poll(() => page.evaluate(async () => {
+      applyBackgroundReportPayload(await api('/api/reports'));
+      return Boolean(state.docqa?.queue?.some((item) => item.path === 'docs/Other.md' && item.reviewRequired));
+    }), { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => { state.autosaveDelayMs = 100; return selectFile('docs/Other.md'); });
+    await expect(page.locator('#docReader')).toContainText('Agent rewrote this line.');
+    await expect(page.locator('#docReader[data-tap-edit]')).toHaveCount(0);
+    await page.locator('#docReader .markdown-line', { hasText: 'Agent rewrote this line.' }).click();
+    await page.keyboard.type('x');
+    await page.waitForTimeout(600);
+    await expect(page.locator('#docEditor')).toHaveCount(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe('# Other document\n\nAgent rewrote this line.\n');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('a finger drag on the doc never opens the editor; a short tap does', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await expect(page.locator('#docReader[data-tap-edit]')).toBeVisible();
+    const tap = (dy) => page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).evaluate((line, dy) => {
+      const rect = line.getBoundingClientRect(), x = rect.left + 20, y = rect.top + rect.height / 2;
+      line.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', clientX: x, clientY: y }));
+      line.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y + dy }));
+    }, dy);
+    await tap(40);
+    await page.waitForTimeout(300);
+    await expect(page.locator('#docEditor')).toHaveCount(0);
+    await tap(2);
+    await expect(page.locator('#docEditor')).toBeFocused();
+    // In the editor, a finger that moves does not move the caret.
+    const before = await page.locator('#docEditor').evaluate((node) => node.selectionStart);
+    await page.locator('#docEditor').evaluate((node) => {
+      const rect = node.getBoundingClientRect(), x = rect.left + 30, y = rect.top + 10;
+      node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 7, pointerType: 'touch', clientX: x, clientY: y }));
+      node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7, pointerType: 'touch', clientX: x, clientY: y + 60 }));
+    });
+    expect(await page.locator('#docEditor').evaluate((node) => node.selectionStart)).toBe(before);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('a failed save says Not saved · Retry, and Retry writes the text', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Original.md');
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => { state.autosaveDelayMs = 100; return selectFile('docs/Original.md'); });
+    await page.route('**/api/file/save-reviewed', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"disk full"}' }));
+    await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
+    const editor = page.locator('#docEditor');
+    await editor.evaluate((node) => node.setSelectionRange(node.value.length, node.value.length));
+    await editor.pressSequentially('Kept.');
+    await expect(page.locator('.doc-save-failed')).toHaveText('Not saved · Retry');
+    await expect(page.locator('[data-save-retry]')).toHaveCount(1);
+    await expect(editor).toHaveValue(/Kept\./);
+    await page.unroute('**/api/file/save-reviewed');
+    await page.locator('[data-save-retry]').click();
+    await expect.poll(() => fs.readFileSync(file, 'utf8')).toContain('Kept.');
+    await expect(page.locator('.doc-save-failed')).toHaveCount(0);
+    await expect(page.locator('.file-panel .file-title')).not.toHaveClass(/unsaved/);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('a hidden tab or another page saves the doc at once, without a dialog', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Original.md');
+    page.on('dialog', (dialog) => { throw new Error('unexpected dialog: ' + dialog.message()); });
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => { state.autosaveDelayMs = 1e9; return selectFile('docs/Original.md'); });
+    await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
+    const editor = page.locator('#docEditor');
+    await editor.evaluate((node) => node.setSelectionRange(node.value.length, node.value.length));
+    await editor.pressSequentially('Hidden.');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      delete document.hidden;
+    });
+    await expect.poll(() => fs.readFileSync(file, 'utf8')).toContain('Hidden.');
+    await editor.pressSequentially(' Left.');
+    await page.evaluate(() => goHub());
+    await expect.poll(() => fs.readFileSync(file, 'utf8')).toContain('Hidden. Left.');
+    await expect.poll(() => page.evaluate(() => state.page)).not.toBe('file');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
