@@ -251,7 +251,8 @@ test('@smoke @assistant direct dictation starts once and retains its original so
   try {
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
     await page.evaluate(() => selectFile('docs/Original.md'));
-    await page.locator('[data-file-dictate]').dblclick();
+    // Dictate sits in the Discuss ▾ menu (R6); a double press must still start one dictation.
+    await page.locator('[data-file-dictate]').evaluate((button) => { button.click(); button.click(); });
     const pane = page.getByRole('complementary', { name: 'Original source dictation' });
     await expect(pane.getByRole('button', { name: 'Finish dictation', exact: true })).toBeVisible();
     expect(await page.evaluate(() => voiceContract.captures.length)).toBe(1);
@@ -326,10 +327,12 @@ test('@smoke @assistant direct Voice starts from the document and switching to D
   try {
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
     await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.locator('.file-actions summary[aria-label="More ways to discuss"]').click();
     await page.locator('[data-file-voice]').click();
     const pane = page.getByRole('complementary', { name: 'Original document conversation' });
     await expect(pane).toHaveAttribute('data-voice-state', 'listening');
     await expect(pane.getByRole('region', { name: 'Recovered recordings' })).toBeHidden();
+    await page.locator('.file-actions summary[aria-label="More ways to discuss"]').click();
     await page.locator('[data-file-dictate]').click();
     const dictation = page.getByRole('complementary', { name: 'Original source dictation' });
     await expect(dictation).toHaveAttribute('data-voice-state', 'off');

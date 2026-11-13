@@ -17,7 +17,7 @@ test('@smoke @assistant a hand annotation sends its exact passage and snapshot, 
   };
   try {
     await open();
-    await page.getByRole('button', { name: 'Annotate', exact: true }).click();
+    await page.locator('.file-actions summary[aria-label="More ways to discuss"]').click(); await page.getByRole('button', { name: 'Annotate', exact: true }).click();
     const bar = page.getByRole('toolbar', { name: 'Annotation' }), status = bar.getByRole('status');
     await expect(status).toContainText('Draw over a passage'); await expect(bar.getByRole('button', { name: 'Discuss this annotation' })).toBeDisabled();
     const box = await page.locator('#docReader .markdown-line[data-line-index="6"]').boundingBox();
@@ -27,7 +27,7 @@ test('@smoke @assistant a hand annotation sends its exact passage and snapshot, 
     await expect(bar.getByRole('button', { name: 'Discuss this annotation' })).toBeEnabled();
     await page.screenshot({ path: testInfo.outputPath('hand-annotation.png') });
 
-    await open(); await page.getByRole('button', { name: 'Annotate', exact: true }).click();
+    await open(); await page.locator('.file-actions summary[aria-label="More ways to discuss"]').click(); await page.getByRole('button', { name: 'Annotate', exact: true }).click();
     await expect(status).toContainText('Line 7 selected.', { timeout: 5000 });
     await bar.getByRole('button', { name: 'Discuss this annotation' }).click();
     const pane = page.getByRole('complementary', { name: 'Original document conversation' });
