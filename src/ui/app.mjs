@@ -14329,6 +14329,7 @@ function backgroundReportRenderKey(reports = {}) {
 }
 
 function applyBackgroundReportPayload(reports = {}) {
+  state.reportsApplied = (state.reportsApplied || 0) + 1;
   const nextRenderKey = backgroundReportRenderKey(reports);
   const changed = nextRenderKey !== state.backgroundReportRenderKey;
   state.backgroundReportRenderKey = nextRenderKey;
@@ -14363,11 +14364,13 @@ function renderAfterBackgroundReportPayload() {
   }
 }
 
+// A newer report applied meanwhile wins: this one was asked for at load, and WebKit can deliver it late (R2).
 function applyInitialReportsWhenReady(reportsRequest) {
+  const applied = state.reportsApplied;
   void reportsRequest.then((reports) => {
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+      if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || state.reportsApplied !== applied) return;
       state.bootMilestones.reportsReady = Date.now() - state.bootStartedAt;
       applyBackgroundReportPayload(reports);
       state.lastReportRefreshAt = Date.now();
