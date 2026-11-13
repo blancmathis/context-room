@@ -24411,7 +24411,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     return;
   }
-  if (req.method === "GET" && ["/api/context-hub/project-agents", "/api/context-hub/project-recent"].includes(url.pathname)) {
+  if (req.method === "GET" && ["/api/context-hub/project-agents", "/api/context-hub/project-recent", "/api/context-hub/project-tools"].includes(url.pathname)) {
     const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
     if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
     const project = registeredContextHubWorktree(requestedProjectId);
@@ -24427,6 +24427,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         .slice(0, 8)
         .map((file) => ({ path: file.path, updatedAt: file.updatedAt }));
       sendJson(res, 200, { files });
+      return;
+    }
+    if (url.pathname.endsWith("/project-tools")) {
+      // Skills and MCP servers of every provider, per level. Names and source files only: never a configuration value.
+      const { skillAndMcpLevels } = await import("./context_tools.mjs");
+      sendJson(res, 200, skillAndMcpLevels(project.root, { skip: (name) => shouldSkipProjectDiscoveryDirectory(name) }));
       return;
     }
     // What agents load, per level: one effective context at the root, then one walk for the subfolders

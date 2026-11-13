@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { test, expect } from "@playwright/test";
 
 function fixture() {
@@ -113,6 +114,80 @@ test("@layout shortcuts are edited on the page, pinned from the tree, and kept a
     await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/README.md");
   } finally {
     await resetTiles(page, data, projectKey).catch(() => {});
+  }
+});
+
+test("@layout Skills & MCP lists what each provider finds per level, flags a name seen twice and shows no MCP value", async ({ page }) => {
+  const data = fixture();
+  // The server of this run reads a temporary home (global-setup): the global skills and MCP servers go there only.
+  const home = path.join(path.dirname(data.projects.atlas.root), "home");
+  expect(home).toContain("context-room-ux-soak-");
+  const skill = (folder, body) => {
+    fs.mkdirSync(path.join(home, folder, "skills", "review"), { recursive: true });
+    fs.writeFileSync(path.join(home, folder, "skills", "review", "SKILL.md"), "---\nname: review\ndescription: Review a diff before a merge.\n---\n" + body + "\n");
+  };
+  const claudeJson = path.join(home, ".claude.json");
+  const before = fs.existsSync(claudeJson) ? fs.readFileSync(claudeJson) : null;
+  try {
+    skill(".claude", "Read the diff, then the tests.");
+    skill(".agents", "Another body for the same name.");
+    const local = { mcpServers: { notes: { command: "npx", env: { TOKEN: "s3cr3t-local" } } } };
+    fs.writeFileSync(claudeJson, JSON.stringify({
+      mcpServers: { github: { command: "npx", env: { TOKEN: "s3cr3t-global" } } },
+      projects: { [data.projects.atlas.root]: local, [fs.realpathSync(data.projects.atlas.root)]: local },
+    }));
+    await openAtlas(page, data);
+    const toggle = page.locator("#projectPageHead [data-pp-tools]");
+    await toggle.click();
+    const panel = page.locator("#projectSkillsMcp");
+    await expect(panel).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    // Skills, every provider: two global files share a name; OpenCode reads both, so each row carries the warning.
+    const global = panel.locator('[data-sm-level="global"]');
+    await expect(global.locator("summary")).toContainText("Every project on this device · 2 skills");
+    await expect(global.locator("summary")).toContainText("at start");
+    await expect(global.locator(".sm-list li")).toHaveCount(2);
+    await expect(global.locator(".sm-list li").first()).toContainText("~/.agents/skills/review/SKILL.md");
+    await expect(global.locator(".sm-list li").first()).toContainText("Duplicate name");
+    await expect(global.locator(".sm-list li").first()).toContainText("different content · for OpenCode");
+    await expect(panel.locator('[data-sm-level="root"]')).toContainText("No skill here.");
+
+    // One provider: only what it reads, its own total, and no warning when it sees the name once.
+    await panel.locator('[data-sm-provider="claude-code"]').click();
+    await expect(global.locator(".sm-list li")).toHaveCount(1);
+    await expect(global).toContainText("~/.claude/skills/review/SKILL.md");
+    await expect(global).not.toContainText("Duplicate name");
+    await expect(panel.locator(".sm-note")).toContainText("Claude Code finds 1 skill");
+    await expect(panel.locator('[data-sm-provider="claude-code"]')).toBeFocused();
+
+    // MCP servers: the name, the file and the state. A project entry kept in the device file is marked.
+    await panel.locator('[data-sm-tab="mcp"]').click();
+    await expect(global.locator(".sm-list li")).toContainText(["github"]);
+    await expect(global).toContainText("~/.claude.json");
+    await expect(panel.locator('[data-sm-level="root"] .sm-list li')).toContainText(["notes"]);
+    await expect(panel.locator('[data-sm-level="root"]')).toContainText("This project only");
+    await expect(panel.locator(".sm-note")).toContainText("never shown");
+    const text = await panel.innerText();
+    expect(text).not.toContain("s3cr3t");
+    expect(text).not.toContain("npx");
+
+    // The panel sits under the shortcuts, stays inside the page, and closes from its own button.
+    const box = await page.evaluate(() => ({
+      tiles: document.querySelector("#projectTiles").getBoundingClientRect().bottom,
+      top: document.querySelector("#projectSkillsMcp").getBoundingClientRect().top,
+      wide: document.querySelector("#projectSkillsMcp").scrollWidth - document.querySelector("#projectSkillsMcp").clientWidth,
+    }));
+    expect(box.top).toBeGreaterThanOrEqual(box.tiles);
+    expect(box.wide).toBeLessThanOrEqual(0);
+    await panel.locator("[data-sm-close]").click();
+    await expect(panel).toBeHidden();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  } finally {
+    fs.rmSync(path.join(home, ".claude", "skills", "review"), { recursive: true, force: true });
+    fs.rmSync(path.join(home, ".agents", "skills", "review"), { recursive: true, force: true });
+    if (before) fs.writeFileSync(claudeJson, before);
+    else fs.rmSync(claudeJson, { force: true });
   }
 });
 

@@ -63,7 +63,7 @@ const CSS = `
 #projectPageHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;padding:4px 0 2px}
 #projectPageHead h2{margin:0;font-size:20px}
 #projectPageHead .pp-count{color:var(--muted)}
-#projectPageHead .pp-agents{margin-left:auto}
+#projectPageHead .pp-end{margin-left:auto}
 #projectPageHead .pp-back{display:none}
 .pp-tiles{display:grid;gap:10px}
 .pp-tiles-head{display:flex;align-items:center;gap:10px}
@@ -151,6 +151,8 @@ export function createProjectPage() {
   let entered = '';
   const pages = new Map();
   let editing = false;
+  let toolsOpen = false;
+  let toolsView = null;
 
   const currentProject = () => state.globalExplorerProjectKey && ['project', 'computer'].includes(state.globalExplorerMode)
     ? (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey) || null
@@ -318,6 +320,29 @@ export function createProjectPage() {
       + (!data ? '<p class="pp-empty">Reading agent files…</p>' : data.error ? '<p class="pp-empty">' + escapeHtml(data.error) + '</p>' : data.levels.map(levelMarkup).join(''));
   }
 
+  // « Skills & MCP » is its own module (skills-mcp.mjs), fetched on the first press and placed under the shortcuts.
+  function syncTools(project) {
+    const worktree = project && toolsOpen ? globalProjectSelectedWorktree(project) : null;
+    const id = mounted(worktree) ? worktree.id : '';
+    if (!toolsView) {
+      if (!id) return;
+      toolsView = import('/assets/ui/skills-mcp.mjs').then((module) => module.createSkillsMcp(tiles, (filePath) => {
+        const now = currentProject();
+        if (now) openFile(now, filePath);
+      }, () => {
+        toolsOpen = false;
+        sync();
+      }));
+      toolsView.catch((error) => {
+        toolsView = null;
+        toolsOpen = false;
+        setStatus(error.message);
+        sync();
+      });
+    }
+    toolsView.then((view) => view.show(id), () => {});
+  }
+
   function openTile(project, tile) {
     if (tile.type === 'file') openFile(project, tile.path);
     else if (tile.type === 'folder') void revealFolder(project, tile.path).catch((error) => setStatus(error.message));
@@ -371,9 +396,11 @@ export function createProjectPage() {
     const toReview = reviewCount(project);
     band(project);
     syncLevels(project);
+    syncTools(project);
     group();
     if (!project) {
       editing = false;
+      toolsOpen = false;
       entered = '';
       return;
     }
@@ -386,7 +413,8 @@ export function createProjectPage() {
     const all = (state.contextHub?.projects || []).reduce((sum, item) => sum + reviewCount(item), 0);
     head.innerHTML = '<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
       + '<span class="pp-count">' + (toReview ? toReview + ' to review' : 'Nothing to review') + '</span>'
-      + '<button class="secondary pp-agents" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>';
+      + '<button class="secondary pp-end" type="button" data-pp-tools aria-expanded="' + toolsOpen + '">Skills &amp; MCP ›</button>'
+      + '<button class="secondary" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>';
     const list = tilesOf(project);
     const keys = new Set(list.map(projectTileKey));
     const addable = [{ type: 'agents' }, { type: 'all' }, { type: 'recent' }, ...(rootFolders(project) || []).map((path) => ({ type: 'folder', path }))]
@@ -452,6 +480,10 @@ export function createProjectPage() {
     else if (event.target.closest('[data-pp-agents]')) {
       if (state.projectAgentsOpen) closeAgents();
       else openAgents(project);
+    } else if (event.target.closest('[data-pp-tools]')) {
+      if (!toolsOpen && !mounted(globalProjectSelectedWorktree(project))) return setStatus('This project has no local copy on this device');
+      toolsOpen = !toolsOpen;
+      sync();
     }
   });
 
