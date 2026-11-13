@@ -7307,7 +7307,8 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /"dracula"/);
   assert.match(html, /id="fileTheme"/);
   assert.match(html, /data-line-number="' \+ \(index \+ 1\) \+ '"/);
-  assert.match(html, /\.file-panel \.doc-editor\.markdown-view \.markdown-line::before \{ content: attr\(data-line-number\)/);
+  // R8a: line numbers only on a doc in review (its banner is in the file panel).
+  assert.match(html, /\.file-panel:has\(\[data-doc-review-banner\]\) \.doc-editor\.markdown-view \.markdown-line::before \{ content: attr\(data-line-number\)/);
   assert.match(html, /\.file-panel \.doc-editor\.markdown-view, \.file-panel \.markdown-editor-input \{ padding-left: 36px; \}/);
   assert.match(html, /font-variant-numeric: tabular-nums/);
   assert.match(html, />App theme<\/label>/);
