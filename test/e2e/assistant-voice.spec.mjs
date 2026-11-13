@@ -272,7 +272,8 @@ test('@smoke @assistant direct dictation starts once and retains its original so
     expect(await page.locator('#docEditor').inputValue()).toBe(original + 'Review this original spoken draft.');
     const undo = await page.evaluate(() => isMacPlatform() ? 'Meta+z' : 'Control+z');
     await page.locator('#docEditor').press(undo); await expect(page.locator('#docEditor')).toHaveValue(original);
-    expect(fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8')).toBe(original);
+    // The draft saves itself (R2); the undo saves the same way, so the file ends as it began.
+    await expect.poll(() => fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8'), { timeout: 5_000 }).toBe(original);
     expect(fs.readFileSync(path.join(f.root, 'docs/Other.md'), 'utf8')).toBe(other);
     await pane.getByRole('button', { name: 'Open conversation', exact: true }).click();
     await expect(pane).toHaveCount(0);

@@ -3,24 +3,34 @@ import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import { assistantFixture } from '../fixtures/assistant.mjs';
 
-test('@smoke a Markdown document opens for reading, and Edit opens the editor', async ({ page }) => {
+// R2: no mode or Save button. A click puts the caret where it lands, the text saves itself, Escape shows the rendered doc.
+test('@smoke a Markdown document opens for reading, and a click edits it where it lands', async ({ page }) => {
   const f = await assistantFixture();
   try {
+    const file = path.join(f.root, 'docs/Original.md');
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
     await page.evaluate(() => selectFile('docs/Original.md'));
     await expect(page.locator('#docReader')).toBeVisible();
     await expect(page.locator('#viewer textarea, #viewer [contenteditable="true"], #viewer input:not([type])')).toHaveCount(0);
-    await expect(page.locator('[data-file-save]')).toHaveCount(0);
+    await expect(page.locator('[data-file-save], [data-file-mode]')).toHaveCount(0);
+    for (const name of ['Edit', 'Done', 'Save']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    const box = await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).evaluate((line) => {
+      const range = document.createRange(), text = [...line.childNodes].find((node) => node.nodeType === 3 && node.data.includes('Human'));
+      range.setStart(text, text.data.indexOf('Human')); range.setEnd(text, text.data.indexOf('Human') + 1);
+      const rect = range.getBoundingClientRect(); return { x: rect.left, y: rect.top, height: rect.height };
+    });
+    await page.mouse.click(box.x + 1, box.y + box.height / 2);
     const editor = page.locator('#docEditor');
     await expect(editor).toBeFocused();
+    expect(await editor.evaluate((node) => node.value.slice(node.selectionStart, node.selectionStart + 5))).toBe('Human');
     await editor.evaluate((node) => node.setSelectionRange(node.value.length, node.value.length));
     await editor.pressSequentially('Read first.');
-    await expect(page.getByRole('button', { name: 'Done', exact: true })).toBeDisabled();
-    await page.locator('[data-file-save]').click();
-    await expect(page.locator('[data-file-save]')).toBeDisabled();
-    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(page.locator('.file-panel .file-title')).toHaveClass(/unsaved/);
+    await expect.poll(() => fs.readFileSync(file, 'utf8'), { timeout: 4_000 }).toContain('Read first.');
+    await expect(page.locator('.file-panel .file-title')).not.toHaveClass(/unsaved/);
+    await expect(editor).toBeFocused();
+    await editor.press('Escape');
     await expect(page.locator('#docReader')).toContainText('Read first.');
     await expect(page.locator('#docEditor')).toHaveCount(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
@@ -250,7 +260,7 @@ test('page buttons move one screen without smooth scrolling', async ({ page }, t
     expect(Math.abs(after.top - start - (after.height - 2 * after.line))).toBeLessThanOrEqual(2);
     await bar.getByRole('button', { name: 'Previous page' }).click();
     expect(Math.abs((await position()) - start)).toBeLessThanOrEqual(2);
-    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await page.locator('#docReader .markdown-line', { hasText: 'Part 1 line 3.' }).first().click();
     await expect(page.locator('.reader-page-bar')).toHaveCount(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
@@ -258,11 +268,9 @@ test('page buttons move one screen without smooth scrolling', async ({ page }, t
 test('@smoke the editor finds and replaces, and Replace all is one undo step', async ({ page }) => {
   const f = await assistantFixture();
   try {
-    const file = path.join(f.root, 'docs/Original.md');
-    const before = fs.readFileSync(file, 'utf8');
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
     await page.evaluate(() => selectFile('docs/Original.md'));
-    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
     const editor = page.locator('#docEditor');
     const original = '# Original document\n\nMémo one\nmemo two\nMEMO three\n';
     await editor.fill(original);
@@ -278,7 +286,6 @@ test('@smoke the editor finds and replaces, and Replace all is one undo step', a
     await bar.getByRole('button', { name: 'Replace all', exact: true }).click();
     await expect(bar.locator('[data-find-count]')).toHaveText('Replaced 3 matches');
     await expect(editor).toHaveValue('# Original document\n\nnote one\nnote two\nnote three\n');
-    expect(fs.readFileSync(file, 'utf8')).toBe(before);
     await page.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(editor).toHaveValue(original);
     await page.getByRole('button', { name: 'Redo', exact: true }).click();
@@ -289,7 +296,6 @@ test('@smoke the editor finds and replaces, and Replace all is one undo step', a
     await page.keyboard.press('ControlOrMeta+f');
     await expect(bar).toBeVisible();
     await expect(bar.getByRole('searchbox', { name: 'Find' })).toBeFocused();
-    expect(fs.readFileSync(file, 'utf8')).toBe(before);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 

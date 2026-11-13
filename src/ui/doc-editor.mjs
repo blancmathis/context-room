@@ -1,7 +1,7 @@
 // Markdown editor core, loaded by app.mjs with the first Markdown doc (R7): undo history, pointer selection,
 // the caret drawn over the rendered lines, and find. Moved as is out of the main script; app passes what it uses.
 export function createDocEditor(app) {
-  const { el, state, isMacPlatform, isDocLinkModifierEventActive, scheduleCodexReferenceActionUpdate, syncMarkdownEditorScroll, wireMarkdownEditorDocLinks, updateMarkdownEditorHighlight, updateHeader, updatePreview, updateConflictCompareLive, scheduleConflictCheck, scheduleSessionStatePush, loadTextTools, setStatus } = app;
+  const { el, state, isMacPlatform, isDocLinkModifierEventActive, scheduleCodexReferenceActionUpdate, syncMarkdownEditorScroll, wireMarkdownEditorDocLinks, updateMarkdownEditorHighlight, updateHeader, updatePreview, updateConflictCompareLive, scheduleConflictCheck, scheduleSessionStatePush, loadTextTools, setStatus, scheduleDocAutosave } = app;
 
   function wireRenderedMarkdownEditor() {
     const docEditor = el("docEditor");
@@ -154,12 +154,19 @@ export function createDocEditor(app) {
     updateConflictCompareLive(editor.value);
     scheduleConflictCheck();
     scheduleSessionStatePush();
+    scheduleDocAutosave();
     window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
   }
 
   function enterMarkdownEditorAtPoint(event) {
     const editor = el("docEditor");
     if (!editor || event.button !== 0 || isDocLinkModifierEventActive(event)) return;
+    // Finger or pen (R2): the caret lands on lift, only if the point barely moved, so a scroll never opens the keyboard.
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      event.preventDefault();
+      state.markdownTouchTap = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      return;
+    }
     resetMarkdownEditorHistoryGroup();
     const offset = markdownEditorSourceOffsetAtPoint(event.clientX, event.clientY);
     if (!Number.isInteger(offset)) return;
@@ -205,6 +212,18 @@ export function createDocEditor(app) {
   function finishMarkdownEditorPointerSelection(event) {
     const editor = el("docEditor");
     const pointer = state.markdownPointerSelection;
+    const tap = state.markdownTouchTap;
+    if (editor && tap?.pointerId === event.pointerId) {
+      state.markdownTouchTap = null;
+      const offset = event.type === "pointerup" && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) < 10 ? markdownEditorSourceOffsetAtPoint(event.clientX, event.clientY) : null;
+      if (!Number.isInteger(offset)) return;
+      resetMarkdownEditorHistoryGroup();
+      try { editor.focus({ preventScroll: true }); }
+      catch { editor.focus(); }
+      setMarkdownEditorSelection(editor, offset, offset);
+      updateMarkdownEditorVisualSelection();
+      return;
+    }
     if (!editor || !pointer || pointer.pointerId !== event.pointerId) return;
     try { editor.releasePointerCapture(event.pointerId); }
     catch {}
@@ -288,6 +307,24 @@ export function createDocEditor(app) {
       highlighter.style.pointerEvents = previousHighlighterPointerEvents;
       editor.style.pointerEvents = previousEditorPointerEvents;
     }
+  }
+
+  // Tap on the rendered doc (R2): source offset of the tapped point. The reader hides Markdown marks, so the text
+  // before the caret is matched in order against the source line; marks it skips (#, **, [](…)) are passed over.
+  function readerSourceOffset(event, text) {
+    const reader = el("docReader");
+    const line = event.target.closest?.("[data-line-index]");
+    if (line && reader?.contains(line)) {
+      const lines = String(text).split("\n"), index = Number(line.dataset.lineIndex), source = lines[index] ?? "";
+      if (!Number.isInteger(index) || index >= lines.length) return null;
+      let column = 0;
+      for (const char of (line.textContent || "").slice(0, renderedCaretOffsetAtPoint(line, event.clientX, event.clientY))) {
+        const found = source.indexOf(char, column);
+        if (found >= 0 && found - column < 40) column = found + 1;
+      }
+      return lines.slice(0, index).reduce((total, current) => total + current.length + 1, 0) + column;
+    }
+    return reader?.matches("pre") ? Math.min(String(text).length, renderedCaretOffsetAtPoint(reader, event.clientX, event.clientY)) : null;
   }
 
   function renderedCaretOffsetAtPoint(line, clientX, clientY) {
@@ -463,5 +500,5 @@ export function createDocEditor(app) {
     bar.open({ caret: editor.selectionStart, selectedText: editor.value.slice(editor.selectionStart, editor.selectionEnd) });
   }
 
-  return { wireRenderedMarkdownEditor, editorHistoryAvailable, applyMarkdownEditorHistory, markdownEditorDomPosition, updateMarkdownEditorVisualSelection, openEditorFind };
+  return { wireRenderedMarkdownEditor, editorHistoryAvailable, applyMarkdownEditorHistory, markdownEditorDomPosition, updateMarkdownEditorVisualSelection, openEditorFind, readerSourceOffset };
 }

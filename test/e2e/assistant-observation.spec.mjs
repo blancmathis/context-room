@@ -11,7 +11,8 @@ async function documentConversation(page, f) {
   await expect(paneFor(page)).toHaveAttribute('data-ready', 'true');
 }
 async function setDraft(page, text) {
-  await page.evaluate(text => { if (!document.getElementById('docEditor')) setMode('edit'); const editor = document.getElementById('docEditor'); editor.value = text; editor.dispatchEvent(new Event('input', { bubbles: true })); }, text);
+  // The human is still typing: the 2 s autosave (R2) must not write the draft during the test.
+  await page.evaluate(text => { state.autosaveDelayMs = 1e9; if (!document.getElementById('docEditor')) setMode('edit'); const editor = document.getElementById('docEditor'); editor.value = text; editor.dispatchEvent(new Event('input', { bubbles: true })); }, text);
 }
 
 test('@smoke @assistant live draft sharing is opt-in, stays in its original document and stops on reload', async ({ page }, testInfo) => {

@@ -7469,7 +7469,10 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function flashSavedButton\(button, label = "Saved"\)/);
   assert.match(html, /markButtonSaving\(saveButton\)/);
   assert.match(html, /flashSavedButton\(el\("saveSettings"\), "Saved"\)/);
-  assert.match(html, /flashSavedButton\(document\.querySelector\("\[data-file-save\]"\), "Saved"\)/);
+  // R2: a doc has no Edit, Done or Save button; it saves itself, and « ● » by the name is the only sign.
+  assert.doesNotMatch(html, /data-file-mode=|type="button" data-file-save|Save your changes first/);
+  assert.match(html, /function flushAutosave\(\)/);
+  assert.match(html, /\.file-title\.unsaved::after \{ content: " ●";/);
   assert.match(html, /el\("saveSettings"\)\?\.addEventListener\("click", \(\) => saveSettings\(\)\.catch\(\(error\) => setStatus\(error\.message\)\)\)/);
   assert.match(html, /function autoOpenGitDiffEnabled\(\)/);
   assert.match(html, /function collapsedByGitDiffPreference\(diff\)/);
@@ -8164,7 +8167,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /const jumpAction = summary\.pending && !visualHtmlReview/);
   assert.match(html, /const bulkActions = summary\.pending\s*\?/);
   assert.match(html, /savable: !isHtmlDocument/);
-  assert.match(html, /savable \? '<button class="file-action primary"/);
+  assert.match(html, /function docTapEditable\(\)[\s\S]{0,600}!isHtmlDocumentPath\(path\)/);
 });
 
 test("image and PDF files open in the shared zoomable viewer", () => {
@@ -8812,9 +8815,8 @@ test("Ctrl or Cmd S saves the selected dirty file", () => {
   assert.match(html, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "s"/);
   assert.match(html, /function handleSaveShortcut\(event\)/);
   assert.match(html, /event\.preventDefault\(\);/);
-  assert.match(html, /if \(!state\.dirty\) \{/);
-  assert.match(html, /setStatus\("no changes to save"\)/);
-  assert.match(html, /saveCurrent\(\)\.catch\(\(error\) => setStatus\(error\.message\)\)/);
+  // R2: the shortcut saves now through the autosave queue; nothing to say when the doc is clean.
+  assert.match(html, /flushAutosave\(\);\s*return true;/);
   assert.match(html, /if \(handleSaveShortcut\(event\)\) return;/);
 });
 

@@ -1345,7 +1345,9 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await openHome(page);
   await openProject(page, "Beacon");
   await openProjectFile(page, "notes/scratch.md");
-  await page.locator('[data-file-mode="edit"]').click();
+  // Hold the autosave (R2) so this tab keeps an unsaved draft while another tab writes the file.
+  await expect(page.locator("#docReader[data-tap-edit]")).toBeVisible();
+  await page.evaluate(() => { state.autosaveDelayMs = 1e9; setMode("edit"); });
   const editor = page.locator("#docEditor");
   const saved = await editor.inputValue();
   const draft = saved + "\nUnsaved workspace draft.\n";
@@ -1359,10 +1361,11 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await waitForReady(writer);
   await ensureExplorerOpen(writer);
   await openProjectFile(writer, "notes/scratch.md");
-  await writer.locator('[data-file-mode="edit"]').click();
+  await expect(writer.locator("#docReader[data-tap-edit]")).toBeVisible();
+  await writer.evaluate(() => setMode("edit"));
   await writer.locator("#docEditor").fill(saved + "\nExternal workspace update.\n");
-  await writer.locator("[data-file-save]").click();
-  await expect(writer.locator("[data-file-save]")).toBeDisabled();
+  await writer.keyboard.press("ControlOrMeta+s");
+  await expect(writer.locator(".file-panel .file-title")).not.toHaveClass(/unsaved/);
   await expect(page.locator("[data-conflict-keep]")).toBeVisible();
   await expect(page.locator("#docEditor")).toHaveValue(draft);
   const staleWrite = await page.request.post(data.origin + "/api/file", {

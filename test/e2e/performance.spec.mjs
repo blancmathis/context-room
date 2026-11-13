@@ -129,13 +129,14 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(8_400);
   // The Markdown editor core (undo, pointer selection, caret, find) moved out of the main script in R7 and loads with
   // the first Markdown doc: 4 333 on 2026-11-13 (the main script lost 3 282), limit +10 %.
+  // R2 (tap to edit, autosave) adds the tap-to-caret mapping: ~4 830, limit raised to 5 400.
   const docEditor = await new Promise((resolve, reject) => http.get(new URL("/assets/ui/doc-editor.mjs", samples[0].jsUrls[0]), (response) => {
     const chunks = [];
     response.on("data", (chunk) => chunks.push(chunk));
     response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
   }).on("error", reject));
   expect(docEditor.status).toBe(200);
-  expect(zlib.brotliCompressSync(docEditor.body).length).toBeLessThan(4_800);
+  expect(zlib.brotliCompressSync(docEditor.body).length).toBeLessThan(5_400);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();
