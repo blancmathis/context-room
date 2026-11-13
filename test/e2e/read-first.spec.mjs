@@ -353,12 +353,63 @@ for (const withGit of [false, true]) test('a doc waiting in To review is not edi
     await page.evaluate(() => { state.autosaveDelayMs = 100; return selectFile('docs/Other.md'); });
     await expect(page.locator('#docReader')).toContainText('Agent rewrote this line.');
     await expect(page.locator('#docReader[data-tap-edit]')).toHaveCount(0);
-    await expect(page.locator('.doc-review-hint')).toHaveText('In To review · accept it there to edit');
+    await expect(page.locator('[data-doc-review-banner]')).toContainText('Changed by an agent');
     await page.locator('#docReader .markdown-line', { hasText: 'Agent rewrote this line.' }).click();
     await page.keyboard.type('x');
     await page.waitForTimeout(600);
     await expect(page.locator('#docEditor')).toHaveCount(0);
     expect(fs.readFileSync(file, 'utf8')).toBe('# Other document\n\nAgent rewrote this line.\n');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// R5 acceptance: DESIGN.md changed by an agent, opened from the tree: the text keeps its full width (no Git diff
+// panel opens by itself) and one banner says what changed, with Accept / Reject. Accept makes it a normal doc.
+test('a changed doc opened from the tree shows the review banner, not the Git diff panel', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/DESIGN.md');
+    fs.writeFileSync(file, '# Design\n\nFirst rule.\n\nSecond rule.\n');
+    acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/DESIGN.md']);
+    const git = (args) => execFileSync('git', args, { cwd: f.root, stdio: 'ignore' });
+    git(['init', '--initial-branch=main']);
+    git(['config', 'user.email', 'banner@example.test']);
+    git(['config', 'user.name', 'Banner Test']);
+    git(['add', '.']);
+    git(['commit', '-m', 'Initial']);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const agentText = '# Design\n\nFirst rule, rewritten by an agent.\n\nSecond rule.\n\nThird rule.\n';
+    fs.writeFileSync(file, agentText);
+    await expect.poll(() => page.evaluate(async () => {
+      applyBackgroundReportPayload(await api('/api/reports'));
+      return state.docqa?.queue?.find((item) => item.path === 'docs/DESIGN.md')?.reviewReason || null;
+    }), { timeout: 10_000 }).toBe('changed');
+    const explorerToggle = page.locator('#explorerOpen:visible, #sidebarToggle:visible').first();
+    if (await page.locator('.app').evaluate((node) => node.classList.contains('sidebar-collapsed'))) await explorerToggle.click();
+    await page.locator('#search').fill('DESIGN');
+    await page.locator('#files [data-file-path="docs/DESIGN.md"]').click();
+    // On a phone the Explorer is a drawer over the doc: close it to reach the banner.
+    if ((page.viewportSize()?.width || 1280) < 820) await page.getByRole('button', { name: 'Close explorer' }).click();
+    const banner = page.locator('[data-doc-review-banner]');
+    await expect(banner).toContainText('Changed by an agent');
+    await expect(banner).toContainText(/\+3 −1/);
+    await expect(banner.getByRole('button', { name: 'Accept', exact: true })).toBeVisible();
+    await expect(banner.getByRole('button', { name: 'Reject', exact: true })).toBeVisible();
+    await expect(page.locator('#docReader')).toContainText('rewritten by an agent');
+    await expect(page.locator('.diff-panel')).toHaveCount(0);
+    // Full width: the file panel fills the viewer; nothing sits beside it.
+    const widths = await page.evaluate(() => [document.querySelector('#viewer').clientWidth, document.querySelector('.file-panel').getBoundingClientRect().width]);
+    expect(widths[1]).toBeGreaterThan(widths[0] - 40);
+    // The Git diff stays one click away.
+    await page.locator('#gitDiffToggle').click();
+    await expect(page.locator('.diff-panel')).toBeVisible();
+    await page.locator('#gitDiffToggle').click();
+    await expect(page.locator('.diff-panel')).toHaveCount(0);
+
+    await banner.getByRole('button', { name: 'Accept', exact: true }).click();
+    await expect(banner).toHaveCount(0);
+    await expect(page.locator('#docReader[data-tap-edit]')).toBeVisible();
+    expect(fs.readFileSync(file, 'utf8')).toBe(agentText);
+    expect(await page.evaluate(() => state.docqa.queue.some((item) => item.path === 'docs/DESIGN.md'))).toBe(false);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
