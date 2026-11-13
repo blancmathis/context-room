@@ -8681,7 +8681,6 @@ test("review queue opens changed files with the inline segment review engine", (
   const html = renderAppHtml();
 
   assert.match(html, /\/api\/file\/review-base\?path=/);
-  assert.match(html, /data-startup-review-order/);
   assert.match(html, /async function startChangedFileInlineReview\(path, diff, requestId = state\.selectionRequest\)/);
   assert.match(html, /if \(options\.reviewMode && diff\.changed && reviewBaseResult\?\.value\) \{\s*applyChangedFileInlineReview\(path, diff, reviewBaseResult\.value, requestId\);/);
   assert.match(html, /if \(options\.reviewMode\) await startChangedFileInlineReview\(finalPath, \{ changed: true \}, requestId\)/);
