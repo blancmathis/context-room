@@ -24440,7 +24440,15 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const target = contextApiTarget(root, contextUrl);
     const { subfolderAgentRows, groupAgentLevels } = await import("./context_levels.mjs");
     const effective = await contextApiResult(root, contextUrl, "effective");
-    const extra = subfolderAgentRows(target.root, target.provider, { skip: (name) => shouldSkipProjectDiscoveryDirectory(name) });
+    const projectSettings = effectiveMemoryWebappSettings(target.root, { readOnly: true, expectedRootIdentity: target.expectedRootIdentity });
+    const { claudeInstructionRuntime } = await import("./context_inventory.mjs");
+    const managedOnly = ["claude-code", "all"].includes(target.provider) && claudeInstructionRuntime(target.root)?.mode === "managed-only";
+    const extra = subfolderAgentRows(target.root, target.provider, {
+      skip: (name) => shouldSkipProjectDiscoveryDirectory(name),
+      instructions: projectSettings.startupContext?.enabled !== false,
+      skills: projectSettings.startupSkills?.enabled !== false,
+      managedOnly,
+    });
     sendJson(res, 200, { provider: target.provider, levels: groupAgentLevels([{ folder: ".", effective }], { root: target.root, extra }) });
     return;
   }

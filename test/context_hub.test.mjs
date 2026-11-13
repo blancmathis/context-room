@@ -5001,4 +5001,27 @@ test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 
   assert.deepEqual(byLevel.app.files.map((file) => file.path), ["app/AGENTS.md"]);
   assert.deepEqual(byLevel["app/web"].files.map((file) => [file.kind, file.path]), [["skill", "app/web/.agents/skills/build/SKILL.md"]]);
   assert.ok(byLevel["app/web"].files[0].startupTokens > 0 && byLevel["app/web"].files[0].onDemandTokens > 0);
+  assert.ok(byLevel.root.documentTokens > 0);
+
+  // A subfolder with an override and AGENTS.md lists only the override for Codex; provider=all answers too.
+  fs.writeFileSync(path.join(targetRoot, "app", "AGENTS.override.md"), "# App override\n");
+  const override = await (await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=codex`)).json();
+  assert.deepEqual(override.levels.find((level) => level.level === "app").files.map((file) => file.path), ["app/AGENTS.override.md"]);
+  const all = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=all`);
+  assert.equal(all.status, 200);
+  assert.equal((await all.json()).provider, "all");
+
+  // Recent docs: newest first, at most 8, only files of the project.
+  for (let index = 0; index < 10; index += 1) {
+    const file = path.join(targetRoot, "docs", `note-${index}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `# Note ${index}\n`);
+    fs.utimesSync(file, new Date(Date.now() - index * 60000), new Date(Date.now() - index * 60000));
+  }
+  const recent = await fetch(`${origin}/api/context-hub/project-recent?projectId=${encodeURIComponent(target.id)}`);
+  assert.equal(recent.status, 200);
+  const { files } = await recent.json();
+  assert.equal(files.length, 8);
+  assert.ok(files.every((file) => !file.path.startsWith("~") && !path.isAbsolute(file.path) && file.updatedAt));
+  assert.deepEqual(files.map((file) => file.updatedAt), [...files.map((file) => file.updatedAt)].sort().reverse());
 });

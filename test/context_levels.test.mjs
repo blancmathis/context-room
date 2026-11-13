@@ -100,3 +100,38 @@ test('agent levels: one walk finds subfolder files, skills and PLAN/CONTEXT with
     ]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('agent levels: subfolder rows follow one-file-per-folder, Claude rules, managed-only and the start-up settings', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-levels-rules-'));
+  try {
+    const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+    put('a/AGENTS.override.md', '# override\n');
+    put('a/AGENTS.md', '# plain\n');
+    put('b/AGENTS.md', '# b agents\n');
+    put('b/CLAUDE.md', '# b claude\n');
+    put('c/.claude/rules/deep/style.md', '# style\n');
+    const names = (rows, level) => rows.filter((row) => row.level === level).map((row) => row.name);
+    const skip = (name) => name.startsWith('.');
+    // Codex loads only the override of a folder.
+    assert.deepEqual(names(subfolderAgentRows(root, 'codex', { skip }), 'a'), ['AGENTS.override.md']);
+    // OpenCode takes the first file of a folder.
+    assert.deepEqual(names(subfolderAgentRows(root, 'opencode', { skip }), 'b'), ['AGENTS.md']);
+    // Claude reads CLAUDE.md and the rules of a subfolder, however deep.
+    assert.deepEqual(names(subfolderAgentRows(root, 'claude-code', { skip }), 'b'), ['CLAUDE.md']);
+    assert.deepEqual(names(subfolderAgentRows(root, 'claude-code', { skip }), 'c'), ['style.md']);
+    // provider=all: the union per provider, each file once.
+    const all = subfolderAgentRows(root, 'all', { skip });
+    assert.deepEqual(names(all, 'a').sort(), ['AGENTS.md', 'AGENTS.override.md']); // Codex: override; OpenCode: AGENTS.md
+    assert.deepEqual(names(all, 'b').sort(), ['AGENTS.md', 'CLAUDE.md']);
+    // Managed-only drops Claude's project files; the start-up setting drops instructions.
+    assert.deepEqual(subfolderAgentRows(root, 'claude-code', { skip, managedOnly: true }), []);
+    assert.deepEqual(subfolderAgentRows(root, 'codex', { skip, instructions: false }), []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('agent levels: PLAN/CONTEXT tokens are counted apart from skill bodies', () => {
+  const rows = [{ level: 'root', kind: 'document', name: 'PLAN.md', absolutePath: '/nowhere/PLAN.md', startupTokens: null, onDemandTokens: 50 }];
+  const [level] = groupAgentLevels([{ folder: '.', effective: { instructions: [], skills: [], cost: { entries: {} } } }], { root: '/nowhere', extra: rows });
+  assert.equal(level.documentTokens, 50);
+  assert.equal(level.onDemandTokens, 0);
+});
