@@ -218,3 +218,27 @@ test("@layout To review groups the files per project and Open project leads to t
   await header.getByRole("button", { name: "Open project ›" }).click();
   await expect(page.locator("#projectPageHead h2")).toHaveText(title);
 });
+
+test("@layout a direct link to a doc shows the breadcrumb, opens the tree on it with review dots, and the project name leads back", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=file&file=docs/operations.md&explorer=expanded`);
+  await waitForBoot(page);
+  const crumb = page.locator("#workspaceTitle");
+  await expect(crumb).toHaveText("Atlas › docs › operations.md");
+  await expect(page.locator("#status")).not.toHaveText(/open$/);
+  const row = page.locator('[data-global-project-file="docs/operations.md"]');
+  await expect(row).toHaveAttribute("aria-current", "page");
+  await expect(row.locator(".tree-dot")).toHaveAttribute("aria-label", /review/i);
+  // One review dot per queued file; the folder shows how many of its files wait.
+  const queued = await page.locator("#globalProjectList .tree-dot").count();
+  expect(queued).toBeGreaterThan(0);
+  await expect(page.locator('[data-global-project-folder="docs"] [data-review-count]')).toHaveText(/^[1-9]\d*$/);
+
+  await page.reload();
+  await waitForBoot(page);
+  await expect(page.locator('[data-global-project-file="docs/operations.md"]')).toHaveAttribute("aria-current", "page");
+
+  await crumb.locator("[data-crumb-project]").click();
+  await expect(page.locator("#projectPageHead h2")).toHaveText("Atlas");
+});

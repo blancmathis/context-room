@@ -2749,7 +2749,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .dock-button.diff-dock-button { margin-left: 2px; border: 0; background: transparent; color: var(--muted); }
     .dock-button.diff-dock-button.active, .mode-toggle button.active { background: var(--native-selection); color: var(--text); }
     button:disabled, .dock-button:disabled, .file-action:disabled { opacity: .42; cursor: default; }
-    .workspace-title { margin-left: auto; padding: 0 8px; color: var(--muted); font-size: 10px; text-align: right; }
+    .workspace-title { padding: 0 8px; color: var(--muted); font-family: inherit; font-size: 12px; text-align: left; }
+    .workspace-title span:last-child, .workspace-title button { color: var(--text); }
+    .workspace-title button { min-height: 32px; padding: 0 4px; border: 0; background: none; font: inherit; font-weight: 650; cursor: pointer; }
+    .workspace-title button:hover { text-decoration: underline; }
+    .global-project-tree-entry[aria-current="page"] { background: var(--native-selection); color: var(--text); }
+    .tree-dot, [data-review-count] { color: var(--accent); font-weight: 700; }
+    /* The Explorer head and the file search stay in view while the tree scrolls. */
+    .app > aside .sidebar-head, #globalProjectExplorer .search-row { position: sticky; z-index: 3; background: linear-gradient(var(--surface-sidebar), var(--surface-sidebar)), var(--bg); }
+    .app > aside .sidebar-head { top: -10px; margin-top: -10px; padding-top: 10px; }
+    #globalProjectExplorer .search-row { top: 44px; margin: 0; padding: 10px 0; }
     .dock-status {
       display: block;
       flex: 0 1 220px;
@@ -3600,7 +3609,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
-    @media (pointer: coarse) { .global-project-tree-entry { min-height: 44px; } }
+    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button { min-height: 44px; } }
     /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
@@ -3686,6 +3695,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
           <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
           <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
+          <div id="workspaceTitle" class="workspace-title">Context Room</div>
           <button id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff</button>
           <button id="graphLocal" class="dock-button" type="button" title="Open local document graph" hidden><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-graph"></use></svg><span>Local graph</span></button>
           <button id="contextPanelToggle" class="dock-button" type="button" title="Inspect document context" hidden>Context</button>
@@ -3693,7 +3703,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="verifyCurrent" class="dock-button" type="button" hidden>Verified</button>
           <button id="deleteCurrent" class="dock-button danger-action" type="button" hidden>Delete</button>
           <button id="save" class="dock-button primary" hidden disabled>Save</button>
-          <div id="workspaceTitle" class="workspace-title">Context Room</div>
           <button id="proposalDockReject" class="dock-button danger-action" type="button" hidden>Reject proposal</button>
           <div id="status" class="dock-status" role="status" aria-live="polite" aria-atomic="true" title="Starting">Starting…</div>
         </div>
@@ -6449,23 +6458,28 @@ function workspaceProjectHref(projectId, filePath = "", { fresh = false } = {}) 
 
 function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all") {
   if (!page) return "";
+  const worktree = globalProjectSelectedWorktree(project);
+  // Review dots and folder counts come from the review queue; the open doc is marked.
+  const reviews = contextRoomReviewsForExplorerPath(worktree?.id || project.id, "").map((item) => [normalizeUiPath(item.localFile || ""), item.localReview?.gitStatus || ""]);
   const entries = (page.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).map((entry) => {
     if (entry.type === "directory") {
+      const count = reviews.filter(([path]) => path.startsWith(entry.path + "/")).length;
       const folderId = globalProjectExpandedFolderKey(project, entry.path);
       const expanded = state.globalProjectExpandedFolders.has(folderId);
       const childKey = globalProjectExplorerPageKey(project, { directory: entry.path });
       const child = state.globalProjectExplorerDetails.get(childKey);
       const loading = state.globalProjectExplorerLoading.has(childKey);
       const error = state.globalProjectExplorerErrors.get(childKey);
-      return '<button class="global-project-tree-entry" type="button" data-kind="folder" aria-expanded="' + (expanded ? "true" : "false") + '" data-global-project-folder="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (7 + depth * 12) + 'px">'
-        + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">folder</span></button>'
+      return '<button class="global-project-tree-entry" type="button" data-kind="folder" aria-expanded="' + (expanded ? "true" : "false") + '" data-global-project-folder="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" aria-label="' + escapeHtml(entry.name) + ' folder' + (count ? ', ' + count + ' to review' : '') + '" style="padding-left:' + (7 + depth * 12) + 'px">'
+        + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta"' + (count ? ' data-review-count title="' + count + ' to review">' + count : '>') + '</span></button>'
         + (expanded && loading ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">Opening…</div>' : '')
         + (expanded && error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
         + (expanded && child ? renderGlobalProjectExplorerPage(project, child, depth + 1, filter) : "");
     }
-    const worktree = globalProjectSelectedWorktree(project);
+    const review = reviews.find(([path]) => path === entry.path);
+    const fresh = review && /\?\?|A/.test(review[1]);
     return '<a class="global-project-tree-entry" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, entry.path)) + '" data-kind="file" data-global-project-file="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px">'
-      + '<span aria-hidden="true">◇</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + (entry.watchState ? "" : "Not watched") + '</span></a>';
+      + (review ? '<span class="tree-dot" role="img" aria-label="' + (fresh ? 'New, to review">○' : 'To review">●') : '<span aria-hidden="true">◇') + '</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + (entry.watchState ? "" : "Not watched") + '</span></a>';
   }).join("");
   const more = page.nextCursor == null ? "" : '<button class="global-project-tree-entry" type="button" data-global-project-more="' + escapeHtml(page.nextCursor) + '" data-global-project-path="' + escapeHtml(page.directory || "") + '" data-global-project-query="' + escapeHtml(page.query || "") + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">＋</span><span class="global-project-tree-name">Load more</span><span class="global-project-tree-meta">' + Math.max(0, Number(page.total || 0) - (page.entries || []).length) + ' remaining</span></button>';
   return entries + more;
@@ -6695,6 +6709,21 @@ function renderExplorerDocumentViewTabs(filePath, projectKey = "current") {
 function renderExplorerDocumentViewPanel(projectKey, content) {
   const ids = explorerDocumentViewIds(projectKey);
   return '<div id="' + ids.panel + '" role="tabpanel" aria-labelledby="' + ids[state.explorerDocumentView] + '" tabindex="0">' + content + '</div>';
+}
+
+// The open doc is marked on the row itself, so the tree markup (and its DOM) stays the same between docs.
+function markCurrentTreeRow() {
+  const project = IS_GLOBAL_CONTEXT_ROOM && workspaceSelectedProject();
+  const filePath = project && explorerDocumentPathForProject(project) || "";
+  document.querySelectorAll("[data-global-project-file]").forEach((row) => row.getAttribute("data-global-project-file") === filePath ? row.setAttribute("aria-current", "page") : row.removeAttribute("aria-current"));
+  return filePath && project;
+}
+
+// A doc opened by a link or a reload: the tree opens its folders down to it.
+function revealCurrentInTree() {
+  const project = markCurrentTreeRow();
+  const filePath = project && explorerDocumentPathForProject(project);
+  if (filePath && !state.globalProjectSearch && state.explorerDocumentView !== "related" && !document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]')) void revealSelectedDocumentLocation(project).catch(() => {});
 }
 
 async function revealSelectedDocumentLocation(project) {
@@ -7349,6 +7378,7 @@ function releaseGlobalExplorerMarkup() {
       node.__contextRoomPendingMarkup = undefined;
       if (pending !== undefined) updateGlobalExplorerMarkup(node, pending);
     }
+    markCurrentTreeRow();
   }, 0);
 }
 document.addEventListener("pointerdown", (event) => {
@@ -8701,6 +8731,7 @@ function renderGlobalProjectExplorer() {
       : 0;
     count.textContent = related ? (relatedGraph ? directRelationCount + " relations" : "Loading…") : selectedProject.mode === "shared" ? "Proposals only" : "Project files";
     updateGlobalExplorerMarkup(list, renderGlobalProjectFolder(selectedProject));
+    markCurrentTreeRow();
     return;
   }
   // A catalogue refresh can briefly omit a project while the server switches
@@ -15535,7 +15566,8 @@ async function selectFile(path, options = {}) {
       if (!isCurrentSelection(requestId, path)) return;
       const contentViewState = captureEditorViewState();
       const diff = diffResult?.value;
-      setStatus(diffResult?.error?.message || reviewBaseResult?.error?.message || "open");
+      setStatus(diffResult?.error?.message || reviewBaseResult?.error?.message || "");
+      revealCurrentInTree();
       if (diff) {
         state.selectedDiff = diff;
         state.lastDiffRefreshAt = Date.now();
@@ -21111,8 +21143,9 @@ function updateActionBanner() {
     const proposal = state.sharedContext?.mode === "review"
       ? state.sharedContext.review || {}
       : state.contextRoomPreparingProposal || {};
+    const crumbProject = onFile && IS_GLOBAL_CONTEXT_ROOM && !state.selectedStartupContext ? workspaceSelectedProject() : null;
     workspaceTitle.textContent = onFile
-      ? state.selected
+      ? crumbProject ? "" : state.selected
       : onProposal
         ? proposal.title || proposal.proposal || proposal.branch || "Proposal review"
       : onGraph
@@ -21120,7 +21153,9 @@ function updateActionBanner() {
       : state.page === "new-doc"
           ? "New document"
           : "";
-    workspaceTitle.title = workspaceTitle.textContent;
+    // « Project › folder › file »: the project name opens the project page.
+    if (crumbProject) workspaceTitle.innerHTML = '<button type="button" data-crumb-project>' + escapeHtml(crumbProject.title || crumbProject.id) + '</button>' + state.selected.split("/").map((part) => ' › <span>' + escapeHtml(part) + '</span>').join("");
+    workspaceTitle.title = crumbProject ? state.selected : workspaceTitle.textContent;
   }
   const graphLocal = el("graphLocal");
   if (graphLocal) graphLocal.hidden = !onFile;
@@ -28052,6 +28087,12 @@ el("settingsButton").addEventListener("click", showSettingsPage);
 el("graphOpen")?.addEventListener("click", () => showGraphPage({ scope: "global" }).catch((error) => setStatus(error.message)));
 el("graphLocal")?.addEventListener("click", () => showGraphPage({ scope: "local", path: state.selected }).catch((error) => setStatus(error.message)));
 el("brandHome").addEventListener("click", () => handleBrandHomeAction().catch((error) => setStatus(error.message)));
+// The project name in the breadcrumb leaves the doc for its project page (the project stays selected).
+el("workspaceTitle").addEventListener("click", async (event) => {
+  if (!event.target.closest("[data-crumb-project]")) return;
+  await waitForReviewFinalizationBeforeNavigation();
+  goHub();
+});
 el("graphSearch")?.addEventListener("input", (event) => {
   state.graphSearch = event.currentTarget.value;
   renderGraphCanvas();
