@@ -180,21 +180,21 @@ test("@layout at 820 px the Explorer does not cover the project page and the bac
     state.contextHub.workingDrafts = [];
     syncProjectPage();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    return document.getElementById("reviewQueuePanel").classList.contains("pp-none");
-  })).toBe(true);
-  await expect(page.locator("#reviewQueuePanel")).toBeHidden();
-  await expect(head.locator(".pp-count")).toHaveText("Nothing to review");
+    const panel = document.getElementById("reviewQueuePanel");
+    return { none: panel.classList.contains("pp-none"), hidden: !panel.checkVisibility(), count: document.querySelector("#projectPageHead .pp-count")?.textContent };
+  })).toEqual({ none: true, hidden: true, count: "Nothing to review" });
 
-  // A local proposal alone keeps the band: it is work to review.
-  const band = await page.evaluate(async () => {
+  // A local proposal alone keeps the band: it is work to review. A late snapshot can bring the counts back, so set both again each try.
+  await expect.poll(() => page.evaluate(async () => {
     const project = state.contextHub.projects.find((item) => item.projectKey === state.globalExplorerProjectKey);
+    Object.assign(project, { localReviewCount: 0, sharedProposalCount: 0 });
+    state.contextHub.items = state.contextHub.items.filter((item) => contextHubProjectForItem(item)?.projectKey !== project.projectKey);
+    state.contextHub.workingDrafts = [];
     state.contextHub.items.push({ type: "local-proposal", id: "e2e-proposal", projectKey: project.projectKey, projectId: project.id, title: "Proposal", fileCount: 1 });
     syncProjectPage();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    return { counts: reviewCountOf(project), hidden: document.getElementById("reviewQueuePanel").classList.contains("pp-none") };
-    function reviewCountOf(item) { return Number(item.localReviewCount || 0) + Number(item.sharedProposalCount || 0); }
-  });
-  expect(band, "only a local proposal: " + JSON.stringify(band)).toEqual({ counts: 0, hidden: false });
+    return { counts: Number(project.localReviewCount || 0) + Number(project.sharedProposalCount || 0), hidden: document.getElementById("reviewQueuePanel").classList.contains("pp-none") };
+  }), { message: "only a local proposal" }).toEqual({ counts: 0, hidden: false });
   await expect(page.locator("#reviewQueuePanel")).toBeVisible();
 });
 
