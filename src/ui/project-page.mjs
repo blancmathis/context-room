@@ -120,9 +120,9 @@ const reviewCount = (project) => Number(project?.localReviewCount || 0) + Number
 const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
 const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
   + '<small>' + escapeHtml(detail) + '</small>' + (right ? '<span>' + escapeHtml(right) + '</span>' : '') + '</li>';
-const levelMarkup = (level) => '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml(LEVEL_NAMES[level.level] || level.level + '/') + '</strong><span>'
-  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + '</span></summary><ul class="pp-list">'
-  + (level.files.length ? level.files.map((file) => fileRow(file, (file.kind === 'skill' ? 'Skill · ' : '') + (file.path || file.locator), formatTokenEstimate(file.startupTokens))).join('') : '<li class="pp-empty">No agent file here.</li>') + '</ul></details>';
+const levelMarkup = (level) => '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml((Object.hasOwn(LEVEL_NAMES, level.level) ? LEVEL_NAMES[level.level] : level.level + '/')) + '</strong><span>'
+  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
+  + (level.files.length ? level.files.map((file) => fileRow(file, (file.kind === 'skill' ? 'Skill · ' : file.kind === 'document' ? 'Doc · ' : '') + (file.path || file.locator), file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens))).join('') : '<li class="pp-empty">No agent file here.</li>') + '</ul></details>';
 
 export function createProjectPage() {
   const style = document.createElement('style');

@@ -4953,3 +4953,75 @@ test("the --no-local Hub host root redirects the bare and saved-workspace URLs t
   const explicit = await fetch(origin + "/?hub=1&project=x", { redirect: "manual" });
   assert.equal(explicit.status, 200);
 });
+
+test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 / 404 / 409 guards", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-project-page-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = makeProject(base, "Target project");
+  const gonePath = makeProject(base, "Gone project");
+  fs.writeFileSync(path.join(targetRoot, "AGENTS.md"), "# Root rules\n".repeat(10));
+  fs.writeFileSync(path.join(targetRoot, "PLAN.md"), "# Plan\n".repeat(20));
+  fs.writeFileSync(path.join(targetRoot, "CONTEXT.md"), "# Context\n");
+  fs.mkdirSync(path.join(targetRoot, "app", "web"), { recursive: true });
+  fs.writeFileSync(path.join(targetRoot, "app", "AGENTS.md"), "# App rules\n");
+  fs.mkdirSync(path.join(targetRoot, "app", "web", ".agents", "skills", "build"), { recursive: true });
+  fs.writeFileSync(path.join(targetRoot, "app", "web", ".agents", "skills", "build", "SKILL.md"), "---\nname: build\ndescription: Build the web app\n---\nRun the build.\n");
+  const configPath = path.join(targetRoot, ".context-room", "config.json");
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  fs.writeFileSync(configPath, JSON.stringify({ ...config, startupContext: { ...config.startupContext, enabled: true } }));
+  const target = registerContextHubProject(targetRoot);
+  const gone = registerContextHubProject(gonePath);
+  registerContextHubProject(hostRoot);
+  fs.renameSync(gonePath, path.join(base, "Gone archived"));
+  const room = createMemoryServer({ root: hostRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+
+  for (const route of ["project-agents", "project-recent"]) {
+    assert.equal((await fetch(`${origin}/api/context-hub/${route}`)).status, 400, route + " needs a projectId");
+    assert.equal((await fetch(`${origin}/api/context-hub/${route}?projectId=nope`)).status, 404, route + " unknown project");
+    assert.equal((await fetch(`${origin}/api/context-hub/${route}?projectId=${encodeURIComponent(gone.id)}`)).status, 409, route + " unavailable project");
+  }
+  assert.equal((await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=nope`)).status, 400);
+
+  // locationId cannot point the answer at another project than the checked one.
+  const hijack = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&locationId=${encodeURIComponent(gone.id)}&provider=codex`);
+  assert.equal(hijack.status, 200);
+
+  const response = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=codex`);
+  assert.equal(response.status, 200);
+  const { levels } = await response.json();
+  const byLevel = Object.fromEntries(levels.map((level) => [level.level, level]));
+  assert.ok(byLevel.root.files.some((file) => file.path === "AGENTS.md" && file.startupTokens > 0));
+  const documents = byLevel.root.files.filter((file) => file.kind === "document");
+  assert.deepEqual(documents.map((file) => [file.path, file.onDemandTokens > 0]), [["PLAN.md", true], ["CONTEXT.md", true]]);
+  assert.deepEqual(byLevel.app.files.map((file) => file.path), ["app/AGENTS.md"]);
+  assert.deepEqual(byLevel["app/web"].files.map((file) => [file.kind, file.path]), [["skill", "app/web/.agents/skills/build/SKILL.md"]]);
+  assert.ok(byLevel["app/web"].files[0].startupTokens > 0 && byLevel["app/web"].files[0].onDemandTokens > 0);
+  assert.ok(byLevel.root.documentTokens > 0);
+
+  // A subfolder with an override and AGENTS.md lists only the override for Codex; provider=all answers too.
+  fs.writeFileSync(path.join(targetRoot, "app", "AGENTS.override.md"), "# App override\n");
+  const override = await (await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=codex`)).json();
+  assert.deepEqual(override.levels.find((level) => level.level === "app").files.map((file) => file.path), ["app/AGENTS.override.md"]);
+  const all = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=all`);
+  assert.equal(all.status, 200);
+  assert.equal((await all.json()).provider, "all");
+
+  // Recent docs: newest first, at most 8, only files of the project.
+  for (let index = 0; index < 10; index += 1) {
+    const file = path.join(targetRoot, "docs", `note-${index}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `# Note ${index}\n`);
+    fs.utimesSync(file, new Date(Date.now() - index * 60000), new Date(Date.now() - index * 60000));
+  }
+  const recent = await fetch(`${origin}/api/context-hub/project-recent?projectId=${encodeURIComponent(target.id)}`);
+  assert.equal(recent.status, 200);
+  const { files } = await recent.json();
+  assert.equal(files.length, 8);
+  assert.ok(files.every((file) => !file.path.startsWith("~") && !path.isAbsolute(file.path) && file.updatedAt));
+  assert.deepEqual(files.map((file) => file.updatedAt), [...files.map((file) => file.updatedAt)].sort().reverse());
+});

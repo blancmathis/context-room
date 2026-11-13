@@ -24429,19 +24429,27 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       sendJson(res, 200, { files });
       return;
     }
-    // What agents load, per level: the effective context at the root and at each subfolder that adds agent files.
-    const target = contextApiTarget(root, url);
-    const { agentLevelFolders, groupAgentLevels } = await import("./context_levels.mjs");
-    const folders = [".", ...agentLevelFolders(target.root, target.provider, { skip: (name) => shouldSkipProjectDiscoveryDirectory(name) })];
-    const results = [];
-    for (const folder of folders) {
-      const contextUrl = new URL(url);
-      contextUrl.searchParams.set("folder", folder);
-      contextUrl.searchParams.set("refresh", "0");
-      contextUrl.searchParams.set("allowStale", "1");
-      results.push({ folder, effective: await contextApiResult(root, contextUrl, "effective") });
-    }
-    sendJson(res, 200, { provider: target.provider, levels: groupAgentLevels(results, { root: target.root }) });
+    // What agents load, per level: one effective context at the root, then one walk for the subfolders
+    // and for PLAN.md / CONTEXT.md (no inventory per folder).
+    const contextUrl = new URL(url);
+    contextUrl.searchParams.delete("locationId");
+    contextUrl.searchParams.set("projectId", project.id);
+    contextUrl.searchParams.set("folder", ".");
+    contextUrl.searchParams.set("refresh", "0");
+    contextUrl.searchParams.set("allowStale", "1");
+    const target = contextApiTarget(root, contextUrl);
+    const { subfolderAgentRows, groupAgentLevels } = await import("./context_levels.mjs");
+    const effective = await contextApiResult(root, contextUrl, "effective");
+    const projectSettings = effectiveMemoryWebappSettings(target.root, { readOnly: true, expectedRootIdentity: target.expectedRootIdentity });
+    const { claudeInstructionRuntime } = await import("./context_inventory.mjs");
+    const managedOnly = ["claude-code", "all"].includes(target.provider) && claudeInstructionRuntime(target.root)?.mode === "managed-only";
+    const extra = subfolderAgentRows(target.root, target.provider, {
+      skip: (name) => shouldSkipProjectDiscoveryDirectory(name),
+      instructions: projectSettings.startupContext?.enabled !== false,
+      skills: projectSettings.startupSkills?.enabled !== false,
+      managedOnly,
+    });
+    sendJson(res, 200, { provider: target.provider, levels: groupAgentLevels([{ folder: ".", effective }], { root: target.root, extra }) });
     return;
   }
   if (["GET", "POST"].includes(req.method) && url.pathname === "/api/context-hub/project-settings") {

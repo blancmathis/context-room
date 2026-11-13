@@ -231,7 +231,7 @@ function claudeSettingsFiles(root) {
   return [path.join(claudeHome(), "settings.json"), path.join(root, ".claude", "settings.json"), path.join(root, ".claude", "settings.local.json"), managed];
 }
 
-function claudeInstructionRuntime(root) {
+export function claudeInstructionRuntime(root) {
   const options = {};
   const sources = [];
   for (const file of claudeSettingsFiles(root)) {
@@ -261,7 +261,7 @@ function hasConditionalPaths(absolutePath) {
   } catch { return false; }
 }
 
-function markdownFilesBelow(directory) {
+export function markdownFilesBelow(directory) {
   let entries = [];
   try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return []; }
   return entries.filter((entry) => !entry.name.startsWith(".")).sort((left, right) => left.name.localeCompare(right.name, "en")).flatMap((entry) => {
