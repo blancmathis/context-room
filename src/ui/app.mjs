@@ -1155,13 +1155,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 
     .danger-action { border-color: color-mix(in srgb, var(--danger) 42%, var(--line)) !important; color: var(--danger-fg) !important; }
     @media (max-width: 980px) { .settings-card { position: static; width: 100%; max-height: none; margin-bottom: 12px; } }
-    .cosmos-home { height: 100%; min-height: calc(100vh - 168px); padding: 34px; overflow: hidden; background: radial-gradient(circle at 50% 38%, var(--body-glow-3), transparent 24rem), var(--surface-wash); transition: padding-right 320ms ease; }
-    .editor-shell.planet-file-open .cosmos-home { padding-right: min(46vw, 660px); }
-    .planet-stage { position: relative; height: 100%; min-height: calc(100vh - 236px); border-radius: 28px; overflow: hidden; display: grid; place-items: center; background: radial-gradient(circle at 50% 50%, var(--body-glow-4), transparent 22rem); }
-    .planet-stage::before, .planet-stage::after { content: ""; position: absolute; border: 1px solid rgba(139,211,255,0.13); border-radius: 50%; pointer-events: none; }
-    .planet-stage::before { width: min(72vw, 920px); height: min(72vw, 920px); animation: orbitSpin 46s linear infinite; }
-    .planet-stage::after { width: min(46vw, 620px); height: min(46vw, 620px); border-color: rgba(182,156,255,0.16); animation: orbitSpin 34s linear reverse infinite; }
-    .planet-system { position: relative; z-index: 1; width: min(980px, 100%); min-height: 560px; }
     .planet-field { position: absolute; inset: 0; display: grid; place-items: center; }
     .planet { border: 0; border-radius: 999px; color: white; cursor: pointer; position: absolute; display: grid; place-items: center; text-align: center; padding: 0; isolation: isolate; transform: translate(-50%, -50%); transition: transform 420ms cubic-bezier(.2,.9,.2,1), filter 220ms ease, box-shadow 220ms ease; }
     .planet::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle at 30% 24%, rgba(255,255,255,0.96), rgba(255,255,255,0.12) 18%, transparent 19%), radial-gradient(circle at 36% 34%, var(--planet-a), var(--planet-b) 42%, var(--planet-c) 68%, #0a1025 100%); box-shadow: inset -28px -36px 55px rgba(0,0,0,0.44), inset 18px 16px 34px rgba(255,255,255,0.14), 0 0 80px var(--glow); z-index: -2; }
@@ -1220,7 +1213,13 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .markdown-line.quote { color: var(--file-quote); border-left: 2px solid var(--file-quote); padding-left: 0.8em; opacity: 0.9; }
     .markdown-line.code, .markdown-line.fence { color: var(--file-code); background: color-mix(in srgb, var(--file-code) 10%, transparent); }
     .markdown-line.frontmatter, .markdown-line.hr { color: var(--file-marker); }
-    #docReader :is(p, li, blockquote, h1, h2, h3, h4, h5, h6).markdown-line, #docReader .markdown-frontmatter, #docReader .doc-backlinks { max-width: 72ch; }
+    #docReader :is(p, li, blockquote, h1, h2, h3, h4, h5, h6).markdown-line, #docReader .markdown-frontmatter, #docReader .doc-backlinks { max-width: 62ch; }
+    #docReader.doc-editor, .markdown-editor-shell .doc-editor { font: 17px/1.7 system-ui, sans-serif; }
+    .file-panel .markdown-editor-shell .doc-editor { padding-right: max(22px, calc(100% - 62ch - 36px)); }
+    #docReader :is(.markdown-line:is(.code, .fence, .table), .markdown-inline-code) { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #docReader .table { white-space: pre; overflow-x: auto; }
+    .markdown-image { display: block; max-width: 100%; }
+    .markdown-image:not([src]) { display: none; }
     #docReader [data-heading-id] { scroll-margin-top: 12px; }
     .doc-reader-body.hand-annotating { position: relative; }
     .hand-annotation-layer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; overflow: visible; touch-action: none; cursor: crosshair; }
@@ -1246,7 +1245,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .doc-backlinks { margin: var(--space-6) 0 0; padding-top: var(--space-3); border-top: 1px solid var(--file-hr); }
     .doc-backlinks code { color: var(--file-muted); font-size: 11px; }
     .doc-backlinks-empty { margin: 4px 0; color: var(--file-muted); font-size: 12px; }
-    .doc-pager { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); max-width: 72ch; margin: var(--space-4) 0 0; }
+    .doc-pager { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); max-width: 62ch; margin: var(--space-4) 0 0; }
     .doc-pager:empty { display: none; }
     .doc-pager .docs-map-note { grid-column: 1 / -1; }
     .doc-pager-link { display: grid; gap: 2px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--file-hr); border-radius: 8px; background: none; color: var(--file-fg); text-align: left; font: inherit; cursor: pointer; }
@@ -1525,7 +1524,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .card strong { display: block; font-size: 18px; margin-bottom: 3px; }
     .card span { color: var(--muted); font-size: 12px; }
     .hint { display: none; margin-top: 16px; color: var(--muted); font-size: 13px; line-height: 1.45; }
-    @keyframes orbitSpin { to { transform: rotate(352deg); } }
     @keyframes orbFloat { from { transform: translateY(0); } to { transform: translateY(12px); } }
     @keyframes fileActionLoadingPulse { from { opacity: 0.38; } to { opacity: 0.72; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
@@ -1562,13 +1560,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .file-actions { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
       .conflict-compare { grid-template-columns: 1fr; }
       .file-action { padding: 8px 10px; }
-      .planet-system { min-height: 620px; }
-      .cosmos-home { min-height: 100%; padding: 16px; overflow: auto; }
-      .planet-stage { min-height: 560px; }
       .planet.root.hermes { left: 50%; top: 20%; }
       .planet.root.life { left: 50%; top: 50%; }
       .planet.root.explorer { left: 50%; top: 80%; }
-      .editor-shell.planet-file-open .cosmos-home { padding-right: 16px; }
       .editor-shell.planet-file-open .viewer, .editor-shell.planet-file-open textarea { position: static; width: 100%; height: 100%; min-height: 100%; border-radius: 18px; box-shadow: none; }
     }
     @media (max-width: 639px) {
@@ -1614,10 +1608,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .hub-card-editor-head { flex-direction: column; align-items: flex-start; }
       .hub-card-editor-head .docqa-actions { justify-content: flex-start; }
       .hub-card-children:not(:empty) { margin-left: 0; }
-      .planet-system { min-height: 560px; }
-      .cosmos-home { padding: 12px; }
-      .planet-stage { min-height: 520px; }
-      .editor-shell.planet-file-open .cosmos-home { padding-right: 12px; }
       .editor-shell.planet-file-open .viewer, .editor-shell.planet-file-open textarea { position: static; width: 100%; height: 100%; min-height: 100%; border-radius: 16px; box-shadow: none; }
     }
 
@@ -2322,7 +2312,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .doc-content { max-width: 1040px; margin: 0 auto; font-size: 14px; line-height: 1.68; }
     .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 36px; }
     .file-panel .doc-editor.markdown-view .markdown-line { position: relative; }
-    .file-panel .doc-editor.markdown-view .markdown-line::before { content: attr(data-line-number); position: absolute; left: -30px; top: 0.18em; width: 22px; color: color-mix(in srgb, var(--file-muted) 42%, transparent); font: 500 9px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; text-align: right; user-select: none; pointer-events: none; }
+    .file-panel:has([data-doc-review-banner]) .doc-editor.markdown-view .markdown-line::before { content: attr(data-line-number); position: absolute; left: -30px; top: 0.18em; width: 22px; color: color-mix(in srgb, var(--file-muted) 42%, transparent); font: 500 9px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; text-align: right; user-select: none; pointer-events: none; }
     .confirm-dialog, .mode-toggle, .card, .conflict-card { border-radius: 8px; }
     button.primary, button.secondary { border-radius: 6px; }
     @media (max-width: 1279px) {
@@ -2366,6 +2356,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .diff-code, .doc-content, .doc-editor { padding: 12px; }
       .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 32px; }
       .file-panel .doc-editor.markdown-view .markdown-line::before { left: -27px; width: 20px; font-size: 8px; }
+      #docReader.doc-editor, .markdown-editor-shell .doc-editor { font-size: 16px; }
     }
     /* LAYOUT CONTRACT: START */
     /*
@@ -22174,6 +22165,7 @@ function renderViewer() {
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
   wireMarkdownDocLinks();
+  wireMarkdownImages();
   wireMarkdownToc();
   applyReadingSize();
   wirePageButtons();
@@ -22372,6 +22364,12 @@ function renderMarkdownLineView(text, options = {}) {
   '</div>';
 }
 
+// R8a: a relative image shows under its line in the reader. Its bytes come through /api/file, scoped to the project;
+// it stays hidden until they arrive (CSS hides an image without src).
+function wireMarkdownImages() {
+  for (const img of document.querySelectorAll("#docReader img[data-md-image]")) api("/api/file?path=" + encodeURIComponent(img.dataset.mdImage)).then((file) => file.dataUrl && (img.src = file.dataUrl), () => {});
+}
+
 function usePlainTextSurface(filePath, text) {
   const value = String(text || "");
   return !String(filePath || "").toLowerCase().endsWith(".md") || value.length > 120_000 || value.split("\n", 2_501).length > 2_500;
@@ -22426,7 +22424,7 @@ function markdownOutline(text) {
 // The size and the page buttons belong to the device: the Mac and the tablet are read differently.
 const READING_SIZE_KEY = "context-room:reading-size";
 const PAGE_BUTTONS_KEY = "context-room:page-buttons";
-const READING_SIZES = [15, 18, 20, 22, 24, 26];
+const READING_SIZES = [17, 18, 20, 22, 24, 26];
 const CONTENTS_PAGE_SIZE = 40;
 let textToolsPromise = null;
 
@@ -22438,8 +22436,8 @@ function loadTextTools() {
 function readingSize() {
   try {
     const size = Number(window.localStorage?.getItem(READING_SIZE_KEY));
-    return READING_SIZES.includes(size) ? size : 15;
-  } catch { return 15; }
+    return READING_SIZES.includes(size) ? size : 17;
+  } catch { return 17; }
 }
 
 function pageButtonsEnabled() {
@@ -22453,7 +22451,7 @@ function pageButtonsEnabled() {
 function applyReadingSize() {
   const size = readingSize();
   const root = document.documentElement;
-  if (size === 15) {
+  if (size === 17) {
     root.removeAttribute("data-reading-size");
     root.style.removeProperty("--reader-size");
   } else {
@@ -22534,7 +22532,7 @@ function openReadingSettings() {
   const dialog = document.createElement("dialog");
   dialog.className = "reading-dialog";
   dialog.setAttribute("aria-label", "Text size");
-  const sizeButtons = () => READING_SIZES.map((size) => '<button type="button" data-reading-size-value="' + size + '" aria-pressed="' + String(size === readingSize()) + '">' + size + (size === 15 ? " Standard" : "") + '</button>').join("");
+  const sizeButtons = () => READING_SIZES.map((size) => '<button type="button" data-reading-size-value="' + size + '" aria-pressed="' + String(size === readingSize()) + '">' + size + (size === 17 ? " Standard" : "") + '</button>').join("");
   dialog.innerHTML = '<h2>Text size</h2><div class="reading-sizes" role="group" aria-label="Text size">' + sizeButtons() + '</div>'
     + '<label class="reading-page-option"><input type="checkbox" data-reading-page-buttons' + (pageButtonsEnabled() ? " checked" : "") + '> Page buttons</label>'
     + '<p class="reading-note">Kept on this device only.</p><button type="button" data-reading-close>Close</button>';
@@ -23727,7 +23725,8 @@ function renderMarkdownLine(line, index, options = {}) {
     return '<' + tag + ' class="markdown-line list"' + attrs + '><span class="markdown-marker"' + (options.semanticListItem ? ' aria-hidden="true"' : '') + '>' + escapeHtml(list[1]) + '</span>' + renderMarkdownInline(list[2], options) + '</' + tag + '>';
   }
   const tag = options.semantic ? "p" : "div";
-  return '<' + tag + ' class="markdown-line body"' + attrs + '>' + renderMarkdownInline(raw, options) + '</' + tag + '>';
+  const image = options.reader && raw.match(/!\[([^\]]*)\]\(<?([^)\s>]+)/), imagePath = image && resolveDocLinkPath(image[2]);
+  return '<' + tag + ' class="markdown-line body' + (/^\s*\|/.test(raw) ? " table" : "") + '"' + attrs + '>' + renderMarkdownInline(raw, options) + (imagePath ? '<img class="markdown-image" data-md-image="' + escapeHtml(imagePath) + '" alt="' + escapeHtml(image[1]) + '">' : "") + '</' + tag + '>';
 }
 
 function renderMarkdownInline(value, options = {}) {

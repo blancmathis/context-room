@@ -245,7 +245,7 @@ test('@smoke Aa changes the text size, keeps the reading place and survives a re
 
     await page.evaluate(() => selectFile('docs/Big.md'));
     dialog = await openTextSize(page);
-    await dialog.getByRole('button', { name: /^15 Standard$/ }).click();
+    await dialog.getByRole('button', { name: /^17 Standard$/ }).click();
     await expect.poll(sizeOf).toBe(standardSize);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
@@ -452,6 +452,58 @@ test('a changed doc opened from the tree shows the review banner, not the Git di
     await expect(page.locator('#docReader[data-tap-edit]')).toBeVisible();
     expect(fs.readFileSync(file, 'utf8')).toBe(agentText);
     expect(await page.evaluate(() => state.docqa.queue.some((item) => item.path === 'docs/DESIGN.md'))).toBe(false);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// R8a acceptance: a README reads as clean text. Proportional font, a measured line, its relative image shown,
+// code and tables in fixed width, no line numbers. A doc waiting in « To review » keeps them.
+test('a README reads as clean text with its image; line numbers only in review', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/README.md');
+    fs.mkdirSync(path.join(f.root, 'docs/img'), { recursive: true });
+    fs.writeFileSync(path.join(f.root, 'docs/img/diagram.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+    const prose = 'Context Room keeps the documents of each project readable for the people who own them, and it shows what agents changed. '.repeat(5).trim();
+    const text = '# Readme\n\n' + prose + '\n\n![Diagram](img/diagram.png)\n\n| Name | Role |\n|------|------|\n';
+    fs.writeFileSync(file, text);
+    acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/README.md']);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page, ['docs/README.md']);
+    await page.evaluate(() => selectFile('docs/README.md'));
+    const reader = page.locator('#docReader');
+    await expect(reader.locator('p.markdown-line').first()).toContainText('Context Room keeps');
+    const image = reader.locator('img.markdown-image');
+    await expect(image).toHaveCount(1);
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
+    await expect(page.locator('[data-doc-review-banner]')).toHaveCount(0);
+    const look = await reader.evaluate((node) => {
+      const prose = node.querySelector('p.markdown-line'), range = document.createRange();
+      range.selectNodeContents(prose);
+      const rows = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      return {
+        numbers: [...node.querySelectorAll('.markdown-line')].map((line) => getComputedStyle(line, '::before').content).filter((content) => !['none', 'normal'].includes(content)),
+        prose: getComputedStyle(prose).fontFamily, table: getComputedStyle(node.querySelector('.markdown-line.table')).fontFamily,
+        perLine: prose.textContent.length / rows, rows,
+      };
+    });
+    expect(look.numbers).toEqual([]);
+    expect(look.prose).not.toMatch(/mono/i);
+    expect(look.table).toMatch(/mono/i);
+    test.info().annotations.push({ type: 'characters per line', description: String(Math.round(look.perLine)) });
+    // The measure aims at 68-72 characters; system fonts differ by platform, so the check is wider. Phones are narrower.
+    if ((page.viewportSize()?.width || 1280) >= 1000) { expect(look.perLine).toBeGreaterThan(58); expect(look.perLine).toBeLessThan(84); }
+
+    // An agent changes it: the doc waits in « To review » and its lines are numbered again.
+    fs.writeFileSync(file, text + '\nAgent line.\n');
+    await expect.poll(() => page.evaluate(async () => {
+      applyBackgroundReportPayload(await api('/api/reports'));
+      return Boolean(state.docqa?.queue?.some((item) => item.path === 'docs/README.md'));
+    }), { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => selectFile('docs/README.md'));
+    await expect(page.locator('[data-doc-review-banner]')).toBeVisible();
+    await expect(reader.locator('img.markdown-image')).toHaveCount(1);
+    expect(await reader.locator('p.markdown-line').first().evaluate((line) => getComputedStyle(line, '::before').content)).toBe('"3"');
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
