@@ -1394,7 +1394,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-risk-notice summary { min-height: 32px; cursor: pointer; }
     .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
     .review-risk-notice code { overflow-wrap: anywhere; }
-    .doc-review-hint { margin: var(--space-2) var(--space-4) 0; color: var(--muted); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .doc-review-banner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: var(--space-2) var(--space-4) 0; padding: var(--space-2) var(--space-3); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 9%, transparent); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .doc-review-banner em { margin-left: auto; color: var(--muted); font-style: normal; }
+    @media (pointer: coarse) { .doc-review-banner button { min-height: 44px; } }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -4426,7 +4428,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { id: "collections", label: "Collections and assignments", description: "Choose where accepted shared skill collections are available.", section: "shared-skills", group: "shared-collections", scope: "Shared", keywords: "skills collections assignments destinations conflicts import" },
   { id: "destinations", label: "Local destinations and conflicts", description: "Inspect physical provider folders, managed links, and blocked collisions.", section: "shared-skills", group: "shared-destinations", scope: "Device", keywords: "local physical destinations links conflicts broken provider" },
   { id: "theme", label: "Theme and reading", description: "Choose the app and document reading theme.", section: "appearance", group: "appearance-theme", scope: "All rooms", target: "fileTheme", keywords: "theme appearance dark light document preview" },
-  { id: "explorer", label: "Explorer and file behavior", description: "Control Git diff behavior, hidden files, and the Computer root.", section: "appearance", group: "appearance-explorer", scope: "All rooms", target: "autoOpenGitDiff", keywords: "explorer computer root hidden files git diff" },
+  { id: "explorer", label: "Explorer and file behavior", description: "Control hidden files and the Computer root.", section: "appearance", group: "appearance-explorer", scope: "All rooms", target: "showHiddenFiles", keywords: "explorer computer root hidden files" },
   { id: "sounds", label: "Interface sounds", description: "Enable sounds, set volume, and preview important cues.", section: "appearance", group: "appearance-sounds", scope: "All rooms", target: "interfaceSoundsEnabled", keywords: "audio sound volume click review conflict" },
   { id: "shortcut", label: "Keyboard shortcuts", description: "Set the shortcut used to reference selected text in Codex.", section: "appearance", group: "appearance-shortcuts", scope: "All rooms", target: "codexReferenceShortcut", keywords: "keyboard shortcut hotkey reference codex" },
   { id: "templates", label: "Document templates", description: "Create and edit reusable Markdown document shapes.", section: "templates", group: "templates-list", scope: "Project", keywords: "markdown template new document" },
@@ -11547,14 +11549,6 @@ function previewSelectedFileTheme() {
   if (label) label.textContent = clean;
 }
 
-function autoOpenGitDiffEnabled() {
-  return state.settings?.appearance?.autoOpenGitDiff !== false;
-}
-
-function collapsedByGitDiffPreference(diff) {
-  return !(diff?.available !== false && diff?.changed && autoOpenGitDiffEnabled());
-}
-
 function renderFileThemeOptions(selected = currentFileThemeId()) {
   return FILE_THEMES.map((theme) =>
     '<option value="' + escapeHtml(theme.id) + '" ' + (theme.id === selected ? 'selected' : '') + '>' +
@@ -14812,7 +14806,6 @@ async function loadHostedContextRoom(options = {}) {
     appearance: {
       fileTheme: DEFAULT_FILE_THEME,
       colorMode: "system",
-      autoOpenGitDiff: true,
       showHiddenFiles: true,
       hideEmptyReviewToolbar: false,
       ...(state.settings?.appearance || {}),
@@ -15493,7 +15486,7 @@ async function selectFile(path, options = {}) {
   state.dirty = false;
   state.mode = "view";
   state.filePanel = false;
-  state.diffCollapsed = !autoOpenGitDiffEnabled();
+  state.diffCollapsed = true;
   if (options.revealInExplorer) {
     state.pathFilters = [];
     el("search").value = "";
@@ -15571,7 +15564,8 @@ async function selectFile(path, options = {}) {
       if (diff) {
         state.selectedDiff = diff;
         state.lastDiffRefreshAt = Date.now();
-        state.diffCollapsed = collapsedByGitDiffPreference(diff);
+        // R5: the Git diff never opens by itself; the review banner says what changed.
+        state.diffCollapsed = true;
         if (typeof options.diffCollapsed === "boolean") state.diffCollapsed = options.diffCollapsed;
         if (options.reviewMode && diff.changed && reviewBaseResult?.value) {
           applyChangedFileInlineReview(path, diff, reviewBaseResult.value, requestId);
@@ -19469,9 +19463,8 @@ function renderSettingsPanel() {
       '<div class="settings-field"><label for="colorMode">Context Room appearance</label><select id="colorMode"><option value="system" ' + ((appearance.colorMode || "system") === "system" ? "selected" : "") + '>Follow system</option><option value="light" ' + (appearance.colorMode === "light" ? "selected" : "") + '>Light</option><option value="dark" ' + (appearance.colorMode === "dark" ? "selected" : "") + '>Dark</option></select><span class="settings-field-note">This mode applies to the Context Room theme. Explicit editor themes keep their own light or dark palette.</span></div></div>' + renderSettingsThemePreview(appearance.fileTheme)
     }) +
     renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button><button type="button" data-web-app-settings>Install / offline notebooks</button>' }) +
-    renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
-      '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
-      '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles in every Explorer.</em></span></label></div>' +
+    renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
+      '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles in every Explorer.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="hideEmptyReviewToolbar"><input id="hideEmptyReviewToolbar" type="checkbox" ' + (appearance.hideEmptyReviewToolbar === true ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Hide review filters when nothing is pending</strong><em>Off keeps the project and type filters in place, so the page does not jump. Turn this on to hide them on a clean queue.</em></span></label></div>' +
       '<div class="settings-field"><label for="computerExplorerRoot">Computer Explorer root</label><span class="settings-field-note">Computer mode can browse this folder and everything inside it. Use an absolute path or ~/…</span><input id="computerExplorerRoot" type="text" value="' + escapeHtml(explorer.computerRoot || "") + '" placeholder="' + escapeHtml(DEFAULT_COMPUTER_EXPLORER_ROOT) + '" /></div></div>'
     }) +
@@ -19982,7 +19975,6 @@ async function saveSettings() {
   const appearance = {
     fileTheme: el("fileTheme")?.value || DEFAULT_FILE_THEME,
     colorMode: el("colorMode")?.value || DEFAULT_APPEARANCE.colorMode,
-    autoOpenGitDiff: el("autoOpenGitDiff")?.checked !== false,
     showHiddenFiles: el("showHiddenFiles")?.checked !== false,
     hideEmptyReviewToolbar: el("hideEmptyReviewToolbar")?.checked === true,
   };
@@ -22245,7 +22237,7 @@ function renderViewer() {
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile()
-    || (state.mode === "view" && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? '<p class="doc-review-hint">In To review · accept it there to edit</p>' : "");
+    || (state.mode === "view" && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? docReviewBannerMarkup(file.path, hasDiff && diff) : "");
   const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
     ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "") + reviewDocumentChecksMarkup(externalChange.documentChecks)
     : "";
@@ -22285,6 +22277,7 @@ function renderViewer() {
   wireFileActionButtons();
   wireRenderedMarkdownEditor();
   wireDocTapToEdit();
+  document.querySelectorAll("[data-doc-review]").forEach((button) => button.addEventListener("click", () => decideDocReview(button.dataset.docReview)));
   updateCodexReferenceAction();
   if (state.inspectorOpen) loadDocumentContextPanel().catch((error) => setStatus(error.message));
   syncWorkspaceScroll();
@@ -22335,6 +22328,18 @@ function scheduleDocFilesRefresh(now = false) {
 function docAwaitingReview(path) {
   const item = reviewQueueItemForPath(selectedStartupContextReviewPath(path) || path);
   return Boolean(item && !(item.review?.status === "verified" && item.review.current) && !(state.reviewModePath === path && state.reviewModeStatus === "verified"));
+}
+// R5: a doc in « To review » shows one line, wherever it is opened from: what changed and Accept / Reject.
+// The Git diff no longer opens by itself (it stays behind « Show Git diff »). The choice runs in an on-demand module.
+function docReviewBannerMarkup(path, diff) {
+  const item = reviewQueueItemForPath(path), added = item?.reviewReason === "added";
+  const choice = state.selectedStartupContext ? '<em>Accept it in To review to edit</em>' : '<button type="button" class="primary" data-doc-review="accept">Accept</button><button type="button" data-doc-review="reject">Reject</button><em>Accept or reject, then edit</em>';
+  return '<div class="doc-review-banner" data-doc-review-banner><strong>' + (added ? "New file from an agent" : "Changed by an agent") + '</strong>' + (diff && !added ? '<span>+' + diff.additions + ' −' + diff.deletions + '</span>' : "") + choice + '</div>';
+}
+function decideDocReview(action) {
+  import("/assets/ui/review-banner.mjs")
+    .then((module) => module.decideDocReview(action, { state, api, setStatus, reviewFlowDecisionFor, reviewFlowDecisionRequests, contextHubReviewItems, rejectContextRoomReviews, openContextHubLocalReview, selectFile, renderFiles }))
+    .catch((error) => setStatus(error.message));
 }
 function docTapEditable() {
   const path = state.selected || "";

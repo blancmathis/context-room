@@ -137,6 +137,15 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   }).on("error", reject));
   expect(docEditor.status).toBe(200);
   expect(zlib.brotliCompressSync(docEditor.body).length).toBeLessThan(5_400);
+  // R5: Accept / Reject from the review banner loads on the first choice: 761 on 2026-11-13, limit +10 %.
+  // The main script gained ~280 for the banner line (the Auto-open Git diff setting left to pay for it).
+  const reviewBanner = await new Promise((resolve, reject) => http.get(new URL("/assets/ui/review-banner.mjs", samples[0].jsUrls[0]), (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
+  }).on("error", reject));
+  expect(reviewBanner.status).toBe(200);
+  expect(zlib.brotliCompressSync(reviewBanner.body).length).toBeLessThan(850);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();

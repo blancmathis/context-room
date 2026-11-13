@@ -7311,8 +7311,8 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /\.file-panel \.doc-editor\.markdown-view, \.file-panel \.markdown-editor-input \{ padding-left: 36px; \}/);
   assert.match(html, /font-variant-numeric: tabular-nums/);
   assert.match(html, />App theme<\/label>/);
-  assert.match(html, /id="autoOpenGitDiff"/);
-  assert.match(html, /<strong>Auto-open Git diff<\/strong>/);
+  // R5: the Git diff never opens by itself, so its setting left; the review banner says what changed.
+  assert.doesNotMatch(html, /id="autoOpenGitDiff"|Auto-open Git diff/);
   assert.match(html, /id="showHiddenFiles"/);
   assert.match(html, /<strong>Show hidden files<\/strong>/);
   assert.match(html, /Display safe dotfiles in every Explorer\./);
@@ -7477,9 +7477,9 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /saveBeforeLeaving\(\(\) => goHub\(arguments\[0\]\)/);
   assert.match(html, /\.file-title\.unsaved::after \{ content: " ●";/);
   assert.match(html, /el\("saveSettings"\)\?\.addEventListener\("click", \(\) => saveSettings\(\)\.catch\(\(error\) => setStatus\(error\.message\)\)\)/);
-  assert.match(html, /function autoOpenGitDiffEnabled\(\)/);
-  assert.match(html, /function collapsedByGitDiffPreference\(diff\)/);
-  assert.match(html, /autoOpenGitDiff:\s*el\("autoOpenGitDiff"\)\?\.checked !== false/);
+  assert.doesNotMatch(html, /function autoOpenGitDiffEnabled\(\)|function collapsedByGitDiffPreference\(diff\)/);
+  assert.match(html, /function docReviewBannerMarkup\(path, diff\)[\s\S]{0,800}data-doc-review="accept">Accept<\/button><button type="button" data-doc-review="reject">Reject<\/button>/);
+  assert.match(html, /import\("\/assets\/ui\/review-banner\.mjs"\)/);
   assert.match(html, /showHiddenFiles:\s*el\("showHiddenFiles"\)\?\.checked !== false/);
   assert.match(html, /const sounds = \{[\s\S]*enabled:\s*el\("interfaceSoundsEnabled"\)\?\.checked !== false/);
   assert.match(html, /state\.files = filesData\.files \|\| state\.files;[\s\S]*renderFiles\(\);/);
