@@ -1214,7 +1214,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .markdown-line.code, .markdown-line.fence { color: var(--file-code); background: color-mix(in srgb, var(--file-code) 10%, transparent); }
     .markdown-line.frontmatter, .markdown-line.hr { color: var(--file-marker); }
     #docReader :is(p, li, blockquote, h1, h2, h3, h4, h5, h6).markdown-line, #docReader .markdown-frontmatter, #docReader .doc-backlinks { max-width: 62ch; }
-    #docReader.doc-editor, .markdown-editor-shell .doc-editor { font: 17px system-ui, sans-serif; }
+    #docReader.doc-editor, .markdown-editor-shell .doc-editor { font: 17px/1.7 system-ui, sans-serif; }
     .file-panel .markdown-editor-shell .doc-editor { padding-right: max(22px, calc(100% - 62ch - 36px)); }
     #docReader :is(.markdown-line:is(.code, .fence, .table), .markdown-inline-code) { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
     #docReader .table { white-space: pre; overflow-x: auto; }
@@ -22437,7 +22437,7 @@ function readingSize() {
   try {
     const size = Number(window.localStorage?.getItem(READING_SIZE_KEY));
     return READING_SIZES.includes(size) ? size : 17;
-  } catch { return 15; }
+  } catch { return 17; }
 }
 
 function pageButtonsEnabled() {
