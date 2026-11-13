@@ -3,6 +3,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { contextProviderProfile, listContextProviderProfiles } from "./provider_profiles.mjs";
+import { frontmatterField } from "./context_losses.mjs";
+import { estimateTokens } from "./documentation.mjs";
 
 const MAX_LEVEL_FOLDERS = 12;
 const MAX_VISITED = 400;
@@ -34,6 +36,49 @@ export function agentLevelFolders(root, provider, { skip = (name) => name.starts
   return found;
 }
 
+const EXTRA_DOCUMENTS = ["PLAN.md", "CONTEXT.md"];
+const readText = (file) => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
+const tokensOf = (text) => text ? estimateTokens(text) : 0;
+const withoutFrontmatter = (text) => String(text || "").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+
+/**
+ * One walk for everything the root's effective context does not hold: the agent files of each subfolder
+ * (instruction files and skills, with the same token estimate as the cost of the root) and PLAN.md / CONTEXT.md
+ * at the root. No inventory per folder. Rows are `{ level, kind, name, absolutePath, startupTokens, onDemandTokens }`.
+ */
+export function subfolderAgentRows(root, provider, { skip, limit = MAX_LEVEL_FOLDERS } = {}) {
+  const profiles = provider === "all" ? listContextProviderProfiles() : [contextProviderProfile(provider)];
+  const instructionNames = [...new Set(profiles.flatMap((profile) => profile.instructions.projectFiles))];
+  const skillDirs = [...new Set(profiles.flatMap((profile) => profile.skills.project || []))];
+  const rows = [];
+  for (const rel of agentLevelFolders(root, provider, { skip, limit })) {
+    const folder = path.join(root, rel);
+    for (const name of instructionNames) {
+      const file = path.join(folder, name);
+      const text = readText(file);
+      if (text != null) rows.push({ level: rel, kind: "instruction", name: path.basename(name), absolutePath: file, startupTokens: tokensOf(text), onDemandTokens: null });
+    }
+    for (const dir of skillDirs) {
+      let entries = [];
+      try { entries = fs.readdirSync(path.join(folder, dir), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        const file = path.join(folder, dir, entry.name, "SKILL.md");
+        const text = readText(file);
+        if (text == null) continue;
+        const name = frontmatterField(text, "name") || entry.name;
+        rows.push({ level: rel, kind: "skill", name: entry.name, absolutePath: file, startupTokens: tokensOf(`${name}: ${frontmatterField(text, "description") || ""}`), onDemandTokens: tokensOf(withoutFrontmatter(text).trim()) });
+      }
+    }
+  }
+  for (const name of EXTRA_DOCUMENTS) {
+    const file = path.join(root, name);
+    const text = readText(file);
+    if (text != null) rows.push({ level: "root", kind: "document", name, absolutePath: file, startupTokens: null, onDemandTokens: tokensOf(text) });
+  }
+  return rows;
+}
+
 function levelOf(application) {
   if (application.scope === "device") return "global";
   const subtree = String(application.subtree || ".").replaceAll("\\", "/");
@@ -45,7 +90,7 @@ function levelOf(application) {
  * Groups the instructions and skills of several effective contexts (one per folder, each with its `cost`)
  * into levels. A file seen from many folders is listed once, at its own level.
  */
-export function groupAgentLevels(results, { root = "" } = {}) {
+export function groupAgentLevels(results, { root = "", extra = [] } = {}) {
   const levels = new Map([["global", []], ["root", []]]);
   const seen = new Set();
   // File paths come from realpath: compare them to the real root too (a root under a link, /var -> /private/var).
@@ -73,6 +118,24 @@ export function groupAgentLevels(results, { root = "" } = {}) {
         });
       }
     }
+  }
+  // Rows found by the single walk (see subfolderAgentRows): skip a file the root context already listed.
+  const seenFiles = new Set(results.flatMap(({ effective }) => ["instructions", "skills"].flatMap((kind) => (effective?.[kind] || []).map(({ resource }) => String(resource.metadata?.absolutePath || "")))));
+  for (const row of extra) {
+    let absolute = row.absolutePath;
+    try { absolute = fs.realpathSync(absolute); } catch {}
+    if (seenFiles.has(absolute)) continue;
+    seenFiles.add(absolute);
+    const relPath = base ? path.relative(base, absolute).replaceAll("\\", "/") : "";
+    if (!levels.has(row.level)) levels.set(row.level, []);
+    levels.get(row.level).push({
+      kind: row.kind,
+      name: row.name,
+      locator: absolute,
+      path: relPath && !relPath.startsWith("../") && !path.isAbsolute(relPath) ? relPath : "",
+      startupTokens: row.startupTokens,
+      onDemandTokens: row.onDemandTokens,
+    });
   }
   const order = (name) => name === "global" ? 0 : name === "root" ? 1 : 2;
   return [...levels]
