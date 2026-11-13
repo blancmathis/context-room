@@ -7381,8 +7381,12 @@ function updateGlobalExplorerMarkup(node, markup) {
     });
     return;
   }
+  // A background refresh redraws the tree: the focused row keeps the keyboard focus.
+  const focused = node.contains(document.activeElement) ? document.activeElement : null;
+  const id = focused && [...focused.attributes].find((attribute) => attribute.name.startsWith("data-global-project-"));
   node.innerHTML = markup;
   node.__contextRoomMarkup = markup;
+  if (id) node.querySelector("[" + id.name + '="' + CSS.escape(id.value) + '"]')?.focus({ preventScroll: true });
 }
 
 function contextHubLocalCoverage(projects = state.contextHub?.projects || []) {

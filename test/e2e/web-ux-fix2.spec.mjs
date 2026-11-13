@@ -20,6 +20,10 @@ async function openAtlas(page, width, height = 900, extra = "&explorer=expanded"
 for (const [width, height] of [[390, 844], [800, 900]]) {
   test(`@layout at ${width}px choosing a file in the Explorer closes the drawer and focuses the document`, async ({ page }) => {
     await openAtlas(page, width, height);
+    // Below 981 px entering a project closes the drawer (R3b), so open it the way a user does.
+    const app = page.locator(".app");
+    if (await app.evaluate((node) => node.classList.contains("sidebar-collapsed"))) await page.locator("#explorerOpen:visible, #sidebarToggle:visible").first().click();
+    await expect(app).not.toHaveClass(/sidebar-collapsed/);
     const docs = page.locator('[data-global-project-folder="docs"]').first();
     await expect(docs).toBeVisible();
     if (await docs.getAttribute("aria-expanded") !== "true") await docs.click();
