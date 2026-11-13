@@ -7499,11 +7499,10 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /\.workspace-dock\s*\{[^}]*display:\s*flex;[^}]*padding:\s*5px var\(--workbench-gutter-compact\);[^}]*background:\s*transparent/);
   assert.match(html, /\.dock-button\s*\{[^}]*min-width:\s*var\(--control-height\);[^}]*min-height:\s*var\(--control-height\);[^}]*padding:\s*0 var\(--space-3\)/);
   assert.match(html, /\.workspace-dock \.dock-button\[hidden\]\s*\{\s*display:\s*none !important;\s*\}/);
-  assert.match(html, /id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff<\/button>/);
-  assert.match(html, /\.dock-button\.diff-dock-button\s*\{[^}]*margin-left:\s*var\(--space-1\);[^}]*padding:\s*0 var\(--space-3\)/);
-  assert.match(html, /const gitDiffButton = el\("gitDiffToggle"\)/);
-  assert.match(html, /gitDiffButton\.textContent = state\.diffCollapsed \? "Show Git diff" : "Hide Git diff"/);
-  assert.match(html, /el\("gitDiffToggle"\)\.addEventListener\("click", \(\) => \{[\s\S]*setDiffCollapsed\(!state\.diffCollapsed\);[\s\S]*\}\);/);
+  // R6: the Git diff moved from the dock into the file bar's ⋯ menu.
+  assert.doesNotMatch(html, /id="gitDiffToggle"/);
+  assert.match(html, /button\('data-file-git-diff', state\.diffCollapsed \? 'Changes since last commit' : 'Hide changes'\)/);
+  assert.match(html, /querySelector\("\[data-file-git-diff\]"\)\?\.addEventListener\("click", \(\) => setDiffCollapsed\(!state\.diffCollapsed\)\)/);
   assert.doesNotMatch(html, /class="diff-toggle" type="button" data-show-diff/);
   assert.match(html, /function renderMarkdownLineView\(text, options = \{\}\)/);
   assert.match(html, /id="docReader" class="doc-editor markdown-view"/);

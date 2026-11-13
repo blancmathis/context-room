@@ -631,8 +631,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     #back.dock-button, #forward.dock-button { padding: 0; }
     .dock-button:hover { transform: translateY(-1px); background: rgba(139,211,255,0.12); }
     .dock-button.primary { color: var(--on-accent); border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
-    .dock-button.diff-dock-button { min-width: auto; margin-left: var(--space-1); padding: 0 var(--space-3); color: var(--label-strong); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 12px; letter-spacing: 0.01em; }
-    .dock-button.diff-dock-button.active { color: var(--on-accent); border-color: transparent; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
     .proposal-dock-back { color: var(--accent); border-color: transparent; background: transparent; }
     .proposal-dock-back:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .dock-status { display: none; }
@@ -1302,7 +1300,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-reading-size] #docReader.doc-editor, html[data-reading-size] .markdown-editor-shell .doc-editor { font-size: var(--reader-size, 15px); }
     html[data-reading-size] #docReader.plain-text-view, html[data-reading-size] #docEditor.plain-text-editor { font-size: calc(var(--reader-size, 15px) * 13 / 15); }
     .doc-toc a[aria-current="location"], .contents-dialog a[aria-current="location"] { font-weight: 700; }
-    .file-actions .file-action[data-editor-undo], .file-actions .file-action[data-editor-redo], .file-actions .file-action[data-editor-find], .file-actions .file-action[data-reading-settings], .file-actions .file-action[data-html-contents] { min-height: 44px; min-width: 44px; }
     .doc-toc-search { width: 100%; min-height: 44px; margin: 4px 0; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
     .doc-toc-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
     .doc-toc-pager button, .reading-dialog button, .contents-dialog button, .reader-page-bar button, .find-bar button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-panel-bg); color: var(--file-fg); font: inherit; cursor: pointer; }
@@ -1484,6 +1481,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     @media (pointer: coarse) { .doc-save-failed button { min-height: 44px; min-width: 44px; } }
     .file-header-copy .diff-meta { white-space: normal; line-height: 1.35; }
     .file-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+    .file-menu { position: relative; }
+    .file-menu > summary { display: block; list-style: none; }
+    .file-menu > summary::-webkit-details-marker { display: none; }
+    .file-menu-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; display: grid; gap: 2px; min-width: 180px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-floating); box-shadow: 0 12px 32px rgba(0,0,0,.28); }
+    .file-menu-list .file-action { border-color: transparent; background: none; text-align: left; }
+    .file-menu:not(:last-child) .file-menu-list { right: auto; left: 0; }
     .file-actions-loading { min-width: min(340px, 44vw); min-height: 36px; justify-content: flex-end; pointer-events: none; }
     .file-action-placeholder { width: 82px; height: 32px; border: 1px solid color-mix(in srgb, var(--line) 82%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--surface-card) 82%, transparent); animation: fileActionLoadingPulse 1.1s ease-in-out infinite alternate; }
     .file-action-placeholder.wide { width: 112px; }
@@ -1531,7 +1534,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	  .context-health-controls { grid-template-columns: 1fr; }
       .dock-button { min-height: 36px; min-width: 36px; padding: 0 10px; white-space: nowrap; }
       #back.dock-button, #forward.dock-button { padding: 0; }
-      .dock-button.diff-dock-button { padding: 0 11px; }
       .editor-shell { height: 100%; min-height: 0; border-radius: 18px; }
       .docqa-panel { border-radius: 18px; }
       .docqa-panel header { padding: var(--space-4); align-items: flex-start; flex-direction: column; }
@@ -1656,7 +1658,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .dock-button.primary, button.primary, .file-action.primary {
       background: var(--accent); color: var(--on-accent); box-shadow: none;
     }
-    .dock-button.diff-dock-button.active, .mode-toggle button.active { background: var(--accent); color: var(--on-accent); }
+    .mode-toggle button.active { background: var(--accent); color: var(--on-accent); }
     .workspace-chrome { min-width: 0; display: grid; gap: 6px; }
     .shared-context-controls {
       min-width: 0; overflow: hidden;
@@ -2748,8 +2750,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       color: var(--on-accent);
     }
     .dock-button.primary:hover, .file-action.primary:hover, button.primary:hover { transform: none; filter: brightness(.96); background: var(--accent); }
-    .dock-button.diff-dock-button { margin-left: 2px; border: 0; background: transparent; color: var(--muted); }
-    .dock-button.diff-dock-button.active, .mode-toggle button.active { background: var(--native-selection); color: var(--text); }
+    .mode-toggle button.active { background: var(--native-selection); color: var(--text); }
     button:disabled, .dock-button:disabled, .file-action:disabled { opacity: .42; cursor: default; }
     .workspace-title { padding: 0 8px; color: var(--muted); font-family: inherit; font-size: 12px; text-align: left; }
     .workspace-title span:last-child, .workspace-title button { color: var(--text); }
@@ -3273,8 +3274,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .context-room-brand { min-width: max-content; min-height: 40px; padding-inline: 7px; }
       .workspace-dock > .dock-button { min-height: 40px; }
       #back.dock-button, #forward.dock-button, #graphLocal.dock-button { min-width: 40px; }
-      #gitDiffToggle { font-size: 0; }
-      #gitDiffToggle::after { content: "Diff"; font-size: 12px; }
       #graphLocal span { display: none; }
       .settings-page .settings-card > .settings-page-header { align-items: stretch; flex-direction: column; gap: 10px; padding: var(--workbench-gutter-compact); }
       .settings-search { width: 100%; margin-left: 0; }
@@ -3410,10 +3409,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-hub"] #newDocPage,
     html[data-context-room-runtime-profile="hosted-hub"] #settingsPage,
     html[data-context-room-runtime-profile="hosted-hub"] #graphPage,
-    html[data-context-room-runtime-profile="hosted-hub"] #save,
-    html[data-context-room-runtime-profile="hosted-hub"] #reload,
-    html[data-context-room-runtime-profile="hosted-hub"] #deleteCurrent,
-    html[data-context-room-runtime-profile="hosted-hub"] #verifyCurrent,
     html[data-context-room-runtime-profile="hosted-hub"] #contextPanelToggle { display: none !important; }
     html[data-context-room-runtime-profile="hosted-hub"] .app { grid-template-columns: minmax(0, 1fr) !important; }
     html[data-context-room-runtime-profile="hosted-hub"] .app > main { width: 100vw; min-width: 0; }
@@ -3476,14 +3471,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-review"] #newDocPage,
     html[data-context-room-runtime-profile="hosted-review"] #settingsPage,
     html[data-context-room-runtime-profile="hosted-review"] #graphPage,
-    html[data-context-room-runtime-profile="hosted-review"] #save,
-    html[data-context-room-runtime-profile="hosted-review"] #reload,
-    html[data-context-room-runtime-profile="hosted-review"] #deleteCurrent,
-    html[data-context-room-runtime-profile="hosted-review"] #verifyCurrent,
     html[data-context-room-runtime-profile="hosted-review"] #contextPanelToggle,
     html[data-context-room-runtime-profile="hosted-review"] #back,
     html[data-context-room-runtime-profile="hosted-review"] #forward,
-    html[data-context-room-runtime-profile="hosted-review"] #gitDiffToggle,
+    html[data-context-room-runtime-profile="hosted-review"] [data-file-git-diff],
     html[data-context-room-runtime-profile="hosted-review"] [data-file-save],
     html[data-context-room-runtime-profile="hosted-review"] [data-file-delete] { display: none !important; }
     html[data-context-room-runtime-profile="hosted-review"] .app { grid-template-columns: minmax(0, 1fr) !important; }
@@ -3611,7 +3602,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
-    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button { min-height: 44px; } }
+    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button { min-height: 44px; } .file-actions .file-action { min-width: 44px; min-height: 44px; } }
     /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
@@ -3698,13 +3689,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
           <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
           <div id="workspaceTitle" class="workspace-title">Context Room</div>
-          <button id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff</button>
           <button id="graphLocal" class="dock-button" type="button" title="Open local document graph" hidden><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-graph"></use></svg><span>Local graph</span></button>
           <button id="contextPanelToggle" class="dock-button" type="button" title="Inspect document context" hidden>Context</button>
-          <button id="reload" class="dock-button" type="button" hidden>Reload</button>
-          <button id="verifyCurrent" class="dock-button" type="button" hidden>Verified</button>
-          <button id="deleteCurrent" class="dock-button danger-action" type="button" hidden>Delete</button>
-          <button id="save" class="dock-button primary" hidden disabled>Save</button>
           <button id="proposalDockReject" class="dock-button danger-action" type="button" hidden>Reject proposal</button>
           <div id="status" class="dock-status" role="status" aria-live="polite" aria-atomic="true" title="Starting">Starting…</div>
         </div>
@@ -4436,13 +4422,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { id: "hub", label: "Home sections and cards", description: "Arrange the sections and shortcuts shown on Home.", section: "hub", group: "hub-sections", scope: "Project", keywords: "hub home sections cards folders navigation" },
   { id: "codex-prompts", label: "Codex Prompt Center", description: "Open the advanced device-wide prompt override editor.", section: "codex-prompts", group: "codex-prompts-editor", scope: "All rooms", target: "openCodexPromptCenter", keywords: "prompt overrides restart runtime official effective advanced" },
 ];
-const MAIN_FILE_PATHS = new Set([
-  "~/.hermes/memories/USER.md",
-  "~/.hermes/memories/MEMORY.md",
-  ".hermes.md",
-  "memory/USER.md",
-  "memory/MEMORY.md",
-]);
 
 function currentContextRoomSoundSettings(preview = false) {
   const saved = state.settings?.sounds || { enabled: true, volume: 0.35 };
@@ -13227,48 +13206,8 @@ function isScrollIntentKey(event) {
   return ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key);
 }
 
-function renderStats(files) {
-  const existing = files.filter((file) => file.exists).length;
-  const chars = files.reduce((sum, file) => sum + (file.chars || 0), 0);
-  el("stats").innerHTML = [
-    '<div class="card"><strong>' + files.length + '</strong><span>tracked files</span></div>',
-    '<div class="card"><strong>' + existing + '</strong><span>present</span></div>',
-    '<div class="card"><strong>' + chars.toLocaleString("en-US") + '</strong><span>characters</span></div>',
-  ].join("");
-}
 
-function renderMainFiles() {
-  const mainFiles = state.files.filter((file) => MAIN_FILE_PATHS.has(file.path));
-  const groups = groupMainFiles(mainFiles);
-  el("mainFiles").innerHTML = groups.map((group) =>
-    '<div class="quick-group">' +
-      '<div class="quick-group-title">' + escapeHtml(group.title) + '</div>' +
-      group.files.map((file) =>
-        '<button class="quick-file ' + (state.selected === file.path ? "active" : "") + '" data-main-path="' + escapeHtml(file.path) + '" title="' + escapeHtml(file.impact || file.path) + '">' +
-          '<strong>' + escapeHtml(file.label || file.path) + '</strong>' +
-          '<span>' + escapeHtml(file.path) + '</span>' +
-        '</button>'
-      ).join("") +
-    '</div>'
-  ).join("");
-  document.querySelectorAll("[data-main-path]").forEach((button) => button.addEventListener("click", () => selectFile(button.dataset.mainPath)));
-}
 
-function groupMainFiles(files) {
-  const buckets = [
-    { title: "injected by Hermes", test: (file) => file.category.startsWith("1") },
-    { title: "Project context", test: (file) => file.path === "memory/USER.md" || file.path === "memory/MEMORY.md" },
-  ];
-  const used = new Set();
-  const groups = buckets.map((bucket) => {
-    const grouped = files.filter((file) => bucket.test(file) && !used.has(file.path));
-    for (const file of grouped) used.add(file.path);
-    return { title: bucket.title, files: grouped };
-  }).filter((group) => group.files.length);
-  const rest = files.filter((file) => !used.has(file.path));
-  if (rest.length) groups.push({ title: "other core files", files: rest });
-  return groups;
-}
 
 function buildTree(files, directories = []) {
   const root = { name: "", path: "", type: "folder", children: new Map(), file: null };
@@ -16120,7 +16059,6 @@ function showHome() {
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
   el("editor").hidden = true;
-  el("save").disabled = true;
   document.querySelector(".editor-shell").classList.remove("planet-file-open", "file-open");
   renderDocQaDashboard();
   updateCodexReferenceAction();
@@ -17421,7 +17359,6 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
   el("newDocPage").hidden = false;
   el("viewer").hidden = true;
   el("editor").hidden = true;
-  el("save").disabled = true;
   document.querySelector(".editor-shell").classList.remove("planet-file-open", "file-open");
   renderNewDocPanel();
   updateHistoryButtons();
@@ -17786,34 +17723,31 @@ function gitStatusLabel(status, reviewRequired = false) {
   return clean;
 }
 
-function renderReviewItem(item) {
-  const gitLabel = gitStatusLabel(item.gitStatus, item.reviewRequired);
-  const startupOrder = item.startupContext?.order ? ' data-startup-review-order="' + escapeHtml(item.startupContext.order) + '"' : "";
-  const pathLine = item.oldPath
-    ? escapeHtml(item.oldPath) + " -> " + escapeHtml(item.path)
-    : escapeHtml(item.path);
-  return '<button class="review-item ' + (state.selectedReview === item.path ? "active" : "") + '" type="button" data-review-path="' + escapeHtml(item.path) + '"' + startupOrder + '>' +
-    '<div class="review-top"><div class="review-title">' + escapeHtml(item.label || item.path) + '</div><span class="chip high">' + escapeHtml(gitLabel) + '</span></div>' +
-    '<div class="review-path">' + pathLine + '</div>' +
-  '</button>';
-}
 
 function renderFileActionButtons(options = {}) {
   return '<div class="file-actions">' + renderFileActionItems(options) + '</div>';
 }
 
-function renderFileActionItems({ modeToggle = null, reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
+// R6: Discuss, ▾ (Dictate, Voice, Annotate), ⋯ (Find, Aa, Git diff, Delete).
+function renderFileActionItems({ modeToggle = null, reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true } = {}) {
+  const path = state.selected, own = path && !state.selectedStartupContext, view = state.mode === "view", editing = modeToggle === "view", html = isHtmlDocumentPath(path);
+  const off = dirty || conversationBlocked ? ' disabled' : '', diff = state.selectedDiff;
+  const button = (attr, label, more = '') => '<button class="file-action" type="button" ' + attr + more + '>' + label + '</button>';
+  const menu = (label, mark, items) => items ? '<details class="file-menu"><summary class="file-action" aria-label="' + label + '">' + mark + '</summary><div class="file-menu-list">' + items + '</div></details>' : '';
   return '' +
-    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : ' title="Type to the agent about this document"') + '>Discuss</button><button class="file-action" type="button" data-file-dictate title="Speak to type text into this document" ' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice title="Talk out loud with the agent about this document"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>'
-      + (state.mode === "view" && /\.(md|markdown)$/i.test(state.selected) && !usePlainTextSurface(state.selected, state.saved) ? '<button class="file-action" type="button" data-file-annotate title="Mark a passage and ask the agent about it" aria-pressed="' + (handAnnotation ? "true" : "false") + '"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Annotate</button>' : '') : '') +
+    (IS_LOCAL && own && !readOnly && /\.(md|markdown|txt|html?)$/i.test(path) ? button('data-file-conversation', 'Discuss', off ? off + ' title="Save or resolve the original document first"' : ' title="Type to the agent about this document"')
+      + menu('More ways to discuss', '▾', button('data-file-dictate', 'Dictate', conversationBlocked ? ' disabled' : '') + button('data-file-voice', 'Voice', off)
+        + (view && /\.(md|markdown)$/i.test(path) && !usePlainTextSurface(path, state.saved) ? button('data-file-annotate', 'Annotate', ' aria-pressed="' + Boolean(handAnnotation) + '"' + off) : '')) : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
-    (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
-    (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
-    (nextReviewAction ? '<button class="file-action" type="button" data-next-review>' + escapeHtml(nextReviewAction.label) + '</button>' : '') +
-    (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo' + (docEditorCore?.editorHistoryAvailable("undo") ? '' : ' disabled') + '>Undo</button><button class="file-action" type="button" data-editor-redo' + (docEditorCore?.editorHistoryAvailable("redo") ? '' : ' disabled') + '>Redo</button><button class="file-action" type="button" data-editor-find>Find</button><button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
-    (state.selected && !state.selectedStartupContext && state.mode === "view" && !isImageDocumentPath(state.selected) && (modeToggle === "edit" || isHtmlDocumentPath(state.selected)) ? (isHtmlDocumentPath(state.selected) ? '<button class="file-action" type="button" data-html-contents>Contents</button>' : '') + '<button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
-    (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
-    '';
+    (reviewAction ? button('data-file-review-decision="' + escapeHtml(reviewAction.status) + '"', escapeHtml(reviewAction.label)) : '') +
+    (secondaryReviewAction ? button('data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '"', escapeHtml(secondaryReviewAction.label)) : '') +
+    (nextReviewAction ? button('data-next-review', escapeHtml(nextReviewAction.label)) : '') +
+    (editing ? button('data-editor-undo aria-label="Undo"', '↶', docEditorCore?.editorHistoryAvailable("undo") ? '' : ' disabled') + button('data-editor-redo aria-label="Redo"', '↷', docEditorCore?.editorHistoryAvailable("redo") ? '' : ' disabled') : '') +
+    (own && view && html ? button('data-html-contents', 'Contents') : '') +
+    menu('More', '⋯', (editing ? button('data-editor-find', 'Find') : '')
+      + (editing || own && view && !isImageDocumentPath(path) && (modeToggle === "edit" || html) ? button('data-reading-settings aria-label="Text size"', 'Aa') : '')
+      + (own && diff?.available !== false && diff?.changed ? button('data-file-git-diff', state.diffCollapsed ? 'Changes since last commit' : 'Hide changes') : '')
+      + (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : ''));
 }
 
 function reviewStatusForPath(path) {
@@ -20731,7 +20665,6 @@ function showSettingsPage() {
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
   el("editor").hidden = true;
-  el("save").disabled = true;
   document.querySelector(".editor-shell").classList.remove("planet-file-open", "file-open");
   renderSettingsPanel();
   const selectedProject = selectedGlobalSettingsProject();
@@ -21072,12 +21005,6 @@ async function showGraphPage(options = {}) {
   await loadDocumentGraph({ force: options.force });
 }
 
-async function showVisualDocuments() {
-  state.graphVisualMode = true;
-  state.graphTypes = ["html", "image", "diagram"];
-  state.graphListMode = true;
-  await showGraphPage({ scope: state.activeProjectLocationId ? "project" : "global", visual: true });
-}
 
 function selectGraphNode(nodeId) {
   state.graphSelectedNode = nodeId || "";
@@ -21131,7 +21058,6 @@ function updateActionBanner() {
     brandHome.title = returnUrl || IS_HOSTED_REVIEW ? "Back to main Context Room" : "Home";
     brandHome.setAttribute("aria-label", brandHome.title);
   }
-  const hasGitDiff = onFile && !state.selectedStartupContext && state.selectedDiff?.available !== false && Boolean(state.selectedDiff?.changed);
   el("settingsButton").hidden = state.page !== "hub";
   const workspaceTitle = el("workspaceTitle");
   if (workspaceTitle) {
@@ -21162,14 +21088,6 @@ function updateActionBanner() {
   }
   if (!onFile) setDocumentContextOpen(false, { persist: false });
   ["back", "forward"].forEach((id) => { el(id).hidden = !(onFile || hasHomeHistory); });
-  const gitDiffButton = el("gitDiffToggle");
-  if (gitDiffButton) {
-    gitDiffButton.hidden = !hasGitDiff;
-    gitDiffButton.textContent = state.diffCollapsed ? "Show Git diff" : "Hide Git diff";
-    gitDiffButton.title = state.diffCollapsed ? "Show Git diff" : "Hide Git diff";
-    gitDiffButton.classList.toggle("active", hasGitDiff && !state.diffCollapsed);
-  }
-  ["reload", "verifyCurrent", "deleteCurrent", "save"].forEach((id) => { el(id).hidden = true; });
   renderProposalDockControls();
 }
 
@@ -22053,9 +21971,6 @@ function updateHeader() {
   el("impact").textContent = "";
   const conflict = activeFileConflict();
   const externalChange = activeExternalChange();
-  const blockedByDiskChange = Boolean(conflict || externalChange);
-  const readOnlySelected = Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly);
-  el("save").disabled = blockedByDiskChange || readOnlySelected || !state.dirty || !state.selected;
   // R2: the only save sign is « ● » by the name while the text is not on disk; a failure says so once, with Retry.
   document.querySelector(".file-panel .file-title")?.classList.toggle("unsaved", state.dirty);
   const failed = document.querySelector(".doc-save-failed");
@@ -22069,12 +21984,6 @@ function updateHeader() {
   updateActionBanner();
 }
 
-function fallbackImpact(path) {
-  if (path.includes("/capture/")) return "Historical capture. Useful for finding what was learned, but not injected raw into every prompt.";
-  if (path.includes("/topics/")) return "Thematic memory file. Useful when the topic returns, not automatically injected context.";
-  if (path.includes("/reflections/")) return "Memory synthesis/reflection. Consult when relevant to the topic.";
-  return "Memory file available for reading/editing from this interface.";
-}
 
 function updatePreview() {
   const text = activeEditor().value;
@@ -24101,7 +24010,8 @@ function wireFileActionButtons(root = document) {
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   // Undo / Redo keep the caret in the text, so pressing them does not end editing.
-  root.querySelectorAll("[data-editor-undo], [data-editor-redo]").forEach((button) => button.addEventListener("pointerdown", (event) => event.preventDefault()));
+  root.querySelectorAll("[data-editor-undo], [data-editor-redo], .file-menu summary, .file-menu-list button").forEach((button) => button.addEventListener("pointerdown", (event) => event.preventDefault()));
+  root.querySelector("[data-file-git-diff]")?.addEventListener("click", () => setDiffCollapsed(!state.diffCollapsed));
   root.querySelector("[data-file-delete]")?.addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
   root.querySelector("[data-reading-settings]")?.addEventListener("click", openReadingSettings);
   root.querySelector("[data-html-contents]")?.addEventListener("click", openHtmlContents);
@@ -25481,30 +25391,7 @@ function renderDiffLine(line) {
   return '<span class="diff-line ' + kind + '">' + escapeHtml(line || " ") + '</span>';
 }
 
-function linkifyPaths(text) {
-  const targets = buildPathTargets();
-  if (!targets.length) return escapeHtml(text);
-  const pattern = new RegExp("(^|[^\\w~./-])(" + targets.map((target) => escapeRegExp(target.display)).join("|") + ")(?=$|[^\\w/.-])", "g");
-  return escapeHtml(text).replace(pattern, (match, prefix, rawTarget) => {
-    const found = targets.find((target) => target.display === rawTarget);
-    if (!found) return match;
-    return escapeHtml(prefix) + '<a class="path-link" href="#" data-kind="' + found.kind + '" data-target="' + escapeHtml(found.path) + '">' + escapeHtml(rawTarget) + '</a>';
-  });
-}
 
-function buildPathTargets() {
-  const targets = new Map();
-  for (const file of state.files) {
-    targets.set(file.path, { display: file.path, path: file.path, kind: "file" });
-    const parts = file.path.split("/");
-    for (let i = 1; i < parts.length; i += 1) {
-      const folder = parts.slice(0, i).join("/");
-      if (!folder || folder.startsWith("~")) continue;
-      targets.set(folder + "/", { display: folder + "/", path: folder, kind: "folder" });
-    }
-  }
-  return [...targets.values()].sort((a, b) => b.display.length - a.display.length);
-}
 
 function promptRevertCurrentDiff() {
   if (!state.selected || !state.selectedDiff?.changed || state.diffCollapsed) return;
@@ -27001,7 +26888,6 @@ function scrollEditorToTextAnchor(editor, snapshot) {
 // Search ignores case and accents, like the CLI (src/documentation.mjs) and the Lisière app.
 function searchFold(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
-function escapeRegExp(value) { return String(value).replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"); }
 function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/(["\\])/g, "\\$1"); }
 
 let interfaceScrollEndTimer = 0;
@@ -28250,24 +28136,14 @@ el("graphCanvas")?.addEventListener("keydown", (event) => {
     if (node) openGraphNode(node).catch((error) => setStatus(error.message));
   }
 });
-el("gitDiffToggle").addEventListener("click", () => {
-  if (!state.selectedDiff?.changed) return;
-  setDiffCollapsed(!state.diffCollapsed);
-});
+// A file menu (▾ or ⋯) closes after a choice or a click elsewhere.
+document.addEventListener("click", (event) => document.querySelectorAll("details.file-menu[open]").forEach((menu) => (!menu.contains(event.target) || event.target.closest(".file-menu-list button")) && menu.removeAttribute("open")));
 el("contextPanelToggle")?.addEventListener("click", () => setDocumentContextOpen(!state.inspectorOpen));
 el("documentContextClose")?.addEventListener("click", () => setDocumentContextOpen(false));
-el("verifyCurrent").addEventListener("click", () => verifyCurrentFile().catch((error) => setStatus(error.message)));
-el("deleteCurrent").addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
 el("watchSelected").addEventListener("click", () => addSelectedToWatch().catch((error) => setStatus(error.message)));
 el("unwatchSelected").addEventListener("click", () => removeSelectedFromWatch().catch((error) => setStatus(error.message)));
 el("clearSelection").addEventListener("click", () => clearDeleteSelection());
 el("deleteSelected").addEventListener("click", () => deletePaths([...state.selectedForDelete]).catch((error) => setStatus(error.message)));
-el("save").addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));
-el("reload").addEventListener("click", () => {
-  if (state.dirty && !confirm("Discard unsaved editor changes and reload this file from disk?")) return;
-  state.dirty = false;
-  selectFile(state.selected, { pushHistory: false, fromPlanet: state.filePanel, forceReload: true }).catch((error) => setStatus(error.message));
-});
 window.addEventListener("pagehide", handleWorkspacePageHide);
 window.addEventListener("pagehide", flushUnsentReviewFlowDecisions);
 window.addEventListener("pageshow", (event) => {

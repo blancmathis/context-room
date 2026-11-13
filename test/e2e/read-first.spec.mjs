@@ -124,7 +124,9 @@ test('@smoke the Documents map follows the accepted index and pages through it',
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
-const openTextSize = async (page) => { await page.getByRole('button', { name: 'Text size', exact: true }).click(); return page.getByRole('dialog', { name: 'Text size' }); };
+// R6: Find, Aa, the Git diff and Delete sit in the file bar's ⋯ menu.
+const openMore = (page) => page.locator('.file-actions summary[aria-label="More"]').click();
+const openTextSize = async (page) => { await openMore(page); await page.getByRole('button', { name: 'Text size', exact: true }).click(); return page.getByRole('dialog', { name: 'Text size' }); };
 
 test('@smoke a 20001-heading document pages its Contents and finds headings without accents', async ({ page }) => {
   const f = await assistantFixture();
@@ -280,6 +282,43 @@ test('page buttons move one screen without smooth scrolling', async ({ page }, t
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+// R6: a short bar. Discuss, ▾ (Dictate, Voice, Annotate) and ⋯ (Find, Aa, Git diff, Delete): one row at 820 px, 44 px on touch.
+test('@smoke the file bar is one short row of 44 px targets on a touch tablet', async ({ browser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Touch emulation with a coarse pointer is checked in Chromium.');
+  const f = await assistantFixture();
+  const context = await browser.newContext({ viewport: { width: 820, height: 1180 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    acceptDocs(f.root);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    await awaitAccepted(page);
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    const bar = page.locator('.file-panel > header .file-actions');
+    await expect(bar.getByRole('button', { name: 'Discuss', exact: true })).toBeEnabled();
+    const shown = () => bar.evaluate((node) => [...node.querySelectorAll('button, summary')].filter((item) => item.checkVisibility()).map((item) => {
+      const box = item.getBoundingClientRect();
+      return { label: item.getAttribute('aria-label') || item.textContent, top: Math.round(box.top), width: box.width, height: box.height };
+    }));
+    const row = await shown();
+    expect(row.map((item) => item.label)).toEqual(['Discuss', 'More ways to discuss', 'More']);
+    expect(new Set(row.map((item) => item.top)).size).toBe(1);
+    for (const item of row) expect(Math.min(item.width, item.height), item.label).toBeGreaterThanOrEqual(44);
+
+    await bar.locator('summary[aria-label="More"]').tap();
+    expect((await shown()).map((item) => item.label)).toEqual(['Discuss', 'More ways to discuss', 'More', 'Text size', 'Delete']);
+    const remove = bar.getByRole('button', { name: 'Delete', exact: true });
+    expect((await remove.boundingBox()).height).toBeGreaterThanOrEqual(44);
+    // Opening the other menu closes this one.
+    await bar.locator('summary[aria-label="More ways to discuss"]').tap();
+    await expect(remove).toBeHidden();
+    expect((await shown()).map((item) => item.label)).toEqual(['Discuss', 'More ways to discuss', 'Dictate', 'Voice', 'Annotate', 'More']);
+    await page.locator('#docReader').tap({ position: { x: 4, y: 4 } });
+    await expect(bar.getByRole('button', { name: 'Dictate', exact: true })).toBeHidden();
+    expect(fs.existsSync(path.join(f.root, 'docs/Original.md'))).toBe(true);
+  } finally { try { await context.close(); } finally { await f.close(); } }
+});
+
 test('@smoke the editor finds and replaces, and Replace all is one undo step', async ({ page }) => {
   const f = await assistantFixture();
   try {
@@ -291,6 +330,7 @@ test('@smoke the editor finds and replaces, and Replace all is one undo step', a
     const editor = page.locator('#docEditor');
     const original = '# Original document\n\nMémo one\nmemo two\nMEMO three\n';
     await editor.fill(original);
+    await openMore(page);
     await page.getByRole('button', { name: 'Find', exact: true }).click();
     const bar = page.locator('.find-bar');
     await expect(bar).toBeVisible();
@@ -400,9 +440,11 @@ test('a changed doc opened from the tree shows the review banner, not the Git di
     const widths = await page.evaluate(() => [document.querySelector('#viewer').clientWidth, document.querySelector('.file-panel').getBoundingClientRect().width]);
     expect(widths[1]).toBeGreaterThan(widths[0] - 40);
     // The Git diff stays one click away.
-    await page.locator('#gitDiffToggle').click();
+    await openMore(page);
+    await page.getByRole('button', { name: 'Changes since last commit', exact: true }).click();
     await expect(page.locator('.diff-panel')).toBeVisible();
-    await page.locator('#gitDiffToggle').click();
+    await openMore(page);
+    await page.getByRole('button', { name: 'Hide changes', exact: true }).click();
     await expect(page.locator('.diff-panel')).toHaveCount(0);
 
     await banner.getByRole('button', { name: 'Accept', exact: true }).click();
