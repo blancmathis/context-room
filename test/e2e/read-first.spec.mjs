@@ -1,14 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
 import { assistantFixture } from '../fixtures/assistant.mjs';
+import { writeDocReviewDecision } from '../../src/context_room.mjs';
+
+// R2: a doc still in « To review » is not tap-editable, so tests that tap to edit accept their docs first.
+const acceptDocs = (root, paths = ['docs/Original.md', 'docs/Other.md']) => { for (const rel of paths) writeDocReviewDecision(root, rel, { status: 'verified' }); };
+// The open page may still hold the queue read before the decisions: refresh it until those docs left it.
+const awaitAccepted = (page, paths = ['docs/Original.md']) => expect.poll(() => page.evaluate(async (paths) => {
+  applyBackgroundReportPayload(await api('/api/reports'));
+  return paths.filter((rel) => state.docqa?.queue?.some((item) => item.path === rel));
+}, paths), { timeout: 15_000 }).toEqual([]);
 
 // R2: no mode or Save button. A click puts the caret where it lands, the text saves itself, Escape shows the rendered doc.
 test('@smoke a Markdown document opens for reading, and a click edits it where it lands', async ({ page }) => {
   const f = await assistantFixture();
   try {
     const file = path.join(f.root, 'docs/Original.md');
+    acceptDocs(f.root);
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
     await page.evaluate(() => selectFile('docs/Original.md'));
     await expect(page.locator('#docReader')).toBeVisible();
     await expect(page.locator('#viewer textarea, #viewer [contenteditable="true"], #viewer input:not([type])')).toHaveCount(0);
@@ -200,6 +212,7 @@ test('@smoke Aa changes the text size, keeps the reading place and survives a re
   try {
     const big = Array.from({ length: 60 }, (_, part) => `## Part ${part + 1}\n\n${Array.from({ length: 50 }, (_, line) => `Part ${part + 1} line ${line + 1}.`).join('\n')}`).join('\n\n') + '\n';
     fs.writeFileSync(path.join(f.root, 'docs/Big.md'), big);
+    acceptDocs(f.root, ['docs/Big.md']);
     fs.writeFileSync(path.join(f.root, 'docs/Notes.txt'), 'Plain notes.\n'.repeat(40));
     fs.writeFileSync(path.join(f.root, 'docs/Page.html'), '<!doctype html><html><body><h1>Visual page</h1><p>Own styles.</p></body></html>');
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
@@ -240,7 +253,9 @@ test('page buttons move one screen without smooth scrolling', async ({ page }, t
   try {
     const big = Array.from({ length: 30 }, (_, part) => `## Part ${part + 1}\n\n${Array.from({ length: 40 }, (_, line) => `Part ${part + 1} line ${line + 1}.`).join('\n\n')}`).join('\n\n') + '\n';
     fs.writeFileSync(path.join(f.root, 'docs/Big.md'), big);
+    acceptDocs(f.root, ['docs/Big.md']);
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page, ['docs/Big.md']);
     await page.evaluate(() => selectFile('docs/Big.md'));
     await expect(page.locator('#docReader')).toBeVisible();
     const bar = page.locator('.reader-page-bar');
@@ -268,7 +283,9 @@ test('page buttons move one screen without smooth scrolling', async ({ page }, t
 test('@smoke the editor finds and replaces, and Replace all is one undo step', async ({ page }) => {
   const f = await assistantFixture();
   try {
+    acceptDocs(f.root);
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
     await page.evaluate(() => selectFile('docs/Original.md'));
     await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
     const editor = page.locator('#docEditor');
@@ -313,19 +330,30 @@ test('explorer search matches accented names without accents', async ({ page }) 
 });
 
 // R2 review: a tap never edits a doc that waits in « To review », even opened from the tree, outside review mode.
-test('a doc waiting in To review is not edited by a tap', async ({ page }) => {
+// With Git, an agent change is `changed` (not `reviewRequired`): the queue entry alone must block the tap.
+for (const withGit of [false, true]) test('a doc waiting in To review is not edited by a tap' + (withGit ? ' (Git project)' : ''), async ({ page }) => {
   const f = await assistantFixture();
   try {
     const file = path.join(f.root, 'docs/Other.md');
+    acceptDocs(f.root);
+    if (withGit) {
+      const git = (args) => execFileSync('git', args, { cwd: f.root, stdio: 'ignore' });
+      git(['init', '--initial-branch=main']);
+      git(['config', 'user.email', 'tap@example.test']);
+      git(['config', 'user.name', 'Tap Test']);
+      git(['add', '.']);
+      git(['commit', '-m', 'Initial']);
+    }
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
     fs.writeFileSync(file, '# Other document\n\nAgent rewrote this line.\n');
     await expect.poll(() => page.evaluate(async () => {
       applyBackgroundReportPayload(await api('/api/reports'));
-      return Boolean(state.docqa?.queue?.some((item) => item.path === 'docs/Other.md' && item.reviewRequired));
-    }), { timeout: 10_000 }).toBe(true);
+      return state.docqa?.queue?.find((item) => item.path === 'docs/Other.md')?.reviewReason || null;
+    }), { timeout: 10_000 }).toBe(withGit ? 'changed' : 'unverified-current');
     await page.evaluate(() => { state.autosaveDelayMs = 100; return selectFile('docs/Other.md'); });
     await expect(page.locator('#docReader')).toContainText('Agent rewrote this line.');
     await expect(page.locator('#docReader[data-tap-edit]')).toHaveCount(0);
+    await expect(page.locator('.doc-review-hint')).toHaveText('In To review · accept it there to edit');
     await page.locator('#docReader .markdown-line', { hasText: 'Agent rewrote this line.' }).click();
     await page.keyboard.type('x');
     await page.waitForTimeout(600);
@@ -337,7 +365,9 @@ test('a doc waiting in To review is not edited by a tap', async ({ page }) => {
 test('a finger drag on the doc never opens the editor; a short tap does', async ({ page }) => {
   const f = await assistantFixture();
   try {
+    acceptDocs(f.root);
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
     await page.evaluate(() => selectFile('docs/Original.md'));
     await expect(page.locator('#docReader[data-tap-edit]')).toBeVisible();
     const tap = (dy) => page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).evaluate((line, dy) => {
@@ -364,8 +394,10 @@ test('a finger drag on the doc never opens the editor; a short tap does', async 
 test('a failed save says Not saved · Retry, and Retry writes the text', async ({ page }) => {
   const f = await assistantFixture();
   try {
+    acceptDocs(f.root);
     const file = path.join(f.root, 'docs/Original.md');
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
     await page.evaluate(() => { state.autosaveDelayMs = 100; return selectFile('docs/Original.md'); });
     await page.route('**/api/file/save-reviewed', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"disk full"}' }));
     await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
@@ -386,9 +418,11 @@ test('a failed save says Not saved · Retry, and Retry writes the text', async (
 test('a hidden tab or another page saves the doc at once, without a dialog', async ({ page }) => {
   const f = await assistantFixture();
   try {
+    acceptDocs(f.root);
     const file = path.join(f.root, 'docs/Original.md');
     page.on('dialog', (dialog) => { throw new Error('unexpected dialog: ' + dialog.message()); });
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
     await page.evaluate(() => { state.autosaveDelayMs = 1e9; return selectFile('docs/Original.md'); });
     await page.locator('#docReader .markdown-line', { hasText: 'Human original content.' }).click();
     const editor = page.locator('#docEditor');

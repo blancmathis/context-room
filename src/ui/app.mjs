@@ -1394,6 +1394,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-risk-notice summary { min-height: 32px; cursor: pointer; }
     .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
     .review-risk-notice code { overflow-wrap: anywhere; }
+    .doc-review-hint { margin: var(--space-2) var(--space-4) 0; color: var(--muted); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -22208,7 +22209,8 @@ function renderViewer() {
           ? renderDocumentEditor(text, file.path)
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
-  const initialReviewNotice = initialReviewNoticeForSelectedFile();
+  const initialReviewNotice = initialReviewNoticeForSelectedFile()
+    || (state.mode === "view" && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? '<p class="doc-review-hint">In To review · accept it there to edit</p>' : "");
   const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
     ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "") + reviewDocumentChecksMarkup(externalChange.documentChecks)
     : "";
@@ -22256,7 +22258,7 @@ function renderViewer() {
 
 // R2 « a tap edits »: no mode button. A tap or click on the rendered doc puts the caret there; the text saves
 // itself 2 s after the last key and at once when the caret leaves; leaving shows the rendered doc again.
-let docSaveTimer = 0, docSaving = null, docFilesTimer = 0, docLeavingPage = false;
+let docSaveTimer = 0, docSaving = null, docFilesTimer = 0, docLeavingPage = false, docLeaveConfirmed = false;
 // A disk change or conflict stops saving: « ● » stays and the conflict panel decides (no retry loop, no rebuild).
 function docSaveBlocked() {
   return Boolean(activeFileConflict() || activeExternalChange());
@@ -22273,28 +22275,31 @@ function flushAutosave(options = {}) {
     .then(() => { if (state.dirty) scheduleDocAutosave(); }, (error) => { state.saveError = error.message || "Save failed"; updateHeader(); })
     .finally(() => docSaving = null);
 }
-// Another page saves the doc first; the old question stays only when the text could not be written.
+// Another page saves the doc first; the old question comes back when the text could not be written.
 function saveBeforeLeaving(again, question) {
   if (!state.dirty) return true;
+  if (docLeaveConfirmed) return !(docLeaveConfirmed = false);
   if (docLeavingPage) return false;
   if (state.page !== "file" || docSaveBlocked()) return confirm(question);
   docLeavingPage = true;
   flushAutosave().finally(() => {
     docLeavingPage = false;
-    if (!state.dirty) again();
+    if (state.dirty && !confirm(question)) return;
+    docLeaveConfirmed = state.dirty;
+    try { again(); } finally { docLeaveConfirmed = false; }
   });
   return false;
 }
 // The tree refreshes after a quiet pause or when the caret leaves, not after every autosave (R2 review).
 function scheduleDocFilesRefresh(now = false) {
   window.clearTimeout(docFilesTimer);
-  if (now || docFilesTimer) docFilesTimer = window.setTimeout(() => { docFilesTimer = 0; loadFiles().catch(() => {}); }, now ? 0 : 15000);
+  docFilesTimer = window.setTimeout(() => { docFilesTimer = 0; loadFiles().catch(() => {}); }, now ? 0 : 15000);
 }
-// A doc changed by an agent is read first: no tap edits it before the review choice (spec § 4.3, R2 review).
-// A first review (a doc never accepted, nothing changed since the baseline) stays editable, as before R2.
+// A doc in the review queue (changed, added, renamed, first review, startup file) is read first: no tap edits it
+// before it is accepted (spec § 4.3). Test the queue entry, not reviewRequired: a Git change never sets it.
 function docAwaitingReview(path) {
   const item = reviewQueueItemForPath(selectedStartupContextReviewPath(path) || path);
-  return Boolean(item?.reviewRequired && !item.initialReview && !(state.reviewModePath === path && state.reviewModeStatus === "verified"));
+  return Boolean(item && !(item.review?.status === "verified" && item.review.current) && !(state.reviewModePath === path && state.reviewModeStatus === "verified"));
 }
 function docTapEditable() {
   const path = state.selected || "";
@@ -26515,7 +26520,7 @@ async function saveCurrent(options = {}) {
   try {
     const viewState = captureEditorViewState();
     const content = activeEditor().value;
-    const result = await writeSelectedDiskFile(content, state.selected, { keepalive: options.keepalive && content.length < 60000 });
+    const result = await writeSelectedDiskFile(content, state.selected, { keepalive: options.keepalive && new Blob([JSON.stringify(content)]).size < 60000 });
     state.saved = content;
     state.savedHash = result.contentHash;
     workspaceUpdate("file-saved", { path: state.selected });
