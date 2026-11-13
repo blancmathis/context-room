@@ -7296,6 +7296,8 @@ test("quiet native workbench keeps one gutter authority across empty, inspector,
 });
 
 test("rendered app supports selectable file themes and colored markdown reading", () => {
+  // The editor core is an on-demand module (R7): its code is checked in its own file.
+  const editorSource = fs.readFileSync(new URL("../src/ui/doc-editor.mjs", import.meta.url), "utf8");
   const html = renderAppHtml();
   const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
 
@@ -7574,7 +7576,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /markdownDocLinkAtPoint\(event\.clientX, event\.clientY\) \|\| markdownDocLinkAtOffset/);
   assert.match(html, /function markdownDocLinkAtOffset\(text, offset\)/);
   assert.match(html, /wireMarkdownDocLinks\(\);/);
-  assert.match(html, /wireMarkdownEditorDocLinks\(docEditor\);/);
+  assert.match(editorSource, /wireMarkdownEditorDocLinks\(docEditor\);/);
   assert.match(html, /function setDocLinkModifierActive\(active\)/);
   assert.match(html, /if \(state\.docLinkModifierActive === next\) return;/);
   assert.match(html, /state\.docLinkModifierActive = next;/);
@@ -7595,24 +7597,24 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function renderMarkdownEditorHighlightNow\(text\)/);
   assert.match(html, /\.markdown-editor-shell\[data-source-mode="false"\] \.markdown-editor-highlight\s*\{[^}]*pointer-events:\s*none;[^}]*user-select:\s*none/);
   assert.match(html, /\.markdown-editor-shell\[data-source-mode="false"\] \.markdown-editor-input\s*\{\s*pointer-events:\s*auto/);
-  assert.match(html, /addEventListener\("pointerdown", enterMarkdownEditorAtPoint\)/);
-  assert.match(html, /addEventListener\("pointermove", extendMarkdownEditorPointerSelection\)/);
-  assert.match(html, /addEventListener\("pointerup", finishMarkdownEditorPointerSelection\)/);
-  assert.match(html, /function markdownEditorSourceOffsetAtPoint\(clientX, clientY\)/);
-  assert.match(html, /function markdownEditorWordRange\(value, offset\)/);
-  assert.match(html, /function markdownEditorLineRange\(value, offset\)/);
-  assert.match(html, /setSelectionRange\([\s\S]*safeFocus < safeAnchor \? "backward" : "forward"/);
-  assert.match(html, /addEventListener\("beforeinput", \(event\) => captureMarkdownEditorHistory\(docEditor, event\)\)/);
-  assert.match(html, /function handleMarkdownEditorHistoryShortcut\(event, editor\)/);
-  assert.match(html, /const undo = key === "z" && !event\.shiftKey;/);
-  assert.match(html, /const redo = \(key === "z" && event\.shiftKey\)/);
-  assert.match(html, /function applyMarkdownEditorHistory\(editor, direction\)/);
-  assert.match(html, /destination\.push\(markdownEditorHistorySnapshot\(editor\)\)/);
-  assert.match(html, /editor\.setSelectionRange\(snapshot\.selectionStart, snapshot\.selectionEnd, snapshot\.selectionDirection\)/);
+  assert.match(editorSource, /addEventListener\("pointerdown", enterMarkdownEditorAtPoint\)/);
+  assert.match(editorSource, /addEventListener\("pointermove", extendMarkdownEditorPointerSelection\)/);
+  assert.match(editorSource, /addEventListener\("pointerup", finishMarkdownEditorPointerSelection\)/);
+  assert.match(editorSource, /function markdownEditorSourceOffsetAtPoint\(clientX, clientY\)/);
+  assert.match(editorSource, /function markdownEditorWordRange\(value, offset\)/);
+  assert.match(editorSource, /function markdownEditorLineRange\(value, offset\)/);
+  assert.match(editorSource, /setSelectionRange\([\s\S]*safeFocus < safeAnchor \? "backward" : "forward"/);
+  assert.match(editorSource, /addEventListener\("beforeinput", \(event\) => captureMarkdownEditorHistory\(docEditor, event\)\)/);
+  assert.match(editorSource, /function handleMarkdownEditorHistoryShortcut\(event, editor\)/);
+  assert.match(editorSource, /const undo = key === "z" && !event\.shiftKey;/);
+  assert.match(editorSource, /const redo = \(key === "z" && event\.shiftKey\)/);
+  assert.match(editorSource, /function applyMarkdownEditorHistory\(editor, direction\)/);
+  assert.match(editorSource, /destination\.push\(markdownEditorHistorySnapshot\(editor\)\)/);
+  assert.match(editorSource, /editor\.setSelectionRange\(snapshot\.selectionStart, snapshot\.selectionEnd, snapshot\.selectionDirection\)/);
   assert.doesNotMatch(html, /data-markdown-source-toggle/);
-  assert.match(html, /function markdownSourceOffsetForRenderedOffset\(sourceLine, renderedOffset\)/);
-  assert.match(html, /function markdownRenderedOffsetForSourceOffset\(sourceLine, sourceOffset\)/);
-  assert.match(html, /function updateMarkdownEditorVisualSelection\(\)/);
+  assert.match(editorSource, /function markdownSourceOffsetForRenderedOffset\(sourceLine, renderedOffset\)/);
+  assert.match(editorSource, /function markdownRenderedOffsetForSourceOffset\(sourceLine, sourceOffset\)/);
+  assert.match(editorSource, /function updateMarkdownEditorVisualSelection\(\)/);
   assert.match(html, /id="markdownEditorCaret"/);
   assert.match(html, /highlighter\.scrollTop = editor\.scrollTop;/);
   assert.match(html, /highlighter\.scrollLeft = editor\.scrollLeft;/);
@@ -7620,7 +7622,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /class="markdown-link-label"/);
   assert.match(html, /class="markdown-link-target"/);
   assert.match(html, /\.markdown-editor-highlight \.markdown-link-target\s*\{[^}]*color:\s*color-mix/);
-  assert.match(html, /state\.markdownHighlightLastText = docEditor\.value;/);
+  assert.match(editorSource, /state\.markdownHighlightLastText = docEditor\.value;/);
   assert.doesNotMatch(html, /syncMarkdownEditorHighlight/);
   assert.match(html, /function syncMarkdownEditorScroll\(\)/);
   assert.match(html, /function scrollMarkdownViewToNeedle\(needle, type = "text"\)/);
