@@ -4980,7 +4980,7 @@ test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 
   t.after(() => room.server.close());
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
-  for (const route of ["project-agents", "project-recent"]) {
+  for (const route of ["project-agents", "project-recent", "project-tools"]) {
     assert.equal((await fetch(`${origin}/api/context-hub/${route}`)).status, 400, route + " needs a projectId");
     assert.equal((await fetch(`${origin}/api/context-hub/${route}?projectId=nope`)).status, 404, route + " unknown project");
     assert.equal((await fetch(`${origin}/api/context-hub/${route}?projectId=${encodeURIComponent(gone.id)}`)).status, 409, route + " unavailable project");
@@ -5010,6 +5010,20 @@ test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 
   const all = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=all`);
   assert.equal(all.status, 200);
   assert.equal((await all.json()).provider, "all");
+
+  // Skills and MCP servers per level, for every provider: names and sources, never a configuration value.
+  fs.writeFileSync(path.join(targetRoot, ".mcp.json"), JSON.stringify({ mcpServers: { github: { command: "npx", env: { TOKEN: "s3cr3t-value" } } } }));
+  const tools = await fetch(`${origin}/api/context-hub/project-tools?projectId=${encodeURIComponent(target.id)}`);
+  assert.equal(tools.status, 200);
+  const toolsText = await tools.text();
+  assert.ok(!toolsText.includes("s3cr3t") && !toolsText.includes("npx"));
+  const toolLevels = JSON.parse(toolsText);
+  assert.deepEqual(toolLevels.skills.slice(0, 2).map((level) => level.level), ["global", "root"]);
+  const webSkills = toolLevels.skills.find((level) => level.level === "app/web").items;
+  assert.deepEqual(webSkills.map((item) => [item.name, item.path, item.providers]), [["build", "app/web/.agents/skills/build/SKILL.md", ["codex", "opencode"]]]);
+  assert.ok(webSkills[0].startupTokens > 0 && webSkills[0].onDemandTokens > 0);
+  const rootServers = toolLevels.mcp.find((level) => level.level === "root").items;
+  assert.deepEqual(rootServers.filter((item) => item.source === ".mcp.json").map((item) => [item.name, item.providers]), [["github", ["claude-code"]]]);
 
   // Recent docs: newest first, at most 8, only files of the project.
   for (let index = 0; index < 10; index += 1) {

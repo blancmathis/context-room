@@ -18,8 +18,7 @@ export function agentFileMarkers(provider) {
 }
 
 /** Subfolders (never the root) that hold an agent file or a skill folder. Breadth first, bounded. */
-export function agentLevelFolders(root, provider, { skip = (name) => name.startsWith("."), limit = MAX_LEVEL_FOLDERS } = {}) {
-  const markers = agentFileMarkers(provider);
+export function agentLevelFolders(root, provider, { skip = (name) => name.startsWith("."), limit = MAX_LEVEL_FOLDERS, markers = agentFileMarkers(provider) } = {}) {
   const found = [];
   const queue = [{ rel: "", depth: 0 }];
   let visited = 0;

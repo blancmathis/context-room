@@ -146,6 +146,15 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   }).on("error", reject));
   expect(reviewBanner.status).toBe(200);
   expect(zlib.brotliCompressSync(reviewBanner.body).length).toBeLessThan(850);
+  // « Skills & MCP » (decision 11) loads on the first press from the project page: 3 290 on 2026-11-13, limit +10 %.
+  // The project page gained ~270 for its button and the load (7 913, inside its 8 400).
+  const skillsMcp = await new Promise((resolve, reject) => http.get(new URL("/assets/ui/skills-mcp.mjs", samples[0].jsUrls[0]), (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
+  }).on("error", reject));
+  expect(skillsMcp.status).toBe(200);
+  expect(zlib.brotliCompressSync(skillsMcp.body).length).toBeLessThan(3_600);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();
