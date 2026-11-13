@@ -1394,6 +1394,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-risk-notice summary { min-height: 32px; cursor: pointer; }
     .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
     .review-risk-notice code { overflow-wrap: anywhere; }
+    .doc-review-hint { margin: var(--space-2) var(--space-4) 0; color: var(--muted); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -1474,6 +1475,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     @media (max-width: 639px) { .external-review-actions { flex-wrap: wrap; justify-content: flex-start; } .external-review-block-controls { position: static; width: fit-content; margin: 4px 0 2px 8px; opacity: 1; } .external-review-line::before { left: -1.05em; } }
     .file-header-copy { min-width: 0; display: grid; gap: var(--space-1); }
     .file-header-copy .file-title { min-width: 0; margin: 0; overflow: hidden; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; }
+    .file-title.unsaved::after { content: " ●"; color: var(--muted); }
+    #docReader[data-tap-edit] .markdown-line, #docReader[data-tap-edit].plain-text-view { cursor: text; }
+    .doc-save-failed { margin: 0; padding: 6px 12px; color: var(--danger, #b42318); }
+    .doc-save-failed button { border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+    @media (pointer: coarse) { .doc-save-failed button { min-height: 44px; min-width: 44px; } }
     .file-header-copy .diff-meta { white-space: normal; line-height: 1.35; }
     .file-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
     .file-actions-loading { min-width: min(340px, 44vw); min-height: 36px; justify-content: flex-end; pointer-events: none; }
@@ -15425,6 +15431,7 @@ async function selectFile(path, options = {}) {
     return openContextRoomNotebook(path);
   }
   if (state.selected && path !== state.selected && !selectedFileExists()) reconcileMissingSelectedFile();
+  if (state.dirty && !options.forceReload) await flushAutosave();
   if (state.dirty && !options.forceReload && !confirm("You have unsaved changes. Change file?")) return;
 
   const requestId = ++state.selectionRequest;
@@ -15589,6 +15596,7 @@ async function selectStartupContextFile(order, options = {}) {
   }
   if (!order) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-context-" + order;
@@ -15680,6 +15688,7 @@ async function selectStartupSkillFile(folderOrder, skillName, options = {}) {
   }
   if (!folderOrder || !skillName) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-skill-" + folderOrder + "-" + skillName;
@@ -15771,6 +15780,7 @@ async function selectStartupHookFile(order, options = {}) {
   }
   if (!order) return;
   await waitForReviewFinalizationBeforeNavigation();
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Change file?")) return;
   const requestId = ++state.selectionRequest;
   const selectedKey = "startup-hook-" + order;
@@ -15846,7 +15856,7 @@ async function selectStartupHookFile(order, options = {}) {
 
 function createStartupSkillFromPanel(folderOrder) {
   if (!folderOrder) return;
-  if (state.dirty && !confirm("You have unsaved changes. Create a new skill?")) return;
+  if (!saveBeforeLeaving(() => createStartupSkillFromPanel(folderOrder), "You have unsaved changes. Create a new skill?")) return;
   state.startupSkillCreateFolder = String(folderOrder);
   renderHubFolders();
   focusStartupSkillCreateInput(folderOrder);
@@ -16542,7 +16552,7 @@ function showProposalReview({ preparingItem = null } = {}) {
     showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Return to the proposal files?")) return false;
+  if (!saveBeforeLeaving(() => showProposalReview(arguments[0]), "You have unsaved changes. Return to the proposal files?")) return false;
   const previousPage = state.page;
   const nextReviewKey = preparingItem?.id || preparingItem?.proposal || state.sharedContext?.review?.proposal || state.sharedContext?.review?.branch || "proposal";
   const reviewChanged = state.proposalReviewKey !== nextReviewKey;
@@ -17359,7 +17369,7 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
     else showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Create a new document?")) return;
+  if (!saveBeforeLeaving(() => showNewDocPage(arguments[0]), "You have unsaved changes. Create a new document?")) return;
   state.page = "new-doc";
   state.settingsOpen = false;
   state.pendingMarkdown = { title, path, directory };
@@ -17774,9 +17784,7 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
     (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo' + (docEditorCore?.editorHistoryAvailable("undo") ? '' : ' disabled') + '>Undo</button><button class="file-action" type="button" data-editor-redo' + (docEditorCore?.editorHistoryAvailable("redo") ? '' : ' disabled') + '>Redo</button><button class="file-action" type="button" data-editor-find>Find</button><button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (state.selected && !state.selectedStartupContext && state.mode === "view" && !isImageDocumentPath(state.selected) && (modeToggle === "edit" || isHtmlDocumentPath(state.selected)) ? (isHtmlDocumentPath(state.selected) ? '<button class="file-action" type="button" data-html-contents>Contents</button>' : '') + '<button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
-    (modeToggle === "edit" ? '<button class="file-action primary" type="button" data-file-mode="edit">Edit</button>' : '') +
-    (modeToggle === "view" ? '<button class="file-action" type="button" data-file-mode="view"' + (dirty ? ' disabled title="Save your changes first"' : '') + '>Done</button>' : '') +
-    (savable ? '<button class="file-action primary" type="button" data-file-save ' + (!dirty || blockedByConflict || readOnly ? 'disabled' : '') + (readOnly ? ' title="This file is read-only in Context Room"' : blockedByConflict ? ' title="Resolve the disk change before saving"' : '') + '>Save</button>' : '');
+    '';
 }
 
 function reviewStatusForPath(path) {
@@ -20672,7 +20680,7 @@ function showSettingsPage() {
     else showHome();
     return false;
   }
-  if (state.dirty && !confirm("You have unsaved changes. Open settings?")) return;
+  if (!saveBeforeLeaving(showSettingsPage, "You have unsaved changes. Open settings?")) return;
   state.page = "settings";
   state.settingsOpen = true;
   state.pendingMarkdown = null;
@@ -20716,6 +20724,7 @@ async function handleBrandHomeAction() {
   const homeUrl = contextRoomHomeUrl();
   if (homeUrl) {
     await waitForReviewFinalizationBeforeNavigation();
+    if (state.dirty) await flushAutosave();
     if (state.dirty && !confirm("You have unsaved changes. Return to the main Context Room?")) return;
     assignWorkspaceLocation(homeUrl);
     return;
@@ -21006,6 +21015,7 @@ async function showGraphPage(options = {}) {
     else showHome();
     return false;
   }
+  if (state.dirty) await flushAutosave();
   if (state.dirty && !confirm("You have unsaved changes. Open Graph?")) return;
   const requestedScope = ["global", "project", "local"].includes(options.scope) ? options.scope : state.graphScope;
   state.graphVisualMode = Boolean(options.visual);
@@ -21959,7 +21969,7 @@ async function goHistory(delta) {
 }
 
 function goHub({ replaceProposalHistory = false, restoreProposalFocus = false } = {}) {
-  if (state.dirty && !confirm("You have unsaved changes. Return to hub?")) return;
+  if (!saveBeforeLeaving(() => goHub(arguments[0]), "You have unsaved changes. Return to hub?")) return;
   const adoptedReviewReturnUrl = state.contextRoomReviewDocumentScope
     ? contextRoomReturnUrl() || contextRoomHubReturnUrl(window.location.href)
     : "";
@@ -22016,14 +22026,16 @@ function updateHeader() {
   const blockedByDiskChange = Boolean(conflict || externalChange);
   const readOnlySelected = Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly);
   el("save").disabled = blockedByDiskChange || readOnlySelected || !state.dirty || !state.selected;
-  const headerSave = document.querySelector("[data-file-save]");
-  if (headerSave) headerSave.disabled = blockedByDiskChange || readOnlySelected || !state.dirty || !state.selected;
-  const done = document.querySelector('[data-file-mode="view"]');
-  if (done) {
-    done.disabled = state.dirty;
-    if (state.dirty) done.title = "Save your changes first";
-    else done.removeAttribute("title");
-  }
+  // R2: the only save sign is « ● » by the name while the text is not on disk; a failure says so once, with Retry.
+  document.querySelector(".file-panel .file-title")?.classList.toggle("unsaved", state.dirty);
+  const failed = document.querySelector(".doc-save-failed");
+  if (state.saveError && state.dirty) {
+    if (!failed) {
+      document.querySelector(".file-panel > header")?.insertAdjacentHTML("afterend", '<p class="doc-save-failed" role="alert">Not saved · <button type="button" data-save-retry>Retry</button></p>');
+      document.querySelector("[data-save-retry]")?.addEventListener("click", () => flushAutosave());
+    }
+    document.querySelector(".doc-save-failed")?.setAttribute("title", state.saveError);
+  } else failed?.remove();
   updateActionBanner();
 }
 
@@ -22197,7 +22209,8 @@ function renderViewer() {
           ? renderDocumentEditor(text, file.path)
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
-  const initialReviewNotice = initialReviewNoticeForSelectedFile();
+  const initialReviewNotice = initialReviewNoticeForSelectedFile()
+    || (state.mode === "view" && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? '<p class="doc-review-hint">In To review · accept it there to edit</p>' : "");
   const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
     ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "") + reviewDocumentChecksMarkup(externalChange.documentChecks)
     : "";
@@ -22236,10 +22249,112 @@ function renderViewer() {
   document.querySelectorAll("[data-conflict-merge-source]").forEach((button) => button.addEventListener("click", (event) => promptSaveConflictSource(event.currentTarget.dataset.conflictMergeSource)));
   wireFileActionButtons();
   wireRenderedMarkdownEditor();
+  wireDocTapToEdit();
   updateCodexReferenceAction();
   if (state.inspectorOpen) loadDocumentContextPanel().catch((error) => setStatus(error.message));
   syncWorkspaceScroll();
   scheduleSessionStatePush();
+}
+
+// R2 « a tap edits »: no mode button. A tap or click on the rendered doc puts the caret there; the text saves
+// itself 2 s after the last key and at once when the caret leaves; leaving shows the rendered doc again.
+let docSaveTimer = 0, docSaving = null, docFilesTimer = 0, docLeavingPage = false, docLeaveConfirmed = false;
+// A disk change or conflict stops saving: « ● » stays and the conflict panel decides (no retry loop, no rebuild).
+function docSaveBlocked() {
+  return Boolean(activeFileConflict() || activeExternalChange());
+}
+function scheduleDocAutosave() {
+  window.clearTimeout(docSaveTimer);
+  if (state.dirty && !docSaveBlocked()) docSaveTimer = window.setTimeout(flushAutosave, state.autosaveDelayMs || 2000);
+}
+function flushAutosave(options = {}) {
+  window.clearTimeout(docSaveTimer);
+  if (docSaving) return docSaving.then(() => state.dirty && flushAutosave(options));
+  if (!state.dirty || !state.selected || state.page !== "file" || docSaveBlocked()) return Promise.resolve();
+  return docSaving = saveCurrent({ keepalive: options.keepalive })
+    .then(() => { if (state.dirty) scheduleDocAutosave(); }, (error) => { state.saveError = error.message || "Save failed"; updateHeader(); })
+    .finally(() => docSaving = null);
+}
+// Another page saves the doc first; the old question comes back when the text could not be written.
+function saveBeforeLeaving(again, question) {
+  if (!state.dirty) return true;
+  if (docLeaveConfirmed) return !(docLeaveConfirmed = false);
+  if (docLeavingPage) return false;
+  if (state.page !== "file" || docSaveBlocked()) return confirm(question);
+  docLeavingPage = true;
+  flushAutosave().finally(() => {
+    docLeavingPage = false;
+    if (state.dirty && !confirm(question)) return;
+    docLeaveConfirmed = state.dirty;
+    try { again(); } finally { docLeaveConfirmed = false; }
+  });
+  return false;
+}
+// The tree refreshes after a quiet pause or when the caret leaves, not after every autosave (R2 review).
+function scheduleDocFilesRefresh(now = false) {
+  window.clearTimeout(docFilesTimer);
+  docFilesTimer = window.setTimeout(() => { docFilesTimer = 0; loadFiles().catch(() => {}); }, now ? 0 : 15000);
+}
+// A doc in the review queue (changed, added, renamed, first review, startup file) is read first: no tap edits it
+// before it is accepted (spec § 4.3). Test the queue entry, not reviewRequired: a Git change never sets it.
+function docAwaitingReview(path) {
+  const item = reviewQueueItemForPath(selectedStartupContextReviewPath(path) || path);
+  return Boolean(item && !(item.review?.status === "verified" && item.review.current) && !(state.reviewModePath === path && state.reviewModeStatus === "verified"));
+}
+function docTapEditable() {
+  const path = state.selected || "";
+  return !IS_HOSTED_CONTEXT_ROOM && state.page === "file" && state.mode === "view" && path && !(state.openingFilePath === path && state.fileContentReadyPath !== path) && !state.selectedStartupContext?.readOnly && !state.selectedReadOnly && !handAnnotation
+    && !docAwaitingReview(path) && !reviewActionForSelectedFile() && !activeExternalChange() && !activeFileConflict() && !isHtmlDocumentPath(path) && !isImageDocumentPath(path);
+}
+function wireDocTapToEdit() {
+  // A Mermaid file is edited from its source text (Source or Split view).
+  const reader = el("docReader") || document.querySelector(".file-panel [data-mermaid-document].standalone .mermaid-source"), editor = el("docEditor");
+  if (reader && docTapEditable()) {
+    reader.dataset.tapEdit = "";
+    reader.addEventListener("pointerdown", (event) => state.docTapDown = { x: event.clientX, y: event.clientY });
+    reader.addEventListener("click", (event) => editDocAtTap(event, reader));
+  }
+  if (!editor) return;
+  editor.addEventListener("keydown", (event) => { if (event.key === "Escape" && !event.defaultPrevented) leaveDocEdit(true); });
+  editor.addEventListener("blur", () => window.setTimeout(() => {
+    if (editor.isConnected && !document.querySelector(".file-panel")?.contains(document.activeElement)) leaveDocEdit();
+  }));
+}
+function editDocAtTap(event, reader) {
+  const down = state.docTapDown;
+  state.docTapDown = null;
+  if (event.button || event.defaultPrevented || isDocLinkModifierEventActive(event) || !docTapEditable() || String(window.getSelection?.() || "")
+    || down && Math.hypot(event.clientX - down.x, event.clientY - down.y) >= 10
+    || event.target.closest("a, button, summary, input, select, label, nav, [data-doc-link], .mermaid-document:not(.standalone), .mermaid-render, figcaption, .diagram-links")) return;
+  if (!docEditorCore) return void loadDocEditor().then((core) => core && editDocAtTap(event, reader));
+  const offset = docEditorCore.readerSourceOffset(event, el("editor").value, reader);
+  if (!Number.isInteger(offset)) return;
+  const line = event.target.closest("[data-line-index]"), top = line?.getBoundingClientRect().top;
+  state.mode = "edit";
+  renderViewer();
+  const editor = el("docEditor");
+  if (!editor) return;
+  try { editor.focus({ preventScroll: true }); } catch { editor.focus(); }
+  editor.setSelectionRange(offset, offset);
+  // The tapped line stays where it was on screen.
+  const keep = () => {
+    const twin = line && document.querySelector('#docHighlighter [data-line-index="' + line.dataset.lineIndex + '"]'), scroller = activeDocumentScrollTarget();
+    if (twin && scroller) scroller.scrollTop += twin.getBoundingClientRect().top - top;
+    syncMarkdownEditorScroll();
+  };
+  keep();
+  window.requestAnimationFrame(keep);
+}
+async function leaveDocEdit(escape = false) {
+  if (state.mode !== "edit" || state.page !== "file" || state.docLeaving) return;
+  state.docLeaving = true;
+  try { await flushAutosave(); } finally { state.docLeaving = false; }
+  if (state.dirty || state.mode !== "edit" || !escape && document.activeElement === el("docEditor")) return;
+  const place = captureReadingPlace();
+  state.mode = "view";
+  renderViewer();
+  restoreReadingPlace(place);
+  if (docFilesTimer) scheduleDocFilesRefresh(true);
 }
 
 function renderFileLoadingState(file = {}) {
@@ -22284,7 +22399,7 @@ function renderFileLoadError(error = {}) {
 // It loads as soon as a Markdown doc is shown, so the first tap or Edit finds it ready.
 let docEditorCore = null, docEditorLoading = null, docEditorWire = false;
 function loadDocEditor() {
-  return docEditorLoading ||= import("/assets/ui/doc-editor.mjs").then((module) => docEditorCore = module.createDocEditor({ el, state, isMacPlatform, isDocLinkModifierEventActive, scheduleCodexReferenceActionUpdate, syncMarkdownEditorScroll, wireMarkdownEditorDocLinks, updateMarkdownEditorHighlight, updateHeader, updatePreview, updateConflictCompareLive, scheduleConflictCheck, scheduleSessionStatePush, loadTextTools, setStatus }), () => docEditorLoading = null);
+  return docEditorLoading ||= import("/assets/ui/doc-editor.mjs").then((module) => docEditorCore = module.createDocEditor({ el, state, isMacPlatform, isDocLinkModifierEventActive, scheduleCodexReferenceActionUpdate, syncMarkdownEditorScroll, wireMarkdownEditorDocLinks, updateMarkdownEditorHighlight, updateHeader, updatePreview, updateConflictCompareLive, scheduleConflictCheck, scheduleSessionStatePush, loadTextTools, setStatus, scheduleDocAutosave }), () => docEditorLoading = null);
 }
 function wireRenderedMarkdownEditor() {
   if (docEditorCore) return docEditorCore.wireRenderedMarkdownEditor();
@@ -22420,7 +22535,7 @@ function captureReadingPlace() {
     const scroller = frame.contentDocument.scrollingElement;
     return { frame, ratio: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
   }
-  const reader = el("docReader") || el("docEditor");
+  const reader = el("docReader") || el("docHighlighter") || el("docEditor");
   if (!reader) return null;
   const scroller = activeDocumentScrollTarget();
   const limit = readingAreaTop(scroller) + 1;
@@ -22444,12 +22559,13 @@ function restoreReadingPlace(place) {
     if (scroller) scroller.scrollTop = place.ratio * scroller.scrollHeight;
     return;
   }
-  const reader = el("docReader") || el("docEditor");
+  const reader = el("docReader") || el("docHighlighter") || el("docEditor");
   const scroller = activeDocumentScrollTarget();
   if (!reader || !scroller) return;
   if (place.line !== undefined) {
     const line = reader.querySelector('[data-line-index="' + cssEscape(place.line) + '"]');
     if (line) scroller.scrollTop += line.getBoundingClientRect().top - (readingAreaTop(scroller) + 1) - place.offset;
+    syncMarkdownEditorScroll();
   } else scroller.scrollTop = place.ratio * scroller.scrollHeight;
 }
 
@@ -23941,14 +24057,8 @@ function wireFileActionButtons(root = document) {
   root.querySelector("[data-file-annotate]")?.addEventListener("click", () => { try { toggleHandAnnotation(); } catch (error) { setStatus(error.message); } });
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
-  root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));
-  root.querySelector("[data-file-mode]")?.addEventListener("click", (event) => {
-    const mode = event.currentTarget.dataset.fileMode;
-    if (mode === "view" && state.dirty) return;
-    setMode(mode);
-    const target = mode === "edit" ? el("docEditor") : el("docReader");
-    target?.focus({ preventScroll: true });
-  });
+  // Undo / Redo keep the caret in the text, so pressing them does not end editing.
+  root.querySelectorAll("[data-editor-undo], [data-editor-redo]").forEach((button) => button.addEventListener("pointerdown", (event) => event.preventDefault()));
   root.querySelector("[data-file-delete]")?.addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
   root.querySelector("[data-reading-settings]")?.addEventListener("click", openReadingSettings);
   root.querySelector("[data-html-contents]")?.addEventListener("click", openHtmlContents);
@@ -26108,8 +26218,10 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   const expectedContentHash = options.expectedContentHash || activeFileConflict()?.diskHash || activeExternalChange()?.diskHash || state.savedHash;
   if (!expectedContentHash) throw new Error("Refresh this file before saving it.");
   const startup = startupSelectionRequest();
+  const keepalive = Boolean(options.keepalive);
   if (startup?.type === "startup-context") {
     return api("/api/startup-context/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
@@ -26117,6 +26229,7 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   }
   if (startup?.type === "startup-skill") {
     return api("/api/startup-skills/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ folder: startup.folder, skill: startup.skill, content, expectedContentHash }),
@@ -26124,12 +26237,14 @@ async function writeSelectedDiskFile(content, path = state.selected, options = {
   }
   if (startup?.type === "startup-hook") {
     return api("/api/startup-hooks/file", {
+      keepalive,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
     });
   }
   return api("/api/file/save-reviewed", {
+    keepalive,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path, content, expectedContentHash }),
@@ -26402,13 +26517,10 @@ async function saveCurrent(options = {}) {
     setStatus("file changed on disk · apply or reject before saving");
     return;
   }
-  const saveButton = document.querySelector("[data-file-save]");
-  markButtonSaving(saveButton);
-  setStatus("saving...");
   try {
     const viewState = captureEditorViewState();
     const content = activeEditor().value;
-    const result = await writeSelectedDiskFile(content);
+    const result = await writeSelectedDiskFile(content, state.selected, { keepalive: options.keepalive && new Blob([JSON.stringify(content)]).size < 60000 });
     state.saved = content;
     state.savedHash = result.contentHash;
     workspaceUpdate("file-saved", { path: state.selected });
@@ -26416,14 +26528,16 @@ async function saveCurrent(options = {}) {
     syncEditorDirtyState();
     resetConflictState();
     resetExternalChangeState();
-    await loadFiles();
-    renderViewer();
-    restoreEditorViewState(viewState);
-    setStatus(result.backupPath ? "saved · backup created" : "saved");
+    state.saveError = "";
+    // While the caret is in the text, saving leaves the view alone: caret, keyboard and undo history stay (R2).
+    const rebuild = state.mode !== "edit" || options.forceConflict || options.forceExternalChange;
+    if (rebuild) {
+      await loadFiles();
+      renderViewer();
+      restoreEditorViewState(viewState);
+    } else scheduleDocFilesRefresh();
     updateHeader();
-    flashSavedButton(document.querySelector("[data-file-save]"), "Saved");
   } catch (error) {
-    restoreButtonLabel(saveButton);
     if (error.code === "file_revision_conflict") {
       await checkSelectedFileConflict().catch(() => {});
       setStatus("Save blocked · updated in another workspace");
@@ -26739,11 +26853,7 @@ function handleSaveShortcut(event) {
     updateHeader();
     return true;
   }
-  if (!state.dirty) {
-    setStatus("no changes to save");
-    return true;
-  }
-  saveCurrent().catch((error) => setStatus(error.message));
+  flushAutosave();
   return true;
 }
 function captureEditorViewState(options = {}) {
@@ -26934,6 +27044,7 @@ document.addEventListener("keyup", (event) => setDocLinkModifierActive(isDocLink
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     setDocLinkModifierActive(false);
+    flushAutosave({ keepalive: true });
     return;
   }
   if (IS_HOSTED_CONTEXT_ROOM) return;
@@ -28143,7 +28254,7 @@ window.addEventListener("blur", () => {
 window.addEventListener("popstate", () => {
   if (!state.workspaceIdentityReady) return;
   if (state.workspaceSyncedUrl && window.location.href === state.workspaceSyncedUrl) return;
-  void applyWorkspaceUrlState({ reason: "history" });
+  void flushAutosave().then(() => applyWorkspaceUrlState({ reason: "history" }));
 });
 document.addEventListener("pointerdown", unlockContextRoomAudio, { capture: true, once: true, passive: true });
 document.addEventListener("keydown", unlockContextRoomAudio, { capture: true, once: true });
