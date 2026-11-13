@@ -7667,7 +7667,7 @@ test("normal and startup files open directly editable while review mode owns ver
   assert.match(html, /async function selectStartupContextFile\(order, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "view";/);
   assert.match(html, /async function selectStartupSkillFile\(folderOrder, skillName, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "view";/);
   assert.match(html, /state\.mode === "edit"\s*\?\s*renderMarkdownEditor\(text\)/);
-  assert.match(html, /writeSelectedDiskFile\(content\)/);
+  assert.match(html, /writeSelectedDiskFile\(content, state\.selected, \{ keepalive: options\.keepalive && content\.length < 60000 \}\)/);
   assert.match(html, /api\("\/api\/startup-context\/file", \{/);
   assert.match(html, /api\("\/api\/startup-skills\/file", \{/);
   assert.match(html, /reviewAction: reviewActionForSelectedFile\(\)/);
