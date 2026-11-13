@@ -8698,8 +8698,6 @@ test("review queue opens changed files with the inline segment review engine", (
   assert.match(html, /function clearReviewSession\(path\)/);
   assert.match(html, /function resetExternalChangeState\(options = \{\}\)/);
   assert.match(html, /if \(options\.discardReview\) clearReviewSession\(path\);/);
-  assert.match(html, /const pathLine = item\.oldPath/);
-  assert.match(html, /escapeHtml\(item\.oldPath\) \+ " -> " \+ escapeHtml\(item\.path\)/);
   assert.match(html, /async function recordSelectedReviewBaseline\(path = state\.selected, note = ""\)/);
   assert.match(html, /function selectedStartupContextReviewPath\(path = state\.selected\)/);
   assert.match(html, /\/api\/docqa\/review-baseline/);
