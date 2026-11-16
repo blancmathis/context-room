@@ -84,6 +84,9 @@ export function createProjectDocs(box, open) {
   const heading = box.querySelector('h2');
   const cache = new Map();
   const more = new Set();
+  // What the person opened or closed stays so through the next draw (a sync, a cleared filter).
+  const opened = new Map();
+  const open_ = (key, fallback) => opened.has(key) ? opened.get(key) : fallback;
   let id = '';
   let drawn = '';
   let shown = [];
@@ -101,7 +104,7 @@ export function createProjectDocs(box, open) {
   };
   const folderBlock = ([folder, docs], review, root, touch) => {
     const all = more.has(folder) || docs.length <= FOLDER_ROWS;
-    return '<details' + (!touch || !folder ? ' open' : '') + '><summary>' + escapeHtml(folder ? folder + '/' : root + '/') + '<span>· ' + docs.length + '</span></summary><ul class="pd-list">'
+    return '<details data-pd-key="' + escapeHtml(folder) + '"' + (open_(folder, !touch || !folder) ? ' open' : '') + '><summary>' + escapeHtml(folder ? folder + '/' : root + '/') + '<span>· ' + docs.length + '</span></summary><ul class="pd-list">'
       + (all ? docs : docs.slice(0, FOLDER_ROWS)).map((doc) => row(doc, review)).join('') + '</ul>'
       + (all ? '' : '<button type="button" class="pd-more" data-pd-more="' + escapeHtml(folder) + '">+ ' + (docs.length - FOLDER_ROWS) + ' more</button>') + '</details>';
   };
@@ -124,10 +127,11 @@ export function createProjectDocs(box, open) {
       : dated ? flat(shown)
       : docs.length ? '<div class="pd-cols">' + groupByFolder(docs).map((group) => folderBlock(group, review, project.title || project.id, matchMedia('(pointer:coarse)').matches)).join('') + '</div>'
       : '<p class="pd-empty">No doc in this project yet.</p>')
-      + (others.length && !query ? '<details class="pd-cols" data-pd-others><summary>Other files<span>· ' + others.length + '</span></summary><ul class="pd-list">' + others.map((doc) => row(doc, review, folderOf(doc.path))).join('') + '</ul></details>' : '');
+      + (others.length && !query ? '<details class="pd-cols" data-pd-others data-pd-key="/"' + (open_('/', false) ? ' open' : '') + '><summary>Other files<span>· ' + others.length + '</span></summary><ul class="pd-list">' + others.map((doc) => row(doc, review, folderOf(doc.path))).join('') + '</ul></details>' : '');
     if (!query && !dated) shown = groupByFolder(docs).flatMap(([, items]) => items);
   }
 
+  list.addEventListener('toggle', (event) => { if (event.target.dataset?.pdKey != null) opened.set(event.target.dataset.pdKey, event.target.open); }, true);
   input.addEventListener('input', () => draw(current));
   sort.addEventListener('change', () => draw(current));
   input.addEventListener('keydown', (event) => {
@@ -157,6 +161,7 @@ export function createProjectDocs(box, open) {
         id = next;
         input.value = '';
         more.clear();
+        opened.clear();
         cache.delete(next);
         api('/api/context-hub/project-docs?projectId=' + encodeURIComponent(next))
           .then((data) => cache.set(next, data), (error) => {

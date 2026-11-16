@@ -46,3 +46,9 @@ test('All docs is served from the fixed asset list and fetched by the project pa
   const page = fs.readFileSync(new URL('../src/ui/project-page.mjs', import.meta.url), 'utf8');
   assert.match(page, /import\('\/assets\/ui\/project-docs\.mjs'\)/);
 });
+
+test('Trust, notebooks and ⋯ of the project page are served from the fixed asset list and fetched on demand', () => {
+  assert.equal(NOTEBOOK_WEB_ASSETS.get('/assets/ui/project-more.mjs')?.file, 'ui/project-more.mjs');
+  const page = fs.readFileSync(new URL('../src/ui/project-page.mjs', import.meta.url), 'utf8');
+  assert.match(page, /import\('\/assets\/ui\/project-more\.mjs'\)/);
+});
