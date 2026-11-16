@@ -7066,7 +7066,12 @@ function renderGlobalExplorerContextMenu(x, y) {
           + '<button class="secondary" type="button" data-global-context-priority="down">Move project down</button>'
           + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
         : "")
-      + (target.kind === "project" ? '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>' : '')
+      + (target.kind === "project"
+        ? '<button class="secondary" type="button" data-global-context-trust>Trust the current versions…</button>'
+          + '<button class="secondary" type="button" data-global-context-hide>' + (projectListHidden().includes(project.projectKey) ? "Show in the Projects list" : "Hide from the Projects list") + '</button>'
+          + ((state.contextHub?.projects || []).some(isInternalHubProject) ? '<button class="secondary" type="button" data-global-context-internal>' + (projectListPrefs().showInternal === true ? "Hide" : "Show") + ' the internal Hub folder</button>' : '')
+          + '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>'
+        : '')
       + (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-local-graph>Open local graph</button>' : '')
       + (project && (target.kind === "file" || target.kind === "folder") ? '<button class="secondary" type="button" data-global-context-pin>Pin to project page</button>' : '')
       + '<button class="secondary" type="button" data-global-context-health title="Review configuration, documentation, hook, and review-safety issues for this project">View Context health</button>'
@@ -7124,6 +7129,20 @@ function renderGlobalExplorerContextMenu(x, y) {
   menu.querySelector("[data-global-context-pin]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
     loadProjectPage().then((page) => page?.pin(project, target)).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-trust]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    void showTrustCurrentVersionsDialog(worktree?.id || project.id, project.title || project.id);
+  });
+  menu.querySelector("[data-global-context-hide]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    const hide = !projectListHidden().includes(project.projectKey);
+    setProjectHidden(project.projectKey, hide);
+    setStatus(hide ? (project.title || project.id) + " is hidden from the Projects list · search or ⌘K still finds it" : (project.title || project.id) + " is back in the Projects list");
+  });
+  menu.querySelector("[data-global-context-internal]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    saveProjectListPrefs({ ...projectListPrefs(), showInternal: projectListPrefs().showInternal !== true });
   });
   menu.querySelector("[data-global-context-open-project]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
@@ -7766,7 +7785,7 @@ function saveReviewFlow() {
 }
 
 function reviewFlowCandidates() {
-  return contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase(), "active")
+  return contextHubHomeReviewItems("", "active")
     .filter((item) => item.type === "local" && item.localReview?.path && !isDeletedReviewQueueItem(item.localReview));
 }
 
@@ -8644,6 +8663,34 @@ function revealDocumentsMap(projectKey) {
   if (observer) for (const child of page.querySelector(".docqa-grid")?.children || []) observer.observe(child);
 }
 
+// Hidden projects and the internal Hub folder (R12): kept in the browser, under the key the Files view used.
+const PROJECT_LIST_PREFS_KEY = "context-room.home.v1";
+function projectListPrefs() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(PROJECT_LIST_PREFS_KEY) || "null");
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch { return {}; }
+}
+const projectListHidden = () => (Array.isArray(projectListPrefs().hidden) ? projectListPrefs().hidden : []);
+const isInternalHubProject = (project) => /\/\.context-room\/hub\/host\/?$/.test(String(project?.root || "").replaceAll("\\", "/")) || project?.title === "Context Room Hub";
+function setProjectHidden(projectKey, hidden) {
+  const prefs = projectListPrefs();
+  const list = projectListHidden().filter((key) => key !== projectKey);
+  const pinned = Array.isArray(prefs.pinned) ? prefs.pinned.filter((key) => key !== projectKey) : prefs.pinned;
+  saveProjectListPrefs({ ...prefs, hidden: hidden ? [...list, projectKey] : list, ...(pinned ? { pinned } : {}) });
+}
+function saveProjectListPrefs(prefs) {
+  try { window.localStorage.setItem(PROJECT_LIST_PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: this visit only */ }
+  explorerViewController?.invalidate();
+  renderGlobalProjectExplorer();
+}
+// Out of the Projects list, but a search, ⌘K and the open project still reach them.
+function projectListShows(project) {
+  if (project.projectKey === state.sharedProposalProject) return true;
+  if (isInternalHubProject(project) && projectListPrefs().showInternal !== true) return false;
+  return !projectListHidden().includes(project.projectKey);
+}
+
 function renderGlobalProjectExplorer() {
   renderContextHubHomeProjects();
   const explorer = el("globalProjectExplorer");
@@ -8719,9 +8766,10 @@ function renderGlobalProjectExplorer() {
   listLabel.textContent = "Projects";
   const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
   const needle = searchFold(state.globalProjectSearch.trim());
-  const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
+  const projects = allProjects.filter((project) => needle ? contextHubProjectSearchText(project).includes(needle) : projectListShows(project));
+  const notListed = needle ? 0 : allProjects.length - projects.length;
   count.textContent = state.contextHub
-    ? projects.length + (needle ? " of " + allProjects.length : "")
+    ? projects.length + (needle ? " of " + allProjects.length : notListed ? " · " + notListed + " hidden" : "")
     : "Loading…";
   updateGlobalExplorerMarkup(list, projects.length
       ? projects.map((project) => {
@@ -8734,7 +8782,9 @@ function renderGlobalProjectExplorer() {
           + '</a><button class="global-project-row-menu" type="button" data-global-project-menu="' + escapeHtml(project.projectKey) + '" aria-haspopup="menu" aria-label="Project actions · ' + escapeHtml(project.title || project.id) + '">⋯</button></div>';
       }).join("")
     : state.contextHub
-      ? (allProjects.length || needle
+      ? (notListed
+        ? '<div class="global-project-explorer-empty">Every project is hidden. A search or ⌘K still finds them.</div>'
+        : allProjects.length || needle
         ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
         : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Add one from the home page.') + '</div>')
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
@@ -9286,7 +9336,7 @@ function contextRoomSelectReview(item) {
 }
 
 function contextRoomVisibleSelectableReviews() {
-  return contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase())
+  return contextHubHomeReviewItems()
     .slice(0, CONTEXT_HUB_HOME_REVIEW_LIMIT)
     .filter(contextRoomReviewIsSelectable);
 }
@@ -9809,10 +9859,10 @@ function renderContextRoomGlobalReviewQueue() {
   renderReviewHistoryPanel();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
-  const needle = searchFold(state.sharedProposalSearch.trim());
-  const reviews = contextHubHomeReviewItems(needle, "active");
-  const activeReviews = contextHubHomeReviewItems(needle, "active");
-  const snoozedReviews = contextHubHomeReviewItems(needle, "snoozed");
+  // « To review » has no search field since R9: a hidden search text must never thin it out.
+  const reviews = contextHubHomeReviewItems("", "active");
+  const activeReviews = reviews;
+  const snoozedReviews = contextHubHomeReviewItems("", "snoozed");
   const s = state.docqa?.summary || {};
   const groupDeletions = Number(s.deletedDocs || 0) > 1 || state.deletionBatchItems.length > 0;
   const loadedBatchChanged = state.deletionBatchItems.length && (state.deletionBatchKey !== String(s.deletedReviewKey || "") || state.deletionBatchReportedCount !== Number(s.deletedDocs || 0));
@@ -9837,7 +9887,6 @@ function renderContextRoomGlobalReviewQueue() {
     && currentProject
     && contextHubSourceMatches("local")
     && (!state.sharedProposalProject || state.sharedProposalProject === currentProject.projectKey)
-    && !needle
   );
   const renderedReviews = showDeletionBatch
     ? reviews.filter((item) => (
@@ -9895,7 +9944,7 @@ function renderContextRoomGlobalReviewQueue() {
   // user chose to hide it.
   if (reviewToolbar) reviewToolbar.hidden = cleanQueue && state.settings?.appearance?.hideEmptyReviewToolbar === true;
   // The filters stay folded until one is on.
-  if (state.sharedProposalProject || state.sharedProposalSearch.trim() || state.contextHubSource !== "all") el("reviewQueueTools").open = true;
+  if (state.sharedProposalProject || state.contextHubSource !== "all") el("reviewQueueTools").open = true;
   summary.innerHTML = cleanQueue
     ? '<div class="review-summary-item"><strong>All clear</strong><span>no review pending</span></div>'
     : hubReady
@@ -25843,10 +25892,9 @@ function showContextHubAddProjectDialog() {
       const entryId = result.project?.id || "";
       const project = (state.contextHub?.projects || []).find((item) => item.id === entryId || (item.worktrees || []).some((worktree) => worktree.id === entryId));
       close({ restoreFocus: false });
+      // The new project opens on its own page (R12), where Trust and its notebooks are.
       if (project) {
-        if (explorerViewController) explorerViewController.navigate({ projectKey: project.projectKey });
-        else explorerInitialPlace.projectKey = project.projectKey;
-        setHomeExplorer(true);
+        if (state.homeExplorer) setHomeExplorer(false, { push: false });
         await openGlobalProjectExplorer(project);
       }
       setStatus(result.alreadyRegistered ? "Already in your projects" : "Added " + (project?.title || result.project?.title || "project"));
@@ -27513,7 +27561,7 @@ el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
   if (state.sharedContextBusy) return;
   const visibleAction = event.target.closest("[data-context-room-select-visible]");
   if (visibleAction) {
-    const visible = contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase())
+    const visible = contextHubHomeReviewItems()
       .slice(0, CONTEXT_HUB_HOME_REVIEW_LIMIT)
       .filter(contextRoomReviewIsSelectable);
     if (visibleAction.dataset.contextRoomSelectVisible === "clear") {

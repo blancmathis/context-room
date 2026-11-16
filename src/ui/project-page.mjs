@@ -142,6 +142,7 @@ export function createProjectPage() {
   docsBox.id = 'projectDocs';
   docsBox.hidden = true;
   let docsView = null;
+  let moreView = null;
   queue?.before(head);
   queue?.after(tiles);
   tiles.after(docsBox);
@@ -407,6 +408,8 @@ export function createProjectPage() {
       const now = currentProject();
       if (now) openFile(now, filePath);
     }))).then((view) => view.show(currentProject()), (error) => setStatus(error.message));
+    // Trust, notebooks and ⋯ (R12) are their own module too.
+    if (project || moreView) (moreView ||= import('/assets/ui/project-more.mjs').then((module) => module.createProjectMore(head, docsBox))).then((view) => view.show(currentProject()), (error) => setStatus(error.message));
     group();
     if (!project) {
       editing = false;

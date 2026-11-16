@@ -3,12 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
 import { createMemoryServer, initializeContextRoomProject, writeGlobalContextRoomPreferences } from "../../src/context_room.mjs";
-import { contextHubHostRoot } from "../../src/context_hub.mjs";
+import { contextHubHostRoot, registerContextHubProject } from "../../src/context_hub.mjs";
+import { openNotebook } from "../../src/notebooks.mjs";
 
 // A temporary empty Hub: the real ~/.context-room and the Hub on 4319 are never read.
 test.use({ serviceWorkers: "block", viewport: { width: 1280, height: 800 } });
 
-async function emptyHub() {
+async function emptyHub({ registered = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cr-add-project-")));
   const previous = {};
   for (const key of ["HOME", "CONTEXT_ROOM_HUB_HOME", "CONTEXT_ROOM_SHARED_HOME", "CONTEXT_ROOM_REVIEW_AUTHORITY_HOME", "GIT_CONFIG_GLOBAL"]) {
@@ -22,6 +23,14 @@ async function emptyHub() {
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
   initializeContextRoomProject(hostRoot, { title: "Context Room Hub", allowedPaths: [], watchAllow: [] });
+  // A Hub with projects already in it: the internal Hub folder and one project with a notebook.
+  if (registered) {
+    registerContextHubProject(hostRoot, { title: "Context Room Hub" });
+    initializeContextRoomProject(folder, { title: "Existing Docs", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+    // A notebook is listed only inside a watched folder.
+    openNotebook(folder, { path: "docs/plan.crnb", title: "Plan", canWrite: () => true, createOnly: true });
+    registerContextHubProject(folder, { title: "Existing Docs" });
+  }
   const globalPreferencesPath = path.join(base, "preferences.json");
   writeGlobalContextRoomPreferences({ explorer: { computerRoot: process.env.HOME } }, globalPreferencesPath);
   const runtime = createMemoryServer({ root: hostRoot, registerInHub: false, globalPreferencesPath });
@@ -70,12 +79,11 @@ test("@smoke an empty Hub offers Add a project and an existing folder appears in
     await trust.getByRole("button", { name: "Trust 1 file" }).click();
     await expect(trust).toHaveCount(0);
     await expect(page.locator("#status")).toContainText("Trusted 1 current version");
-    const files = page.locator("#explorerViewPanel");
-    await expect(files.locator(".hl-select[aria-current=true]", { hasText: "Existing Docs" })).toBeVisible();
-    await expect(files.getByRole("button", { name: "docs" }).first()).toBeVisible();
-    // F31: the Documents and Reviews columns agree once the versions are trusted.
-    await expect(files.locator(".hl-agent")).toContainText("1 tracked · all up to date", { timeout: 30_000 });
-    await expect(files.locator(".hl-agent")).toContainText("Nothing waiting");
+    // R12: the new project opens on its own page, not in a Files view; once trusted, nothing waits and no offer stays.
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
+    await expect(page.locator("#explorerViewPanel")).toBeHidden();
+    await expect(page.locator("#projectPageHead .pp-count")).toHaveText("Nothing to review", { timeout: 30_000 });
+    await expect(page.locator("#projectTrust")).toBeHidden();
     expect(errors).toEqual([]);
   } finally {
     await hub.close();
@@ -93,6 +101,101 @@ test("an empty Hub explains an error in plain words and Create a new folder stay
     await expect(dialog.getByRole("status")).toContainText(/not inside the Computer root/);
     await dialog.getByRole("button", { name: "Create a new folder instead" }).click();
     await expect(page.getByRole("dialog", { name: "Create a project" })).toBeVisible();
+  } finally {
+    await hub.close();
+  }
+});
+
+const projectRow = (page, title) => page.locator("#globalProjectList a.global-project-row", { has: page.locator(".global-project-row-title strong", { hasText: title }) });
+
+test("@smoke Trust the current versions from the project page leaves a receipt that undoes it", async ({ page }) => {
+  const hub = await emptyHub();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await page.getByRole("button", { name: "Add a project…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add a project" });
+    await dialog.getByLabel("Folder", { exact: true }).fill(hub.folder);
+    await dialog.getByLabel("Folder", { exact: true }).dispatchEvent("change");
+    await dialog.getByRole("button", { name: "Add this folder" }).click();
+    // Cancel the offer made after adding: the project page keeps it in view.
+    await page.getByRole("dialog", { name: "Trust the current versions?" }).getByRole("button", { name: "Cancel" }).click();
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
+    const offer = page.locator("#projectTrust");
+    await expect(offer).toContainText("1 file has no accepted version yet", { timeout: 30_000 });
+    await offer.getByRole("button", { name: "Trust the current versions…" }).click();
+    const trust = page.getByRole("dialog", { name: "Trust the current versions?" });
+    await expect(trust.getByRole("list", { name: "1 file to trust" })).toContainText("docs/guide.md");
+    await trust.getByRole("button", { name: "Trust 1 file" }).click();
+    await expect(page.locator("#status")).toContainText("Trusted 1 current version · undo from Recent decisions");
+    await expect(offer).toBeHidden({ timeout: 30_000 });
+
+    // The receipt is in Recent decisions; undoing it brings the offer back on the project page.
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    const history = page.locator("#reviewHistoryPanel");
+    await expect(history).toBeVisible({ timeout: 30_000 });
+    await history.locator("summary").click();
+    const receipt = history.locator("li", { hasText: "Trusted 1 current version" }).first();
+    await receipt.getByRole("button", { name: "Undo this trust" }).click();
+    await page.getByRole("dialog", { name: "Undo this trust?" }).getByRole("button", { name: "Undo trust" }).click();
+    await expect(page.locator("#status")).toContainText("Trust undone");
+    await projectRow(page, "Existing Docs").click();
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
+    await expect(offer).toContainText("1 file has no accepted version yet", { timeout: 30_000 });
+    expect(errors).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("@smoke the project page lists its notebooks, and ⋯ hides the project and shows the internal Hub folder", async ({ page }) => {
+  const hub = await emptyHub({ registered: true });
+  const errors = [];
+  // A page.goto cuts a refresh short; WebKit reports that as "due to access control checks". Other errors count.
+  page.on("pageerror", (error) => { if (!/due to access control checks/.test(error.message)) errors.push(error.message); });
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    const list = page.locator("#globalProjectList");
+    // The internal Hub folder stays out of the Projects list until asked for.
+    await expect(projectRow(page, "Existing Docs")).toBeVisible({ timeout: 30_000 });
+    await expect(projectRow(page, "Context Room Hub")).toHaveCount(0);
+    await expect(page.locator("#globalProjectCount")).toHaveText("1 · 1 hidden");
+
+    await projectRow(page, "Existing Docs").click();
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
+    const notes = page.locator("#projectNotebooks");
+    await expect(notes.getByRole("heading", { name: "Notebooks · 1" })).toBeVisible({ timeout: 30_000 });
+    await notes.getByRole("button", { name: "Plan" }).click();
+    await expect(page.locator("dialog.notebook-dialog[open]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("dialog.notebook-dialog[open]")).toHaveCount(0);
+
+    // ⋯ › Hide: out of the list, still found by a search.
+    const more = page.locator("#projectPageHead [data-pp-more]");
+    await expect(more).toHaveAttribute("aria-label", "Project actions · Existing Docs");
+    await more.click();
+    const menu = page.locator("#explorerContextMenu");
+    await menu.getByRole("menuitem", { name: "Hide from the Projects list" }).click();
+    await expect(page.locator("#status")).toContainText("Existing Docs is hidden from the Projects list");
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(page.locator("#globalProjectCount")).toHaveText("0 · 2 hidden", { timeout: 30_000 });
+    await expect(projectRow(page, "Existing Docs")).toHaveCount(0);
+    await page.locator("#globalProjectSearch").fill("Existing");
+    await projectRow(page, "Existing Docs").click();
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
+
+    // ⋯ › Show the internal Hub folder, then Show in the Projects list.
+    await more.click();
+    await menu.getByRole("menuitem", { name: "Show the internal Hub folder" }).click();
+    await more.click();
+    await menu.getByRole("menuitem", { name: "Show in the Projects list" }).click();
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(projectRow(page, "Context Room Hub")).toBeVisible({ timeout: 30_000 });
+    await expect(projectRow(page, "Existing Docs")).toBeVisible();
+    await expect(page.locator("#globalProjectCount")).toHaveText("2");
+    await expect(list).not.toContainText("hidden");
+    expect(errors).toEqual([]);
   } finally {
     await hub.close();
   }
