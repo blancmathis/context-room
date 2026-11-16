@@ -1303,10 +1303,12 @@ export function listProjectExplorerPage(root = process.cwd(), {
   const { offset, pageSize } = normalizedExplorerPageOptions({ cursor, limit });
   const needle = String(query || "").trim().toLowerCase();
   let entries = [];
+  let unlisted = [];
   let normalizedDirectory = normalizeRelPath(String(directory || "")).replace(/\/$/, "");
   if (needle) {
     normalizedDirectory = "";
-    entries = walkProjectExplorerTextFiles(root, { showHiddenFiles })
+    // The settings folder must not use up the walk's file cap.
+    entries = walkProjectExplorerTextFiles(root, { showHiddenFiles, skipConfig: true })
       .filter((relPath) => relPath.toLowerCase().includes(needle))
       .sort((left, right) => left.localeCompare(right, "en"));
   } else {
@@ -1338,6 +1340,9 @@ export function listProjectExplorerPage(root = process.cwd(), {
       if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath) && !isProjectNotebookFile(relPath))) return [];
       return [{ path: relPath, name: entry.name, type: "file-candidate" }];
     }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
+    // Folders, links and files that exist but are not listed (skipped, blocked, symbolic links): a doc link into them is not "missing".
+    const listed = new Set(entries.map((entry) => entry.name));
+    unlisted = children.filter((entry) => !entry.name.startsWith(".") && !listed.has(entry.name)).sort((left, right) => Number(left.isFile()) - Number(right.isFile())).map((entry) => entry.name).slice(0, 100);
   }
   // The settings folder is not documentation: the tree and its search never list it.
   entries = entries.filter((entry) => !/^\.context-room(\/|$)/.test(entry.path ?? entry));
@@ -1369,6 +1374,7 @@ export function listProjectExplorerPage(root = process.cwd(), {
     entries: page,
     total: entries.length,
     nextCursor,
+    unlisted,
     revision,
   };
 }
@@ -26492,7 +26498,7 @@ function walkTextFiles(dir, root, settings = defaultMemoryWebappSettings(), dire
   return results;
 }
 
-function walkProjectExplorerTextFiles(root, { showHiddenFiles = true } = {}) {
+function walkProjectExplorerTextFiles(root, { showHiddenFiles = true, skipConfig = false } = {}) {
   const resolvedRoot = path.resolve(root);
   const results = [];
   const walk = (dir) => {
@@ -26509,7 +26515,7 @@ function walkProjectExplorerTextFiles(root, { showHiddenFiles = true } = {}) {
       if (PROJECT_EXPLORER_SKIP_DIRS.has(entry.name)) continue;
       const abs = path.join(dir, entry.name);
       const rel = path.relative(resolvedRoot, abs).replaceAll(path.sep, "/");
-      if (!rel || rel.startsWith("../") || rel.includes("/../")) continue;
+      if (!rel || rel.startsWith("../") || rel.includes("/../") || (skipConfig && rel === CONFIG_DIR)) continue;
       if (!showHiddenFiles && entry.name.startsWith(".")) continue;
       if (isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !isSafeEnvSamplePath(rel)) continue;
       if (entry.isDirectory()) {

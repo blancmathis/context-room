@@ -309,6 +309,9 @@ test("@smoke a file link to a project that is not in the catalogue says so inste
     await waitForBoot(page);
     await waitForQuiet(page);
     await expect(page.locator("#status")).toContainText("This project is not registered in Context Room.");
+    // Opening a registered project ends the notice.
+    await page.evaluate((id) => openContextHubProject(id), hub.projects.Alpha.id);
+    await expect(page.locator("#status")).not.toContainText("not registered");
   } finally {
     await hub.close();
   }
