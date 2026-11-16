@@ -369,27 +369,27 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-explorer-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; color: var(--muted); font-size: 10px; }
     .global-project-explorer-summary strong { color: var(--text-soft); font-size: 11px; }
     .global-project-explorer-list { min-width: 0; display: grid; gap: 4px; }
-    .global-project-row { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; padding: 9px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; text-decoration: none; }
+    .global-project-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; text-decoration: none; }
     .global-project-row:hover { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); background: var(--surface-card-hover); }
     .global-project-row[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-card)); }
     .global-project-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
-    .global-project-row-main { min-width: 0; display: grid; gap: 4px; }
+    .global-project-row-main { flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
     .global-project-row-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
-    .context-hub-home-project .global-project-row-title > :not(strong) { flex: none; }
-    .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-    .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-    .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
-    .global-project-row-side > span:first-child { min-width: 0; justify-self: stretch; overflow: hidden; text-overflow: ellipsis; }
+    .global-project-row-title > :not(strong) { flex: none; }
+    .global-project-row-title strong { min-width: min(4.5em, 100%); overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .global-project-row-side { flex: 0 100 auto; max-width: 50%; min-width: 0; display: flex; color: var(--muted); font-size: 9px; white-space: nowrap; }
+    .global-project-row-side > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .global-project-row-wrap { position: relative; min-width: 0; }
-    .global-project-row-wrap .global-project-row-side { padding-right: 38px; }
-    .global-project-row-menu { position: absolute; right: 0; bottom: 0; width: 44px; height: 44px; padding: 20px 0 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .global-project-row-wrap .global-project-row { padding-right: 44px; }
+    .global-project-row-menu { position: absolute; top: 0; right: 0; bottom: 0; width: 44px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
     .global-project-row-menu:hover, .global-project-row-menu:focus-visible, .global-project-notes-row:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
-    /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen only (Go to › New note on a keyboard). */
-    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
+    /* Hub home shortcuts sit in the top bar, on the home only, except "Go to" (every view); "New note" shows on a touch screen only (Go to › New note on a keyboard). */
+    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action:not([data-context-hub-project-goto]), .app.explorer-view-on .hub-home-action:not([data-context-hub-project-goto]) { display: none; }
     @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
+    @media (max-width: 980px) { #cr-main:not(:has(#home:not([hidden]))) .hub-home-action kbd { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
@@ -2486,7 +2486,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     strong, b { font-weight: 650; }
     button, input, select, textarea { font: inherit; }
     button { letter-spacing: normal; }
-    code, pre, kbd, .workspace-title, .selected-path, .review-path, .global-project-row-location {
+    code, pre, kbd, .workspace-title, .selected-path, .review-path {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .ui-icon-sprite { position: fixed; width: 0; height: 0; overflow: hidden; pointer-events: none; }
@@ -2672,7 +2672,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     }
     .global-project-row { padding: 7px 8px; }
     .global-project-row-title strong, .global-project-tree-name { font-size: 12px; font-weight: 550; }
-    .global-project-row-location, .global-project-row-side, .global-project-tree-meta { font-size: 10px; }
+    .global-project-row-side, .global-project-tree-meta { font-size: 10px; }
     .global-project-explorer-empty { border: 0; background: color-mix(in srgb, var(--text) 3%, transparent); }
     main {
       padding: 0;
@@ -3587,7 +3587,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
-    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button { min-height: 44px; } .file-actions .file-action { min-width: 44px; min-height: 44px; } }
+    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button, [data-context-hub-project-goto] { min-height: 44px; } .file-actions .file-action { min-width: 44px; min-height: 44px; } }
     /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
@@ -7444,8 +7444,7 @@ function renderContextHubHomeProjects() {
     const title = escapeHtml(project.title || project.id);
     const destination = (id, label) => '<button class="context-hub-home-project-destination" type="button" data-context-hub-project-destination="' + id + '" data-project-key="' + key + '" aria-label="' + escapeHtml(label + " · " + (project.title || project.id)) + '">' + escapeHtml(label) + '</button>';
     return '<li class="context-hub-home-project" aria-current="' + String(selected) + '">'
-      + '<span class="context-hub-home-project-main"><span class="global-project-row-title"><strong>' + title + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
-      + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+      + '<span class="context-hub-home-project-main" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '"><span class="global-project-row-title"><strong>' + title + '</strong>' + contextHubProjectSourceBadges(project) + '</span></span>'
       + '<span class="context-hub-home-project-attention" data-attention="' + contextHubProjectAttentionKind(project) + '">' + escapeHtml(contextHubProjectAttentionLabel(project)) + '</span>'
       + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
       + '</li>';
@@ -8724,9 +8723,8 @@ function renderGlobalProjectExplorer() {
         const attention = contextHubProjectAttentionLabel(project);
         const selected = project.projectKey === state.sharedProposalProject;
         const worktree = globalProjectSelectedWorktree(project);
-        return '<div class="global-project-row-wrap"><a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">'
-          + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
-          + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+        return '<div class="global-project-row-wrap"><a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">'
+          + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span></span>'
           + '<span class="global-project-row-side"><span>' + escapeHtml(attention) + '</span></span>'
           + '</a><button class="global-project-row-menu" type="button" data-global-project-menu="' + escapeHtml(project.projectKey) + '" aria-haspopup="menu" aria-label="Project actions · ' + escapeHtml(project.title || project.id) + '">⋯</button></div>';
       }).join("")
@@ -8780,10 +8778,39 @@ function contextHubProjectPickerChoices() {
   const open = state.contextHubProjectPickerPurpose === "open";
   // "New note" is an action of "Go to": a keyboard-only way to draw a note outside a project.
   const actions = open && IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB && "new note".includes(needle) ? [{ gotoKind: "action", name: "New note" }] : [];
+  const docs = gotoDocumentChoices();
+  // An exact file name ("runbook" or "runbook.md") goes before the projects.
+  const exact = docs.some((item) => item.gotoKind === "file" && [item.name, item.name.replace(/\.[^.]+$/, "")].some((name) => searchFold(name) === needle));
   return {
     projects,
-    choices: needle || open ? [...projects, ...actions, ...gotoDocumentChoices()] : [null, ...projects],
+    choices: !open ? (needle ? projects : [null, ...projects]) : needle ? (exact ? [...docs, ...projects, ...actions] : [...projects, ...actions, ...docs]) : [...gotoRecentChoices(), ...projects, ...actions],
   };
+}
+
+// "Go to" with no query: the 5 files opened last, the open one left out, so ⌘K + Enter goes back.
+const GOTO_RECENT_KEY = "context-room-goto-recent";
+function gotoRecentList() {
+  try {
+    const list = JSON.parse(localStorage.getItem(GOTO_RECENT_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((item) => item && typeof item.path === "string") : [];
+  } catch { return []; }
+}
+
+function rememberGotoRecent(path) {
+  const projectId = state.activeProjectLocationId;
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !projectId || !path) return;
+  const list = gotoRecentList().filter((item) => item.projectId !== projectId || item.path !== path);
+  try { localStorage.setItem(GOTO_RECENT_KEY, JSON.stringify([{ projectId, path }, ...list].slice(0, 6))); } catch {}
+}
+
+function gotoRecentChoices() {
+  if (IS_HOSTED_HUB) return [];
+  const projects = state.contextHub?.projects || [];
+  return gotoRecentList().flatMap((item) => {
+    const project = projects.find((entry) => entry.id === item.projectId || (entry.worktrees || []).some((worktree) => worktree?.id === item.projectId));
+    const open = state.page === "file" && state.selected === item.path && state.activeProjectLocationId === item.projectId;
+    return project && !open ? [{ ...item, gotoKind: "recent", name: item.path.split("/").pop(), projectKey: project.projectKey, projectTitle: project.title }] : [];
+  }).slice(0, 5);
 }
 
 const GOTO_GROUP_LIMIT = 8;
@@ -8831,7 +8858,7 @@ function renderGotoPickerOption(item, index, active) {
 }
 
 function gotoGroupLabel(kind) {
-  return kind === "file" ? "Files" : kind === "text" ? "In text" : kind === "action" ? "Actions" : "Projects";
+  return kind === "file" ? "Files" : kind === "recent" ? "Recent" : kind === "text" ? "In text" : kind === "action" ? "Actions" : "Projects";
 }
 
 function resetGotoSearch() {
@@ -8958,7 +8985,7 @@ function activateContextHubProjectPickerIndex(index) {
     createSpaceNotebook().catch((error) => setStatus(error.message));
     return;
   }
-  if (item?.gotoKind === "file" || item?.gotoKind === "text") {
+  if (item?.gotoKind === "file" || item?.gotoKind === "text" || item?.gotoKind === "recent") {
     if (state.sharedContextBusy) return;
     closeContextHubProjectPicker({ restoreFocus: false });
     openGotoDocument(item).catch((error) => setStatus(error.message));
@@ -9084,7 +9111,7 @@ function openContextHubProjectPicker(trigger, { purpose = "filter", initialQuery
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
   const selectedIndex = projects.findIndex((project) => project.projectKey === state.sharedProposalProject);
   const offset = state.contextHubProjectPickerPurpose === "open" ? 0 : 1;
-  state.contextHubProjectPickerIndex = selectedIndex >= 0 ? selectedIndex + offset : 0;
+  state.contextHubProjectPickerIndex = purpose === "open" && !state.contextHubProjectPickerQuery.trim() && gotoRecentChoices().length ? 0 : selectedIndex >= 0 ? selectedIndex + offset : 0;
   renderContextHubProjectPicker();
   state.contextHubProjectPickerIsolationRelease?.();
   state.contextHubProjectPickerIsolationRelease = isolateContextRoomModalBackground(el("contextHubProjectPicker"));
@@ -15466,6 +15493,7 @@ async function selectFile(path, options = {}) {
     state.fileLoadError = null;
     el("editor").value = data.content || "";
     state.fileContentReadyPath = path;
+    rememberGotoRecent(path);
     if (preserveViewer) {
       updateHeader();
       updateHistoryButtons();
