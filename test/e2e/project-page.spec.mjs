@@ -365,24 +365,37 @@ test("@layout To review groups the files per project and Open project leads to t
 
 test("@layout a direct link to a doc shows the breadcrumb, opens the tree on it with review dots, and the project name leads back", async ({ page }) => {
   const data = fixture();
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=file&file=docs/operations.md&explorer=expanded`);
-  await waitForBoot(page);
-  const crumb = page.locator("#workspaceTitle");
-  await expect(crumb).toHaveText("Atlas › docs › operations.md");
-  await expect(page.locator("#status")).not.toHaveText(/open$/);
-  const row = page.locator('[data-global-project-file="docs/operations.md"]');
-  await expect(row).toHaveAttribute("aria-current", "page");
-  await expect(row.locator(".tree-dot")).toHaveAttribute("aria-label", /review/i);
-  // One review dot per queued file; the folder shows how many of its files wait.
-  const queued = await page.locator("#globalProjectList .tree-dot").count();
-  expect(queued).toBeGreaterThan(0);
-  await expect(page.locator('[data-global-project-folder="docs"] [data-review-count]')).toHaveText(/^[1-9]\d*$/);
+  // An untracked doc is new to review: its dot is the hollow one.
+  const fresh = path.join(data.projects.atlas.root, "docs", "fresh-note.md");
+  fs.writeFileSync(fresh, "# Fresh note\n");
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=file&file=docs/operations.md&explorer=expanded`);
+    await waitForBoot(page);
+    const crumb = page.locator("#workspaceTitle");
+    await expect(crumb).toHaveText("Atlas › docs › operations.md");
+    await expect(page.locator("#status")).not.toHaveText(/open$/);
+    const row = page.locator('[data-global-project-file="docs/operations.md"]');
+    await expect(row).toHaveAttribute("aria-current", "page");
+    await expect(row.locator(".tree-dot")).toHaveAttribute("aria-label", /review/i);
+    // One review dot per queued file among the rows shown; the folder shows how many of its files wait.
+    await expect(page.locator('[data-global-project-file="docs/fresh-note.md"] .tree-dot')).toHaveAttribute("aria-label", "New, to review");
+    const dots = await page.evaluate((projectId) => {
+      const queue = contextRoomReviewsForExplorerPath(projectId, "").map((item) => normalizeUiPath(item.localFile || ""));
+      const rows = [...document.querySelectorAll("#globalProjectList [data-global-project-file]")];
+      return { shown: rows.filter((row) => row.querySelector(".tree-dot")).length, queued: rows.filter((row) => queue.includes(row.dataset.globalProjectFile)).length, docs: queue.filter((file) => file.startsWith("docs/")).length };
+    }, data.projects.atlas.id);
+    expect(dots.queued, JSON.stringify(dots)).toBeGreaterThan(1);
+    expect(dots.shown, JSON.stringify(dots)).toBe(dots.queued);
+    await expect(page.locator('[data-global-project-folder="docs"] [data-review-count]')).toHaveText(String(dots.docs));
 
-  await page.reload();
-  await waitForBoot(page);
-  await expect(page.locator('[data-global-project-file="docs/operations.md"]')).toHaveAttribute("aria-current", "page");
+    await page.reload();
+    await waitForBoot(page);
+    await expect(page.locator('[data-global-project-file="docs/operations.md"]')).toHaveAttribute("aria-current", "page");
 
-  await crumb.locator("[data-crumb-project]").click();
-  await expect(page.locator("#projectPageHead h2")).toHaveText("Atlas");
+    await crumb.locator("[data-crumb-project]").click();
+    await expect(page.locator("#projectPageHead h2")).toHaveText("Atlas");
+  } finally {
+    fs.rmSync(fresh, { force: true });
+  }
 });

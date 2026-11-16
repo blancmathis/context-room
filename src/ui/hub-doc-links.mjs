@@ -22,7 +22,7 @@ export function createHubDocLinks(app) {
       const childPath = directory ? directory + "/" + parts[index] : parts[index];
       const entry = page.entries?.find((item) => item.path === childPath);
       const last = index === parts.length - 1;
-      if (!entry) return page.nextCursor == null && !parts[index].startsWith(".") ? false : null;
+      if (!entry) return page.nextCursor == null && !parts[index].startsWith(".") && !page.unlisted?.includes(parts[index]) ? false : null;
       if (last || entry.type !== "directory") return last && entry.type !== "directory";
       directory = childPath;
     }

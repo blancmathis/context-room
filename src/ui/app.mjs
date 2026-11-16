@@ -436,7 +436,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .notebook-space-item .notebook-space-resume { grid-row: 2; grid-column: 1 / -1; border-color: var(--accent); font-weight: 780; }
     .documents-map { display: grid; gap: 2px; padding: 6px; }
     .docs-map-group > summary { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; list-style: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
-    .docs-map-group > summary::-webkit-details-marker { display: none; }
+    .docs-map-group > summary::-webkit-details-marker, summary.global-project-watch-filter::-webkit-details-marker { display: none; }
     .docs-map-group > summary::before { content: "▸"; width: 1em; }
     .docs-map-group[open] > summary::before { content: "▾"; }
     .docs-map-group > summary span { font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -456,7 +456,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .explorer-document-tab.active { background: color-mix(in srgb, var(--accent) 11%, var(--surface-card-hover)); color: var(--text); }
     .explorer-document-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .global-project-watch-filters { display: flex; flex-wrap: wrap; gap: 4px; }
-    .global-project-watch-filter { display: inline-block; min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
+    .global-project-watch-filter { display: inline-block; list-style: none; min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
     .global-project-watch-filter:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-watch-filter.active { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
     .global-project-folder-tree { min-width: 0; display: grid; gap: 1px; padding: 3px 0 18px; }
@@ -6420,14 +6420,21 @@ function workspaceProjectHref(projectId, filePath = "", { fresh = false } = {}) 
   return target.toString();
 }
 
-function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all") {
+function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all", reviews) {
   if (!page) return "";
   const worktree = globalProjectSelectedWorktree(project);
-  // Review dots and folder counts come from the review queue; the open doc is marked.
-  const reviews = contextRoomReviewsForExplorerPath(worktree?.id || project.id, "").map((item) => [normalizeUiPath(item.localFile || ""), item.localReview?.gitStatus || ""]);
+  // Review dots and folder counts, read once per tree: file -> Git status, "folder/" -> count.
+  if (!reviews) {
+    reviews = new Map();
+    for (const item of contextRoomReviewsForExplorerPath(worktree?.id || project.id, "")) {
+      const path = normalizeUiPath(item.localFile || "");
+      reviews.set(path, item.localReview?.gitStatus || "");
+      for (let at = path.indexOf("/"); at > 0; at = path.indexOf("/", at + 1)) reviews.set(path.slice(0, at + 1), (reviews.get(path.slice(0, at + 1)) || 0) + 1);
+    }
+  }
   const entries = (page.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).map((entry) => {
     if (entry.type === "directory") {
-      const count = reviews.filter(([path]) => path.startsWith(entry.path + "/")).length;
+      const count = reviews.get(entry.path + "/") || 0;
       const folderId = globalProjectExpandedFolderKey(project, entry.path);
       const expanded = state.globalProjectExpandedFolders.has(folderId);
       const childKey = globalProjectExplorerPageKey(project, { directory: entry.path });
@@ -6438,10 +6445,10 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
         + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta"' + (count ? ' data-review-count title="' + count + ' to review">' + count : '>') + '</span></button>'
         + (expanded && loading ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">Opening…</div>' : '')
         + (expanded && error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
-        + (expanded && child ? renderGlobalProjectExplorerPage(project, child, depth + 1, filter) : "");
+        + (expanded && child ? renderGlobalProjectExplorerPage(project, child, depth + 1, filter, reviews) : "");
     }
-    const review = reviews.find(([path]) => path === entry.path);
-    const fresh = review && /\?\?|A/.test(review[1]);
+    const review = reviews.has(entry.path);
+    const fresh = /^(\?\?|A)/.test(reviews.get(entry.path));
     return '<a class="global-project-tree-entry" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, entry.path)) + '" data-kind="file" data-global-project-file="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px">'
       + (review ? '<span class="tree-dot" role="img" aria-label="' + (fresh ? 'New, to review">○' : 'To review">●') : '<span aria-hidden="true">◇') + '</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + (entry.watchState ? "" : "Not watched") + '</span></a>';
   }).join("");
@@ -6684,10 +6691,11 @@ function markCurrentTreeRow() {
 }
 
 // A doc opened by a link or a reload: the tree opens its folders down to it.
+let revealedTreePath = "";
 function revealCurrentInTree() {
   const project = markCurrentTreeRow();
   const filePath = project && explorerDocumentPathForProject(project);
-  if (filePath && !state.globalProjectSearch && state.explorerDocumentView !== "related" && !document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]')) void revealSelectedDocumentLocation(project).catch(() => {});
+  if (filePath && filePath !== revealedTreePath && !state.globalProjectSearch && state.explorerDocumentView !== "related" && !document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]') && (revealedTreePath = filePath)) void revealSelectedDocumentLocation(project).catch(() => {});
 }
 
 async function revealSelectedDocumentLocation(project) {
@@ -6762,7 +6770,7 @@ function renderGlobalProjectFolder(project) {
   const filter = state.globalProjectWatchFilters.get(project.projectKey) || "all";
   const markup = renderGlobalProjectExplorerPage(project, details, 0, filter);
   const visibleCount = (details.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).length;
-  const locationContent = '<div class="global-project-folder-head"><details><summary class="global-project-watch-filter' + (filter === "all" ? "" : " active") + '" aria-label="More">⋯</summary><div class="global-project-watch-filters" aria-label="Project watch filter">'
+  const locationContent = '<div class="global-project-folder-head"><details><summary class="global-project-watch-filter' + (filter === "all" ? "" : " active") + '" aria-label="Watch filter: ' + filter + '">⋯</summary><div class="global-project-watch-filters" aria-label="Project watch filter">'
     + [
       ["all", "All"],
       ["watched", "Watched"],
@@ -10631,6 +10639,8 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
   }
   let project = resolveContextHubProjectSelection(state.contextHub?.projects || [], projectId, { aliases: false }).project;
   if (!project) throw new Error("Project is no longer registered.");
+  // Ends the "not registered" notice.
+  state.contextHubRequestedProjectNotice = "";
   if (IS_HOSTED_HUB && (project.mode !== "shared" || options.filePath || options.reviewTarget)) {
     throw new Error("Only Shared project selection is available in the hosted Context Room.");
   }
