@@ -35,19 +35,32 @@ async function resetTiles(page, data, projectKey) {
 test("@layout an old Files view link opens the project page it named, and nothing leads to the Files view any more", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`${data.origin}/?hub=1&view=explorer&explorerProject=${encodeURIComponent("local:" + data.projects.beacon.id)}&explorerDir=docs`);
+  // No old link may end on a 4xx answer, even one to a project gone from the Hub.
+  const failed = [];
+  page.on("response", (response) => { if (response.status() >= 400) failed.push(response.status() + " " + response.url()); });
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForBoot(page);
+  // The real key from the catalogue, not one built from the worktree id.
+  const beaconKey = await page.evaluate((id) => state.contextHub.projects.find((project) => (project.worktrees || []).some((worktree) => worktree.id === id))?.projectKey, data.projects.beacon.id);
+  expect(beaconKey).toMatch(/^local:/);
+  await page.goto(`${data.origin}/?hub=1&view=explorer&explorerProject=${encodeURIComponent(beaconKey)}&explorerDir=docs`);
   await waitForBoot(page);
   await expect(page.locator("#projectPageHead h2")).toHaveText("Beacon");
   await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("hub");
   expect(new URL(page.url()).searchParams.has("explorerProject")).toBe(false);
   expect(new URL(page.url()).searchParams.has("explorerDir")).toBe(false);
   await expect(page.locator("[data-home-explorer], #explorerViewPanel")).toHaveCount(0);
-  // Without a project, the old link lands on the home page.
-  await page.goto(`${data.origin}/?hub=1&view=explorer`);
-  await waitForBoot(page);
-  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
-  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("hub");
-  await expect(page.locator("[data-home-explorer], #explorerViewPanel")).toHaveCount(0);
+  // Without a project, or with one the Hub no longer knows, the old link lands on the home page.
+  for (const query of ["", "&explorerProject=local%3Anope"]) {
+    await page.goto(`${data.origin}/?hub=1&view=explorer${query}`);
+    await waitForBoot(page);
+    await expect(page.locator("#reviewQueuePanel")).toBeVisible();
+    await expect(page.locator("#projectPageHead")).toBeHidden();
+    await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("hub");
+    expect(new URL(page.url()).searchParams.has("project")).toBe(false);
+    await expect(page.locator("[data-home-explorer], #explorerViewPanel")).toHaveCount(0);
+  }
+  expect(failed).toEqual([]);
 });
 
 test("@layout the project page shows its own review first, then shortcuts that lead into the tree", async ({ page }) => {

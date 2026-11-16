@@ -8584,8 +8584,7 @@ const isInternalHubProject = (project) => /\/\.context-room\/hub\/host\/?$/.test
 function setProjectHidden(projectKey, hidden) {
   const prefs = projectListPrefs();
   const list = projectListHidden().filter((key) => key !== projectKey);
-  const pinned = Array.isArray(prefs.pinned) ? prefs.pinned.filter((key) => key !== projectKey) : prefs.pinned;
-  saveProjectListPrefs({ ...prefs, hidden: hidden ? [...list, projectKey] : list, ...(pinned ? { pinned } : {}) });
+  saveProjectListPrefs({ ...prefs, hidden: hidden ? [...list, projectKey] : list });
 }
 function saveProjectListPrefs(prefs) {
   try { window.localStorage.setItem(PROJECT_LIST_PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: this visit only */ }
@@ -11810,6 +11809,8 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
   try {
     const requestedSelection = resolveContextHubProjectSelection(state.contextHub?.projects || [], target.projectId);
     const requestedProject = requestedSelection.project;
+    // An old Files view link to a project gone from the loaded catalogue opens the home, not a 404.
+    if (!requestedProject && window.location.search.includes("explorerProject=")) target.projectId = "";
     const requestedLocationId = (requestedProject?.worktrees || []).find((worktree) => worktree.id === target.projectId)?.id
       || requestedProject?.id
       || target.projectId;
