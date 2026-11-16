@@ -77,6 +77,8 @@ test("@a11y document toolbar buttons say what they do, and Dictate differs from 
     await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
     await page.evaluate(() => selectFile("docs/Original.md"));
     const titles = {};
+    // R6: Dictate, Voice and Annotate sit in the ▾ menu next to Discuss.
+    await page.locator('.file-actions summary[aria-label="More ways to discuss"]').click();
     for (const key of ["conversation", "dictate", "voice", "annotate"]) {
       const button = page.locator(`.file-actions [data-file-${key}]`);
       await expect(button).toBeVisible({ timeout: 20_000 });
