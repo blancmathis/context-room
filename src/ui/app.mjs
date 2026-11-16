@@ -22334,7 +22334,8 @@ function renderMarkdownLineView(text, options = {}) {
 // it stays hidden until they arrive (CSS hides an image without src).
 let mdImages = {};
 function wireMarkdownImages() {
-  if (mdImages[""] !== state.selected) mdImages = { "": state.selected };
+  const doc = state.activeProjectLocationId + "\n" + state.selected;
+  if (mdImages[""] !== doc) mdImages = { "": doc };
   for (const img of document.querySelectorAll("#docReader img[data-md-image]")) (mdImages[img.dataset.mdImage] ||= api("/api/file?path=" + encodeURIComponent(img.dataset.mdImage)).then((file) => file.dataUrl, () => 0)).then((url) => url && (img.src = url));
 }
 
