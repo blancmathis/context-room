@@ -598,7 +598,11 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const requestHeaders = {
     "content-type": "application/json",
@@ -717,7 +721,11 @@ test("Context Hub revalidates current cached refs before reusing a warm proposal
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = {
     "content-type": "application/json",
@@ -777,7 +785,11 @@ test("Context Hub rejects terminal and conflicting proposal cards before materia
 
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = {
     "content-type": "application/json",
@@ -860,7 +872,11 @@ test("Context Hub keeps exact local reviews on the Hub server", { timeout: 30_00
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/context-hub/review`, {
     method: "POST",
     headers: {
@@ -916,7 +932,11 @@ test("Context Hub returns verified partial receipts when a later proposal reject
 
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = {
     "content-type": "application/json",
@@ -987,7 +1007,11 @@ test("direct room boot refreshes Shared through the protected POST and GET remai
 
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   const readOnlyResponse = await fetch(origin + "/api/shared-context?refresh=1");
@@ -1121,7 +1145,11 @@ test("Context Hub attention reads Git HEAD in one batch, not once per modified f
   const project = registerContextHubProject(root);
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const refreshResponse = await fetch(origin + "/api/context-hub/refresh", {
     method: "POST",
@@ -1169,7 +1197,11 @@ test("Context Hub attention agrees with Context Health on a startup file watched
   const project = registerContextHubProject(root);
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const response = await fetch(origin + "/api/context-hub/attention?projectId=" + encodeURIComponent(project.id));
   const body = await response.json();
@@ -1191,7 +1223,11 @@ test("Context Hub rejects ambiguous project aliases but keeps exact project IDs 
   registerContextHubProject(secondRoot, { shared });
   const room = createMemoryServer({ root: firstRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   const refreshResponse = await fetch(origin + "/api/context-hub/refresh", {
@@ -1250,7 +1286,11 @@ test("Context Hub detects Shared root drift before mutation and restores failed 
   const before = readContextHubRegistry();
   const room = createMemoryServer({ root: sourceRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const response = await fetch(origin + "/api/context-hub/project-shared-context", {
     method: "POST",
@@ -2019,7 +2059,11 @@ test("Context Hub unavailable locations expose reasons and unknown counts withou
   initializeContextRoomProject(hostRoot, { allowedPaths: [], watchAllow: [] });
   const room = createMemoryServer({ root: hostRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const catalog = await (await fetch(origin + "/api/context-hub/catalog")).json();
   const catalogChanged = catalog.projects.find((project) => project.id === changed.id);
@@ -3365,7 +3409,11 @@ test("Context Hub project endpoint requests a coalescing snapshot refresh", asyn
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const response = await fetch(origin + "/api/context-hub/project", {
     method: "POST",
@@ -3414,7 +3462,11 @@ test("Context Hub GET /api/context-hub survives a background refresh that throws
   const failure = failSnapshotReadInScheduler(t);
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   failure.armed = true;
   const response = await fetch(origin + "/api/context-hub", { headers: { "x-context-room-project": room.projectId } });
@@ -3432,7 +3484,11 @@ test("Context Hub project endpoint still answers 201 when the background refresh
   const failure = failSnapshotReadInScheduler(t);
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   failure.armed = true;
   const response = await fetch(origin + "/api/context-hub/project", {
@@ -3824,7 +3880,11 @@ test("registered Git worktrees stay distinct locally but appear as one logical p
 
   const room = createMemoryServer({ root: mainRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const hub = await (await fetch(origin + "/api/context-hub/refresh", {
     method: "POST",
@@ -3858,7 +3918,11 @@ test("Context Hub accepts selected local file versions as one verified batch", a
 
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const hubResponse = await fetch(origin + "/api/context-hub/refresh", {
     method: "POST",
@@ -3943,7 +4007,11 @@ test("Context Room Home combines global review queues without nesting another Ho
 
   const room = createMemoryServer({ root: first });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const rootPage = await fetch(origin + "/");
   assert.equal(rootPage.headers.get("content-security-policy"), "frame-ancestors 'self'");
@@ -4194,7 +4262,11 @@ test("global Explorer context actions stay scoped to the selected local project"
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const request = (body) => fetch(origin + "/api/context-hub/project-explorer/action", {
     method: "POST",
@@ -4269,7 +4341,11 @@ test("a preference saved in the same click does not make the project settings sa
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
   const loaded = await (await fetch(origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id))).json();
@@ -4299,7 +4375,11 @@ test("Hub project settings name a pending raw scope reduction and let the owner 
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
   const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
@@ -4372,7 +4452,11 @@ test("Hub project settings: a deleted review scope authority is shown and only a
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
   const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
@@ -4469,7 +4553,11 @@ test("Hub project settings: an unchanged save keeps an allowedPaths reduction ma
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
   const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
@@ -4525,7 +4613,11 @@ test("turning on agent instructions in project settings keeps the project health
   registerContextHubProject(hostRoot);
   const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const loaded = await (await fetch(origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id))).json();
   assert.ok(loaded.settings.watchAllow.includes("AGENTS.md"));
@@ -4691,7 +4783,11 @@ test("a registered project root cannot be retargeted through a replacement symli
 
   const room = createMemoryServer({ root: hostRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/context-hub/project-settings`, {
     method: "POST",
     headers: {
@@ -4745,7 +4841,11 @@ test("legacy project roots stay unconfirmed without adopting a later physical re
   const hostRoot = makeProject(base, "Legacy migration host");
   const room = createMemoryServer({ root: hostRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/context-hub/project-settings`, {
     method: "POST",
     headers: {
@@ -4843,7 +4943,11 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
 
   const room = createMemoryServer({ root: activeRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const hub = await (await fetch(origin + "/api/context-hub/refresh", {
     method: "POST",
@@ -4977,7 +5081,11 @@ test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 
   fs.renameSync(gonePath, path.join(base, "Gone archived"));
   const room = createMemoryServer({ root: hostRoot });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  // Drain background refreshes: a late one would write into the next test's Hub home.
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   for (const route of ["project-agents", "project-recent", "project-tools"]) {

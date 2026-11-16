@@ -17731,8 +17731,8 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
   const menu = (label, mark, items) => items ? '<details class="file-menu"><summary class="file-action" aria-label="' + label + '">' + mark + '</summary><div class="file-menu-list">' + items + '</div></details>' : '';
   return '' +
     (IS_LOCAL && own && !readOnly && /\.(md|markdown|txt|html?)$/i.test(path) ? button('data-file-conversation', 'Discuss', off ? off + ' title="Save or resolve the original document first"' : ' title="Type to the agent about this document"')
-      + menu('More ways to discuss', '▾', button('data-file-dictate', 'Dictate', conversationBlocked ? ' disabled' : '') + button('data-file-voice', 'Voice', off)
-        + (view && /\.(md|markdown)$/i.test(path) && !usePlainTextSurface(path, state.saved) ? button('data-file-annotate', 'Annotate', ' aria-pressed="' + Boolean(handAnnotation) + '"' + off) : '')) : '') +
+      + menu('More ways to discuss', '▾', button('data-file-dictate title="Speak to type text into this document"', 'Dictate', conversationBlocked ? ' disabled' : '') + button('data-file-voice title="Talk out loud with the agent about this document"', 'Voice', off)
+        + (view && /\.(md|markdown)$/i.test(path) && !usePlainTextSurface(path, state.saved) ? button('data-file-annotate title="Mark a passage and ask the agent about it"', 'Annotate', ' aria-pressed="' + Boolean(handAnnotation) + '"' + off) : '')) : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? button('data-file-review-decision="' + escapeHtml(reviewAction.status) + '"', escapeHtml(reviewAction.label)) : '') +
     (secondaryReviewAction ? button('data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '"', escapeHtml(secondaryReviewAction.label)) : '') +

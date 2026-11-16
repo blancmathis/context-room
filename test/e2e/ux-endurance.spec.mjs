@@ -641,6 +641,9 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   expect(atlasWorkspace).toBeTruthy();
   const atlasProject = new URL(page.url()).searchParams.get("project");
 
+  // Below 981 px entering a project closes the Explorer drawer (R3b): open it the way a user does.
+  if ((page.viewportSize()?.width ?? 1280) <= 980) await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
+  await ensureExplorerOpen(page);
   await page.locator('[data-global-explorer-mode="computer"]').click();
   await expect(page.locator('[data-global-explorer-mode="computer"]')).toHaveClass(/active/);
   // The project tab, next to Projects and Computer, brings the open project back.

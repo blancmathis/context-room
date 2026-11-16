@@ -7,6 +7,16 @@ function reviewScope(page) {
   return page.evaluate(() => (state.contextHub?.projects || []).find((project) => project.projectKey === state.sharedProposalProject)?.title || "All projects");
 }
 
+// Below 981 px entering a project closes the Explorer drawer (R3b). Wait for
+// that, then open the drawer again the way a user does.
+async function reopenExplorerAfterEntering(page) {
+  if ((page.viewportSize()?.width ?? 1280) > 980) return;
+  const app = page.locator(".app");
+  await expect(app).toHaveClass(/sidebar-collapsed/);
+  await page.locator("#explorerOpen:visible, #sidebarToggle:visible").first().click();
+  await expect(app).not.toHaveClass(/sidebar-collapsed/);
+}
+
 // This suite simulates terminal authority/flash responses with page.route.
 // Let Playwright own those mocked requests, including the next navigation.
 // Real API and worker interaction stays enabled in the PWA/integration suites.
@@ -461,6 +471,7 @@ test("@smoke one Explorer click selects the project before refresh finishes and 
   }
 
   await expect(page.locator("#status")).toContainText("Shared snapshot synced");
+  await reopenExplorerAfterEntering(page);
   // Back on the home page, « To review » holds every project again.
   await page.locator('[data-global-explorer-mode="projects"]').click();
   await expect.poll(() => reviewScope(page)).toBe("All projects");
@@ -577,6 +588,7 @@ test("@smoke a failed Explorer project refresh restores the project and Review Q
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
   await expect.poll(() => reviewScope(page)).toBe("Atlas");
   await expect(page).toHaveURL((url) => [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project")));
+  await reopenExplorerAfterEntering(page);
 
   releaseProjectRefresh();
   await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
@@ -620,15 +632,18 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
 
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(1);
+  await reopenExplorerAfterEntering(page);
   await page.getByRole("button", { name: "Back to projects" }).click();
   // A switch never waits for the gated first POST: Beacon opens at once.
   await page.locator(".global-project-row", { hasText: "Beacon" }).click();
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await reopenExplorerAfterEntering(page);
   await page.getByRole("button", { name: "Back to projects" }).click();
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(3);
   releaseFirstOpening();
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  await reopenExplorerAfterEntering(page);
   const worktree = page.getByLabel("Choose worktree");
   await expect(worktree).toBeVisible();
   const selectedWorktree = await worktree.inputValue();
@@ -673,6 +688,7 @@ test("@smoke a late failed open of the previous project never rolls back the new
 
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(1);
+  await reopenExplorerAfterEntering(page);
   await page.getByRole("button", { name: "Back to projects" }).click();
   await page.locator(".global-project-row", { hasText: "Beacon" }).click();
   await expect.poll(() => openings.length).toBe(2);
