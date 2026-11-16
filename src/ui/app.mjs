@@ -386,7 +386,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
     /* Hub home shortcuts sit in the top bar, on the home only, except "Go to" (every view); "New note" shows on a touch screen only (Go to › New note on a keyboard). */
-    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action:not([data-context-hub-project-goto]), .app.explorer-view-on .hub-home-action:not([data-context-hub-project-goto]) { display: none; }
+    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action:not([data-context-hub-project-goto]) { display: none; }
     @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     @media (max-width: 980px) { #cr-main:not(:has(#home:not([hidden]))) .hub-home-action kbd { display: none; } }
@@ -2938,7 +2938,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto auto 1fr; }
       [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-columns: minmax(0,1fr) auto; }
-      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(.context-hub-home-side):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(.context-hub-home-side) { grid-column: 1; min-width: 0; }
       [data-context-room-runtime-profile="local"] .global-context-room .context-hub-home-side { grid-column: 2; grid-row: 1 / -1; align-self: start; width: 340px; min-width: 0; }
       [data-context-room-runtime-profile="local"] .global-context-room #contextHealthPanel { margin-top: var(--projects-h); }
     }
@@ -3672,7 +3672,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Accept proposal</button>
           <button id="brandHome" class="context-room-brand" type="button" title="Home" aria-label="Home"><span class="context-room-brand-mark" aria-hidden="true"></span><strong>Context Room</strong></button>
           <button id="settingsButton" class="dock-button workspace-switch" type="button" title="Open settings">Settings</button>
-          <button class="dock-button hub-home-action" type="button" data-home-explorer title="Browse the files of every project" hidden>Files</button>
           <button class="dock-button hub-home-action" type="button" data-context-hub-project-goto title="Go to project, file or text (⌘K)" hidden>Go to… <kbd>⌘K</kbd></button>
           <button class="dock-button hub-home-action" type="button" data-notebook-space-new title="Draw a note that belongs to no project yet" hidden>New note</button>
           <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
@@ -3716,7 +3715,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               <p>Pick a folder that holds your docs. Context Room adds a small .context-room settings folder to it.</p>
               <button class="file-action primary" type="button" data-add-project>Add a project…</button>
             </section>
-            <section id="explorerViewPanel" class="docqa-panel explorer-view-panel" aria-label="Files" hidden></section>
             <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
@@ -4273,9 +4271,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	const IS_HOSTED_REVIEW = CONTEXT_ROOM_RUNTIME_PROFILE === "hosted-review";
 	const IS_HOSTED_CONTEXT_ROOM = IS_HOSTED_HUB || IS_HOSTED_REVIEW;
 	const IS_GLOBAL_CONTEXT_ROOM = IS_HOSTED_HUB || (IS_LOCAL && CONTEXT_ROOM_QUERY.get("hub") === "1");
-	// The Explorer view (?view=explorer) is a files view of the Hub home; it needs the local global Hub.
-	const EXPLORER_VIEW_AVAILABLE = IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB;
-	state.homeExplorer = EXPLORER_VIEW_AVAILABLE && CONTEXT_ROOM_QUERY.get("view") === "explorer";
 	let workspaceDirty = Boolean(state.dirty);
 	Object.defineProperty(state, "dirty", {
 	  configurable: false,
@@ -7436,8 +7431,6 @@ function renderContextHubHomeProjects() {
   panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB;
   document.querySelectorAll(".hub-home-action").forEach((button) => { button.hidden = panel.hidden; });
   if (panel.hidden) return;
-  syncHomeExplorerMode();
-  if (state.homeExplorer) renderExplorerViewPanel();
   if (!state.contextHub) {
     coverage.textContent = "Loading…";
     updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">Loading projects…</div>');
@@ -7499,90 +7492,7 @@ async function loadNotebookSpaceItems(space) {
 
 function reloadNotebookSpace() {
   notebookSpaceItems.hub = null;
-  explorerViewController?.invalidate();
   renderNotebookSpace();
-}
-
-// The Explorer view: one project list and a file browser, in place of the Hub home cards.
-let explorerViewController = null;
-let explorerViewLoading = false;
-function syncHomeExplorerMode() {
-  const home = el("home");
-  const on = Boolean(state.homeExplorer && EXPLORER_VIEW_AVAILABLE);
-  home?.classList.toggle("explorer-mode", on);
-  const panel = el("explorerViewPanel");
-  if (panel) panel.hidden = !on;
-  // One project list only: the Explorer drawer steps aside while the Files view shows.
-  document.querySelector(".app")?.classList.toggle("explorer-view-on", on && Boolean(home) && !home.hidden);
-  // The view module carries its own styles: load it the first time the mode turns on, whatever the path (click, Back, URL).
-  if (on && !explorerViewController) renderExplorerViewPanel();
-}
-
-function setHomeExplorer(on, { push = true } = {}) {
-  if (!EXPLORER_VIEW_AVAILABLE) return;
-  state.homeExplorer = Boolean(on);
-  showHome();
-  if (state.homeExplorer) renderExplorerViewPanel();
-  persistNavigationState();
-  if (push) syncWorkspaceUrl({ push: true });
-}
-
-// The place named by the first URL stays in the URL until the view has loaded and knows better.
-const explorerInitialPlace = { projectKey: new URLSearchParams(window.location.search).get("explorerProject") || "", directory: new URLSearchParams(window.location.search).get("explorerDir") || "" };
-function explorerViewUrlState() {
-  return explorerViewController?.state() || explorerInitialPlace;
-}
-
-function renderExplorerViewPanel() {
-  const host = el("explorerViewPanel");
-  if (!host) return;
-  if (explorerViewController) { explorerViewController.update(); return; }
-  if (explorerViewLoading) return;
-  explorerViewLoading = true;
-  const worktreeId = (project) => globalProjectSelectedWorktree(project)?.id || project.id;
-  import("/assets/ui/explorer-view.mjs").then((module) => {
-    explorerViewController = module.createExplorerView({
-      host,
-      initial: explorerInitialPlace,
-      onNavigate: () => syncWorkspaceUrl({ push: true }),
-      ctx: {
-        projects: () => state.contextHub?.projects || [],
-        ready: () => Boolean(state.contextHub),
-        attention: (project) => ({ kind: contextHubProjectAttentionKind(project), label: contextHubProjectAttentionLabel(project) }),
-        where: (project) => contextHubProjectPickerLocation(project),
-        href: (project, filePath) => workspaceProjectHref(worktreeId(project), filePath),
-        openFile: (project, filePath) => { openContextHubProject(worktreeId(project), { filePath }).catch((error) => setStatus(error.message)); },
-        openNotebook: (project, id) => { openContextRoomNotebook("", { projectId: project.id, resourceId: id, onClosed: reloadNotebookSpace }).catch((error) => setStatus(error.message)); },
-        listDirectory: (project, directory, cursor) => {
-          const params = new URLSearchParams({ projectId: worktreeId(project), limit: "250" });
-          if (directory) params.set("path", directory);
-          if (cursor) params.set("cursor", cursor);
-          return api("/api/context-hub/project-explorer?" + params);
-        },
-        inspect: (project) => api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktreeId(project)) + "&provider=" + encodeURIComponent(agentContextProvider())),
-        notebooks: async (project) => {
-          const data = await captureNotebookApi(project.id).api("/api/notebooks");
-          return [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));
-        },
-      },
-    });
-    host.addEventListener("click", (event) => {
-      if (event.target.closest("[data-notebook-space-new]")) createSpaceNotebook().catch((error) => setStatus(error.message));
-      else if (event.target.closest("[data-explorer-home]")) setHomeExplorer(false);
-      else if (event.target.closest("[data-context-hub-project-goto]")) openContextHubProjectPicker(null, { purpose: "open" });
-      else if (event.target.closest("[data-trust-current]")) {
-        const trigger = event.target.closest("[data-trust-current]");
-        const project = (state.contextHub?.projects || []).find((item) => item.projectKey === trigger.dataset.projectKey);
-        if (project) void showTrustCurrentVersionsDialog(worktreeId(project), project.title, { trigger });
-      } else {
-        const button = event.target.closest("[data-context-hub-project-destination]");
-        if (button) openContextHubProjectDestination(button.dataset.projectKey, button.dataset.contextHubProjectDestination).catch((error) => setStatus(error.message));
-      }
-    });
-    const home = el("home");
-    if (home) new MutationObserver(syncHomeExplorerMode).observe(home, { attributes: true, attributeFilter: ["hidden"] });
-    explorerViewController.update();
-  }).catch((error) => { explorerViewLoading = false; host.textContent = "Could not load the Files view: " + error.message; });
 }
 
 // Notes that belong to no project: one row under the projects, shown only when there is a note.
@@ -8435,7 +8345,6 @@ function confirmReviewUndo(receiptId) {
         });
         state.reviewHistoryStale = true;
         setStatus("Trust undone · " + receipt.count + " files are back in review");
-        explorerViewController?.invalidate();
         refreshReviewCachesAfterBulkReview(receipt.projectId);
         await refreshContextHubReviewQueueAfterUndo();
       },
@@ -8457,7 +8366,6 @@ function confirmReviewUndo(receiptId) {
       });
       state.reviewHistoryStale = true;
       setStatus("Acceptance undone · " + receipt.path + " is back in review");
-      explorerViewController?.invalidate();
       refreshReviewCachesAfterBulkReview(receipt.projectId, receipt.path);
       await refreshContextHubReviewQueueAfterUndo();
     },
@@ -8570,7 +8478,6 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
       }
       state.reviewHistoryStale = true;
       setStatus("Trusted " + count + " current version" + plural + " · undo from Recent decisions");
-      explorerViewController?.invalidate();
       refreshReviewCachesAfterBulkReview(projectId);
       await refreshContextHubReviewQueueAfterUndo();
     },
@@ -8677,12 +8584,10 @@ const isInternalHubProject = (project) => /\/\.context-room\/hub\/host\/?$/.test
 function setProjectHidden(projectKey, hidden) {
   const prefs = projectListPrefs();
   const list = projectListHidden().filter((key) => key !== projectKey);
-  const pinned = Array.isArray(prefs.pinned) ? prefs.pinned.filter((key) => key !== projectKey) : prefs.pinned;
-  saveProjectListPrefs({ ...prefs, hidden: hidden ? [...list, projectKey] : list, ...(pinned ? { pinned } : {}) });
+  saveProjectListPrefs({ ...prefs, hidden: hidden ? [...list, projectKey] : list });
 }
 function saveProjectListPrefs(prefs) {
   try { window.localStorage.setItem(PROJECT_LIST_PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: this visit only */ }
-  explorerViewController?.invalidate();
   renderGlobalProjectExplorer();
 }
 // Out of the Projects list, but a search, ⌘K and the open project still reach them.
@@ -11766,14 +11671,11 @@ function syncWorkspaceUrl({ push = false } = {}) {
   const project = state.activeProjectLocationId || "";
   if (project) url.searchParams.set("project", project);
   else url.searchParams.delete("project");
-  const exploring = state.homeExplorer && EXPLORER_VIEW_AVAILABLE && state.page === "hub";
-  const view = exploring ? "explorer" : state.page === "file" && state.selected ? "file" : state.page || "hub";
+  const view = state.page === "file" && state.selected ? "file" : state.page || "hub";
   url.searchParams.set("view", view);
-  const explorerState = exploring ? explorerViewUrlState() : null;
-  if (explorerState?.projectKey) url.searchParams.set("explorerProject", explorerState.projectKey);
-  else url.searchParams.delete("explorerProject");
-  if (explorerState?.directory) url.searchParams.set("explorerDir", explorerState.directory);
-  else url.searchParams.delete("explorerDir");
+  // The Files view is gone (R12): an old link's place leaves the URL once it has been read.
+  url.searchParams.delete("explorerProject");
+  url.searchParams.delete("explorerDir");
   if (state.selected) url.searchParams.set("file", state.selected);
   else url.searchParams.delete("file");
   if (state.pathFilters?.[0]) url.searchParams.set("folder", state.pathFilters[0]);
@@ -11907,6 +11809,8 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
   try {
     const requestedSelection = resolveContextHubProjectSelection(state.contextHub?.projects || [], target.projectId);
     const requestedProject = requestedSelection.project;
+    // An old Files view link to a project gone from the loaded catalogue opens the home, not a 404.
+    if (!requestedProject && window.location.search.includes("explorerProject=")) target.projectId = "";
     const requestedLocationId = (requestedProject?.worktrees || []).find((worktree) => worktree.id === target.projectId)?.id
       || requestedProject?.id
       || target.projectId;
@@ -11931,11 +11835,6 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
     }
     state.pathFilters = target.folder ? [normalizeUiPath(target.folder)] : [];
     if (el("search")) el("search").value = target.search || folderFilterSearchQuery(state.pathFilters);
-    state.homeExplorer = EXPLORER_VIEW_AVAILABLE && target.view === "explorer";
-    if (state.homeExplorer) {
-      const params = new URL(window.location.href).searchParams;
-      explorerViewController?.navigate({ projectKey: params.get("explorerProject") || "", directory: params.get("explorerDir") || "" });
-    }
     if (target.view === "settings") {
       if (target.settingsSection) state.settingsSection = normalizeSettingsSectionId(target.settingsSection);
       showSettingsPage();
@@ -16119,7 +16018,6 @@ function showHome() {
   el("impact").textContent = "V1: Git/docs review queue, risk signals, reliability inspector, and direct evidence access.";
   el("meta").textContent = state.docqa ? "audit generated " + new Date(state.docqa.generatedAt).toLocaleTimeString("en-US") : "";
   el("home").hidden = false;
-  syncHomeExplorerMode();
   el("proposalReviewPage").hidden = true;
   el("graphPage").hidden = true;
   el("settingsPage").hidden = true;
@@ -25894,10 +25792,7 @@ function showContextHubAddProjectDialog() {
       const project = (state.contextHub?.projects || []).find((item) => item.id === entryId || (item.worktrees || []).some((worktree) => worktree.id === entryId));
       close({ restoreFocus: false });
       // The new project opens on its own page (R12), where Trust and its notebooks are.
-      if (project) {
-        if (state.homeExplorer) setHomeExplorer(false, { push: false });
-        await openGlobalProjectExplorer(project);
-      }
+      if (project) await openGlobalProjectExplorer(project);
       setStatus(result.alreadyRegistered ? "Already in your projects" : "Added " + (project?.title || result.project?.title || "project"));
       // A new project has no accepted version: offer the explicit gesture, never apply it silently.
       if (!result.alreadyRegistered && entryId) void showTrustCurrentVersionsDialog(entryId, project?.title || result.project?.title || "", { afterAdd: true });
@@ -27418,10 +27313,6 @@ if (globalThis.ContextRoomNativeOwner) {
 for (const host of [document.querySelector(".workspace-dock"), el("contextHubProjectsPanel")]) host?.addEventListener("click", (event) => {
   if (event.target.closest("[data-notebook-space-new]")) {
     createSpaceNotebook().catch((error) => setStatus(error.message));
-    return;
-  }
-  if (event.target.closest("[data-home-explorer]")) {
-    setHomeExplorer(true);
     return;
   }
   if (event.target.closest("[data-context-hub-project-goto]")) {

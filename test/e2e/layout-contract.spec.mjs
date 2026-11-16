@@ -1297,7 +1297,8 @@ test("@layout the Hub home starts with the review queue; projects and notebooks 
     return broken.length ? [...broken, JSON.stringify(open)] : [];
   }).toEqual([]);
   // The home shortcuts sit in the top bar. "New note" is for a screen that draws: a mouse-only screen does not show it.
-  await expect(page.locator(".workspace-dock [data-home-explorer]")).toBeVisible();
+  // The Files view is gone (R12): no button for it.
+  await expect(page.locator("[data-home-explorer]")).toHaveCount(0);
   await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
   await expect(page.locator(".workspace-dock [data-notebook-space-new]")).toBeHidden();
   // With no project open, the Explorer shows two sections, Projects and Computer (the project tab appears with a project).

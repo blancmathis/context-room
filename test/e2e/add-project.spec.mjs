@@ -81,7 +81,7 @@ test("@smoke an empty Hub offers Add a project and an existing folder appears in
     await expect(page.locator("#status")).toContainText("Trusted 1 current version");
     // R12: the new project opens on its own page, not in a Files view; once trusted, nothing waits and no offer stays.
     await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
-    await expect(page.locator("#explorerViewPanel")).toBeHidden();
+    await expect(page.locator("#explorerViewPanel")).toHaveCount(0);
     await expect(page.locator("#projectPageHead .pp-count")).toHaveText("Nothing to review", { timeout: 30_000 });
     await expect(page.locator("#projectTrust")).toBeHidden();
     expect(errors).toEqual([]);

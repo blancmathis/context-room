@@ -208,8 +208,9 @@ export function parseWorkspaceNavigationUrl(input, base = "http://127.0.0.1/") {
   const graphCamera = clean("graphCamera", 120).split(",").map(Number);
   const navigation = {
     workspaceId: /^[A-Za-z0-9_-]{8,120}$/.test(clean("workspace", 120)) ? clean("workspace", 120) : "",
-    projectId: clean("project", 240),
-    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts", "graph", "explorer"].includes(requestedView) ? requestedView : "hub",
+    // The Files view is gone (R12): an old ?view=explorer link opens the project it showed, or the home.
+    projectId: clean("project", 240) || (requestedView === "explorer" && /^local:[A-Za-z0-9_-]+$/.test(clean("explorerProject", 240)) ? clean("explorerProject", 240).slice(6) : ""),
+    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts", "graph"].includes(requestedView) ? requestedView : "hub",
     folder: clean("folder"),
     search: clean("search", 300),
     file: clean("file"),
