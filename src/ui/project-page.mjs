@@ -121,7 +121,7 @@ const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
 const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
   + '<small>' + escapeHtml(detail) + '</small>' + (right ? '<span>' + escapeHtml(right) + '</span>' : '') + '</li>';
 const levelMarkup = (level) => '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml((Object.hasOwn(LEVEL_NAMES, level.level) ? LEVEL_NAMES[level.level] : level.level + '/')) + '</strong><span>'
-  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
+  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + (Object.hasOwn(LEVEL_NAMES, level.level) ? '' : 'adds ') + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
   + (level.files.length ? level.files.map((file) => fileRow(file, (file.kind === 'skill' ? 'Skill · ' : file.kind === 'document' ? 'Doc · ' : '') + (file.path || file.locator), file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens))).join('') : '<li class="pp-empty">No agent file here.</li>') + '</ul></details>';
 
 export function createProjectPage() {
@@ -153,6 +153,8 @@ export function createProjectPage() {
   levelsBox.hidden = true;
   el('contextHealth')?.before(levelsBox);
   const levels = new Map();
+  // A reply after a close is dropped.
+  let generation = 0;
   let levelsShown = '';
   let recent = null;
   let entered = '';
@@ -276,7 +278,7 @@ export function createProjectPage() {
   function openFile(project, filePath) {
     const worktree = globalProjectSelectedWorktree(project);
     listedInProject(project, filePath, 'file').then((found) => {
-      if (!found) return setStatus(filePath + ' is not in this project any more');
+      if (!found) return setStatus(filePath + (/(^|\/)\./.test(filePath) ? ' is not in the tree: hidden files may be off in Settings' : ' is not in this project any more'));
       if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
       return openContextHubProject(worktree?.id || project.id, { filePath });
     }).catch((error) => setStatus(error.message));
@@ -314,8 +316,10 @@ export function createProjectPage() {
     const key = worktree.id + '|' + provider;
     if (!levels.has(key)) {
       levels.set(key, null);
+      const asked = generation;
+      const keep = (data) => { if (asked === generation) levels.set(key, data); };
       api('/api/context-hub/project-agents?projectId=' + encodeURIComponent(worktree.id) + '&provider=' + encodeURIComponent(provider))
-        .then((data) => levels.set(key, data), (error) => levels.set(key, { error: error.message }))
+        .then(keep, (error) => keep({ error: error.message }))
         .finally(sync);
     }
     const data = levels.get(key);
@@ -339,6 +343,7 @@ export function createProjectPage() {
       }, () => {
         toolsOpen = false;
         sync();
+        head.querySelector('[data-pp-tools]')?.focus();
       }));
       toolsView.catch((error) => {
         toolsView = null;
@@ -424,10 +429,10 @@ export function createProjectPage() {
     }
     if (!pages.has(project.projectKey)) void load(project);
     const all = (state.contextHub?.projects || []).reduce((sum, item) => sum + reviewCount(item), 0);
-    head.innerHTML = '<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
+    setHead('<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
       + '<span class="pp-count">' + (toReview ? toReview + ' to review' : 'Nothing to review') + '</span>'
       + '<button class="secondary pp-end" type="button" data-pp-tools aria-expanded="' + toolsOpen + '">Skills &amp; MCP ›</button>'
-      + '<button class="secondary" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>';
+      + '<button class="secondary" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>');
     const list = tilesOf(project);
     const keys = new Set(list.map(projectTileKey));
     const addable = [{ type: 'agents' }, { type: 'all' }, { type: 'recent' }, ...(rootFolders(project) || []).map((path) => ({ type: 'folder', path }))]
@@ -436,6 +441,18 @@ export function createProjectPage() {
       + (list.length ? '<ul class="pp-grid">' + list.map((tile, index) => tileMarkup(tile, index, list.length)).join('') + '</ul>' : '<p class="pp-empty">No shortcut. Edit adds one; ⋯ › Pin to project page in the tree pins a file or a folder.</p>')
       + (editing && addable.length ? '<div class="pp-add">Add: ' + addable.map((tile) => '<button class="secondary" type="button" data-tile-add="' + escapeHtml(JSON.stringify(tile)) + '">' + escapeHtml(tileName(tile)) + '</button>').join('') + '</div>' : '')
       + recentMarkup(project);
+  }
+
+  // Redrawn only on a change; ⋯ (project-more.mjs) and the focus stay.
+  let headShown = '';
+  function setHead(markup) {
+    if (markup === headShown) return;
+    headShown = markup;
+    const more = head.querySelector('[data-pp-more]');
+    const focused = head.contains(document.activeElement) ? [...document.activeElement.attributes].find((item) => item.name.startsWith('data-pp-'))?.name : '';
+    head.innerHTML = markup;
+    if (more) head.append(more);
+    if (focused) head.querySelector('[' + focused + ']')?.focus({ preventScroll: true });
   }
 
   // On « To review » (all projects), one heading per project run: « Name · N », then Open project ›.
@@ -508,6 +525,7 @@ export function createProjectPage() {
 
   function closeAgents() {
     state.projectAgentsOpen = false;
+    generation += 1;
     levels.clear();
     renderContextHealth();
     sync();

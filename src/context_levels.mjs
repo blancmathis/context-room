@@ -36,6 +36,9 @@ export function agentLevelFolders(root, provider, { skip = (name) => name.starts
   return found;
 }
 
+/** The level of one subfolder: its path, except a top-level folder named like a level (`root/`, `global/`) gets `./`. */
+export const folderLevel = (rel) => rel === "root" || rel === "global" ? "./" + rel : rel;
+
 const EXTRA_DOCUMENTS = ["PLAN.md", "CONTEXT.md"];
 const readText = (file) => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
 const tokensOf = (text) => text ? estimateTokens(text) : 0;
@@ -52,7 +55,7 @@ export function subfolderAgentRows(root, provider, { skip, limit = MAX_LEVEL_FOL
   for (const rel of agentLevelFolders(root, provider, { skip, limit })) {
     const folder = path.join(root, rel);
     const seen = new Set();
-    const push = (row) => { if (!seen.has(row.absolutePath)) { seen.add(row.absolutePath); rows.push({ level: rel, ...row }); } };
+    const push = (row) => { if (!seen.has(row.absolutePath)) { seen.add(row.absolutePath); rows.push({ level: folderLevel(rel), ...row }); } };
     for (const profile of profiles) {
       // Same rules as the inventory: one file per folder where the provider takes only one; Claude managed-only drops project files.
       if (instructions && !(profile.id === "claude-code" && managedOnly)) {
@@ -97,7 +100,7 @@ function levelOf(application) {
   if (application.scope === "device") return "global";
   const subtree = String(application.subtree || ".").replaceAll("\\", "/");
   if (subtree === ".." || subtree.startsWith("../")) return "global";
-  return application.scope === "subtree" && subtree !== "." ? subtree : "root";
+  return application.scope === "subtree" && subtree !== "." ? folderLevel(subtree) : "root";
 }
 
 /**

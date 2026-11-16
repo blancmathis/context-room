@@ -8591,11 +8591,10 @@ function saveProjectListPrefs(prefs) {
   try { window.localStorage.setItem(PROJECT_LIST_PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: this visit only */ }
   renderGlobalProjectExplorer();
 }
-// Out of the Projects list, but a search, ⌘K and the open project still reach them.
+// Out of the Projects list, but a search and ⌘K still reach them. A project hidden while open leaves the list at once.
 function projectListShows(project) {
-  if (project.projectKey === state.sharedProposalProject) return true;
-  if (isInternalHubProject(project) && projectListPrefs().showInternal !== true) return false;
-  return !projectListHidden().includes(project.projectKey);
+  if (projectListHidden().includes(project.projectKey)) return false;
+  return project.projectKey === state.sharedProposalProject || !isInternalHubProject(project) || projectListPrefs().showInternal === true;
 }
 
 function renderGlobalProjectExplorer() {
