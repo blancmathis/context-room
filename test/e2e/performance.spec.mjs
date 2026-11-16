@@ -106,9 +106,8 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   expect(cssBytes).toBeLessThan(46_000);
   // Brotli size of the whole script (244606 on 20c6254; 262 883 on 1e18c35, 259 601 after R7 moved the editor core out); the old 200 kB limit only ever saw 304 revalidations.
   // Raised 260 000 -> 263 000 on 2026-11-11 for the review-scope notice (S5a, PR #149): main was 259 335, this branch measures 261 009 after trimming the notice.
-  // Raised 263 000 -> 263 600 on 2026-11-16 for R12-prep (Trust, hide a project, internal folder in the project menu): main
-  // 966ea90 measures 262 986, this branch 263 532. R12 removes the Files view (-1 034) and sets it back to 263 000.
-  expect(jsBytes).toBeLessThan(263_600);
+  // R12-prep raised it to 263 600 for one PR; R12 removes the Files view (-1 034) and sets it back to 263 000.
+  expect(jsBytes).toBeLessThan(263_000);
   // Hub doc links (PR #158) load on demand, out of the main budget. Served without compression: measure its brotli
   // size here. 1 591 on 2026-11-11; 1 713 after the fix for a doc opened during a read (tour 3); limit +10 %.
   const hubLinks = await new Promise((resolve, reject) => http.get(new URL("/assets/hub-doc-links.mjs", samples[0].jsUrls[0]), (response) => {

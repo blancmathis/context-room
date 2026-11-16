@@ -32,6 +32,24 @@ async function resetTiles(page, data, projectKey) {
   }), projectKey);
 }
 
+test("@layout an old Files view link opens the project page it named, and nothing leads to the Files view any more", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=explorer&explorerProject=${encodeURIComponent("local:" + data.projects.beacon.id)}&explorerDir=docs`);
+  await waitForBoot(page);
+  await expect(page.locator("#projectPageHead h2")).toHaveText("Beacon");
+  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("hub");
+  expect(new URL(page.url()).searchParams.has("explorerProject")).toBe(false);
+  expect(new URL(page.url()).searchParams.has("explorerDir")).toBe(false);
+  await expect(page.locator("[data-home-explorer], #explorerViewPanel")).toHaveCount(0);
+  // Without a project, the old link lands on the home page.
+  await page.goto(`${data.origin}/?hub=1&view=explorer`);
+  await waitForBoot(page);
+  await expect(page.locator("#reviewQueuePanel")).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("hub");
+  await expect(page.locator("[data-home-explorer], #explorerViewPanel")).toHaveCount(0);
+});
+
 test("@layout the project page shows its own review first, then shortcuts that lead into the tree", async ({ page }) => {
   const data = fixture();
   let projectKey = "";

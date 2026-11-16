@@ -30,8 +30,7 @@ async function fixture({ only = null } = {}) {
     const root = path.join(base, name);
     for (const [file, content] of Object.entries(files)) write(root, file, content);
     initializeContextRoomProject(root, { title: name, allowedPaths: ["docs/"], watchAllow: ["docs/"] });
-    registerContextHubProject(root, { title: name });
-    projects[name] = root;
+    projects[name] = registerContextHubProject(root, { title: name }).id;
   }
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
@@ -41,6 +40,7 @@ async function fixture({ only = null } = {}) {
   await new Promise((resolve) => runtime.server.listen(0, "127.0.0.1", resolve));
   return {
     origin: `http://127.0.0.1:${runtime.server.address().port}`,
+    projects,
     async close() {
       await new Promise((resolve) => { runtime.server.closeAllConnections(); runtime.server.close(resolve); });
       await runtime.waitForShutdown();
@@ -54,18 +54,12 @@ async function fixture({ only = null } = {}) {
 }
 
 
-const view = (page) => page.locator("#explorerViewPanel");
 async function ready(page) {
   await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
 }
-async function openAlphaFile(page, origin, name) {
-  await page.goto(origin + "/?hub=1&view=hub");
-  await ready(page);
-  await page.locator("[data-home-explorer]").click();
-  await view(page).locator(".hl-select", { hasText: "Alpha" }).click();
-  const link = view(page).locator("a.hl-file", { hasText: name });
-  await expect(link).toBeVisible({ timeout: 15_000 });
-  return new URL(await link.getAttribute("href"));
+// The address of an Alpha file, as its project page links it (the Files view is gone since R12).
+async function openAlphaFile(page, hub, name) {
+  return new URL(hub.origin + "/?hub=1&project=" + encodeURIComponent(hub.projects.Alpha) + "&view=file&file=" + encodeURIComponent(name));
 }
 async function closeHub(page, hub) { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
 
@@ -94,7 +88,7 @@ test("@a11y document toolbar buttons say what they do, and Dictate differs from 
 test("@a11y the Explorer back-to-projects button has a name and a tooltip", async ({ page }) => {
   const hub = await fixture();
   try {
-    const href = await openAlphaFile(page, hub.origin, "README.md");
+    const href = await openAlphaFile(page, hub, "README.md");
     await page.goto(href.toString());
     await ready(page);
     const back = page.locator("[data-global-explorer-back]");
@@ -121,7 +115,7 @@ test("@a11y the first Tab reaches a Skip to content link that moves focus to the
 test("@smoke a file that no longer exists says so and offers a way back; a real refusal keeps its message", async ({ page }) => {
   const hub = await fixture();
   try {
-    const href = await openAlphaFile(page, hub.origin, "README.md");
+    const href = await openAlphaFile(page, hub, "README.md");
     const open = (file) => { const target = new URL(href); target.searchParams.set("view", "file"); target.searchParams.set("file", file); return target.toString(); };
     await page.goto(open("notes/nope.md"));
     await expect(page.getByText("This file no longer exists")).toBeVisible({ timeout: 20_000 });
@@ -145,14 +139,11 @@ test("@smoke a file that no longer exists says so and offers a way back; a real 
   } finally { await closeHub(page, hub); }
 });
 
-test("@smoke Files and settings use the singular for one project", async ({ page }) => {
+test("@smoke counters use the singular for one project", async ({ page }) => {
   const hub = await fixture({ only: ["Alpha"] });
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
     await ready(page);
-    await page.locator("[data-home-explorer]").click();
-    await expect(view(page).locator(".hl-head p")).toContainText("with files here", { timeout: 15_000 });
-    await expect(view(page).locator(".hl-head p")).not.toContainText(/\b1 projects/);
     const counts = await page.evaluate(() => [nounCount(1, "projects"), nounCount(1, "repositories"), nounCount(2, "repositories"), nounCount(0, "gates")]);
     expect(counts).toEqual(["1 project", "1 repository", "2 repositories", "0 gates"]);
   } finally { await closeHub(page, hub); }
@@ -162,7 +153,7 @@ test("@smoke graph filters wrap inside the toolbar at 1440 px and stay tappable"
   const hub = await fixture();
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
-    const href = await openAlphaFile(page, hub.origin, "README.md");
+    const href = await openAlphaFile(page, hub, "README.md");
     await page.goto(href.toString().replace(/&file=[^&]*/, "") + "&file=README.md");
     await ready(page);
     await page.locator("#graphLocal").click();
@@ -182,7 +173,7 @@ test("@a11y graph filter targets are at least 40 px on a touch device", async ({
   const context = await browser.newContext({ viewport: { width: 1024, height: 800 }, hasTouch: true, isMobile: true, serviceWorkers: "block" });
   const page = await context.newPage();
   try {
-    const href = await openAlphaFile(page, hub.origin, "README.md");
+    const href = await openAlphaFile(page, hub, "README.md");
     await page.goto(href.toString());
     await ready(page);
     await page.locator("#graphLocal").click();
@@ -205,7 +196,7 @@ for (const width of [1280, 1440]) {
     const hub = await fixture();
     try {
       await page.setViewportSize({ width, height: 900 });
-      const href = await openAlphaFile(page, hub.origin, "README.md");
+      const href = await openAlphaFile(page, hub, "README.md");
       await page.goto(href.toString());
       await ready(page);
       await page.locator("#graphLocal").click();

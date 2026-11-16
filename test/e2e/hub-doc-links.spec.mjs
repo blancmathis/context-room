@@ -34,8 +34,7 @@ async function fixture() {
     const root = path.join(base, name);
     for (const [file, content] of Object.entries(files)) write(root, file, content);
     initializeContextRoomProject(root, { title: name, allowedPaths: ["docs/"], watchAllow: ["docs/"] });
-    registerContextHubProject(root, { title: name });
-    projects[name] = root;
+    projects[name] = registerContextHubProject(root, { title: name }).id;
   }
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
@@ -45,6 +44,7 @@ async function fixture() {
   await new Promise((resolve) => runtime.server.listen(0, "127.0.0.1", resolve));
   return {
     origin: `http://127.0.0.1:${runtime.server.address().port}`,
+    projects,
     async close() {
       await new Promise((resolve) => { runtime.server.closeAllConnections(); runtime.server.close(resolve); });
       await runtime.waitForShutdown();
@@ -57,7 +57,11 @@ async function fixture() {
   };
 }
 
-const view = (page) => page.locator("#explorerViewPanel");
+// Alpha's README, by the address its page in the tree links to (it is outside docs/, so « All docs » does not list it).
+async function openReadme(page, hub) {
+  await page.goto(hub.origin + "/?hub=1&view=file&file=README.md&project=" + encodeURIComponent(hub.projects.Alpha));
+  await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+}
 
 test("@links a relative link in a Hub document opens the target; a link to a missing file is greyed", async ({ page }) => {
   const hub = await fixture();
@@ -76,12 +80,8 @@ test("@links a relative link in a Hub document opens the target; a link to a mis
     return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "test failure" }) });
   });
   try {
-    await page.goto(hub.origin + "/?hub=1&view=hub");
-    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
-    await page.locator("[data-home-explorer]").click();
-    await view(page).locator(".hl-select", { hasText: "Alpha" }).click();
+    await openReadme(page, hub);
     const reader = page.locator("#docReader");
-    await view(page).locator("a.hl-file", { hasText: "README.md" }).click();
     await expect(reader).toContainText("Read the", { timeout: 15_000 });
     await expect.poll(() => failDocs).toBe(false);
     // Three real links are clickable; the dead ones (missing file, missing folder) are greyed labels, not raw markdown.
@@ -117,12 +117,8 @@ test("@links a doc opened while folders are still read gets its links checked", 
     await route.continue().catch(() => {});
   });
   try {
-    await page.goto(hub.origin + "/?hub=1&view=hub");
-    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
-    await page.locator("[data-home-explorer]").click();
-    await view(page).locator(".hl-select", { hasText: "Alpha" }).click();
+    await openReadme(page, hub);
     const reader = page.locator("#docReader");
-    await view(page).locator("a.hl-file", { hasText: "README.md" }).click();
     await expect(reader).toContainText("Read the", { timeout: 15_000 });
     await expect.poll(() => docsAsked).toBe(true);
     // The file list of the open project, beside the reader.

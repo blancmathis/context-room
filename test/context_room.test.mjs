@@ -504,7 +504,7 @@ test("the global home lists projects in a stable order with three destinations a
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);
   const orderSource = script.slice(script.indexOf("function contextHubPrioritizedProjects"), script.indexOf("function globalProjectExplorerPageKey"));
-  assert.match(html, /id="notebookSpacePanel"[\s\S]*id="notebookSpaceRow"[\s\S]*data-home-explorer[\s\S]*id="reviewQueuePanel"[\s\S]*id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"/);
+  assert.match(html, /id="notebookSpacePanel"[\s\S]*id="notebookSpaceRow"[\s\S]*id="reviewQueuePanel"[\s\S]*id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"/);
   assert.doesNotMatch(orderSource, /localReviewCount|sharedProposalCount|lastOpenedAt|\.current/);
   assert.match(orderSource, /priorityRank[\s\S]*title/);
   assert.match(script, /function renderContextHubHomeProjects\(\)[\s\S]*local inspected[\s\S]*data-context-hub-project-destination="' \+ id/);
@@ -7903,7 +7903,10 @@ test("workspace URL restoration parses every supported destination without brows
     graphCamera: { x: 0, y: 0, scale: 1 },
   });
   assert.equal(parseWorkspaceNavigationUrl("/?view=unknown").view, "hub");
-  assert.equal(parseWorkspaceNavigationUrl("/?hub=1&view=explorer").view, "explorer");
+  // The Files view is gone (R12): an old link opens the home page, or the project page it named.
+  assert.equal(parseWorkspaceNavigationUrl("/?hub=1&view=explorer").view, "hub");
+  assert.equal(parseWorkspaceNavigationUrl("/?hub=1&view=explorer&explorerProject=local:p_1").projectId, "p_1");
+  assert.equal(parseWorkspaceNavigationUrl("/?hub=1&view=hub&explorerProject=local:p_1").projectId, "");
   assert.equal(parseWorkspaceNavigationUrl("/?view=hub").view, "hub");
   assert.equal(parseWorkspaceNavigationUrl("/?view=file&file=README.md").view, "file");
   assert.equal(parseWorkspaceNavigationUrl("/?view=proposal&proposal=p1").view, "proposal");
