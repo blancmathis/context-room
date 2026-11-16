@@ -484,7 +484,7 @@ export const VISUAL_DOCUMENT_PATTERNS = Object.freeze([
   ...DIAGRAM_VISUAL_DOCUMENT_PATTERNS,
 ]);
 const DEFAULT_FILE_THEME = "context-room";
-const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, colorMode: "system", autoOpenGitDiff: true, showHiddenFiles: true, hideEmptyReviewToolbar: false };
+const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, colorMode: "system", showHiddenFiles: true, hideEmptyReviewToolbar: false };
 export const DEFAULT_CODEX_REFERENCE_SHORTCUT = "Mod+Shift+L";
 const DEFAULT_SHORTCUTS = Object.freeze({ codexReference: DEFAULT_CODEX_REFERENCE_SHORTCUT });
 const DEFAULT_SOUNDS = Object.freeze({ enabled: true, volume: 0.35 });
@@ -15898,7 +15898,6 @@ function normalizeAppearanceSettings(value = {}) {
   return {
     fileTheme: allowed.has(fileTheme) ? fileTheme : DEFAULT_FILE_THEME,
     colorMode: ["system", "light", "dark"].includes(colorMode) ? colorMode : DEFAULT_APPEARANCE.colorMode,
-    autoOpenGitDiff: value.autoOpenGitDiff !== false,
     showHiddenFiles: value.showHiddenFiles !== false,
     hideEmptyReviewToolbar: value.hideEmptyReviewToolbar === true,
   };

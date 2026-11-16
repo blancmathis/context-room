@@ -390,6 +390,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     @media (max-width: 980px) { #cr-main:not(:has(#home:not([hidden]))) .hub-home-action kbd { display: none; } }
+    @media (pointer: coarse) { .hub-home-action kbd { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
