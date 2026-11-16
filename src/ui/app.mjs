@@ -1221,7 +1221,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     :is(#docReader, #docHighlighter) .markdown-line:not(.md-cursor, .table) :is(.md-sign, :not(.list) > .markdown-marker) { display: none; }
     .file-panel:has([data-doc-review-banner]) #docReader .markdown-line :is(.md-sign, .markdown-marker) { display: inline; }
     .md-sign { color: var(--file-marker); }
-    :is(#docReader, #docHighlighter) strong { font-size: inherit; font-weight: 700; letter-spacing: normal; text-transform: none; }
+    :is(#docReader, .markdown-view) strong { font-size: inherit; font-weight: 700; letter-spacing: normal; text-transform: none; }
     :is(#docReader, #docHighlighter) em { font-style: italic; font-synthesis: style; }
     .markdown-image { display: block; max-width: 100%; }
     .markdown-image:not([src]) { display: none; }
@@ -23722,7 +23722,9 @@ function syncMarkdownEditorScroll() {
   const editor = el("docEditor");
   const highlighter = el("docHighlighter");
   if (editor && highlighter) {
-    highlighter.scrollTop = editor.scrollTop;
+    // R8b review R1: keep the gap the caret reveal set (doc-editor.mjs), except at the very top and bottom.
+    const top = editor.scrollTop, end = top >= editor.scrollHeight - editor.clientHeight - 1;
+    highlighter.scrollTop = top <= 0 ? 0 : end ? highlighter.scrollHeight : top + (state.markdownScrollDelta || 0);
     highlighter.scrollLeft = editor.scrollLeft;
   }
   docEditorCore?.updateMarkdownEditorVisualSelection();
@@ -23796,29 +23798,29 @@ function renderMarkdownPlainInline(value, options = {}) {
     }
     if (link) {
       const docLinkAttrs = markdownDocLinkAttributes(link[3], { ...options, interactiveLinks: !options.sourceFaithful });
-      if (options.sourceFaithful) {
-        return '<span class="markdown-source-link' + (docLinkAttrs ? ' markdown-path"' + docLinkAttrs : '"') + '>' +
+      // R8b: the source link keeps its target in the DOM (hidden by CSS), so review shows it.
+      const sourceLink = (labelHtml, attrs) => '<span class="markdown-source-link' + (attrs ? ' markdown-path"' + attrs : '"') + '>' +
           '<span class="markdown-link-punctuation md-sign">' + link[1] + '[</span>' +
-          '<span class="markdown-link-label">' + escapeHtml(link[2]) + '</span>' +
+          '<span class="markdown-link-label">' + labelHtml + '</span>' +
           '<span class="markdown-link-punctuation md-sign">](</span>' +
           '<span class="markdown-link-target md-sign">' + escapeHtml(link[3]) + '</span>' +
           '<span class="markdown-link-punctuation md-sign">)</span>' +
         '</span>';
-      }
+      if (options.sourceFaithful) return sourceLink(escapeHtml(link[2]), docLinkAttrs);
       const label = renderMarkdownPlainInline(link[2], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
       if (options.reader && !state.files.length && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[3])) {
         return hubDocLinkMissing(link[3]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[3]) + '">' + label + '</span>' : label;
       }
-      return options.reader ? label : escapeHtml(part);
+      return options.reader ? sourceLink(label, "") : escapeHtml(part);
     }
     return escapeHtml(part).replace(/(^|[\s([{])((?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)?[A-Za-z0-9_./@~-]*[A-Za-z0-9_@~-]+\.[A-Za-z0-9_-]+(?:#[A-Za-z0-9_.-]+)?|(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)[A-Za-z0-9_./@~-]+)/g, (match, prefix, rawPath) => {
       const docLinkAttrs = markdownDocLinkAttributes(rawPath, options);
       if (options.interactiveLinks && docLinkAttrs) return prefix + '<a href="#" class="markdown-path"' + docLinkAttrs + '>' + rawPath + '</a>';
       return prefix + '<span class="markdown-path"' + docLinkAttrs + '>' + rawPath + '</span>';
     }).replace(/\*\*(?=\S)(.*?\S)\*\*/g, "<strong>" + mdSign("**") + "$1" + mdSign("**") + "</strong>")
-      .replace(/(^|[^*\w])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![*\w])/g, "$1<em>" + mdSign("*") + "$2" + mdSign("*") + "</em>");
+      .replace(/(^|[^*\w/])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![*\w])/g, "$1<em>" + mdSign("*") + "$2" + mdSign("*") + "</em>");
   }).join("");
 }
 

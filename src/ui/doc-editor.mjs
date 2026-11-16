@@ -8,6 +8,7 @@ export function createDocEditor(app) {
     if (!docEditor) return;
     prepareMarkdownEditorHistory(docEditor);
     state.markdownHighlightLastText = el("editor").value;
+    state.markdownScrollDelta = 0;
     wireEditorFind(docEditor);
     syncMarkdownEditorScroll();
     docEditor.addEventListener("beforeinput", (event) => captureMarkdownEditorHistory(docEditor, event));
@@ -28,7 +29,7 @@ export function createDocEditor(app) {
       }
       if (handleMarkdownEditorHistoryShortcut(event, docEditor)) return;
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) resetMarkdownEditorHistoryGroup();
-      window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
+      window.requestAnimationFrame(revealMarkdownEditorCaret);
     });
     docEditor.addEventListener("select", () => {
       updateMarkdownEditorVisualSelection();
@@ -157,7 +158,21 @@ export function createDocEditor(app) {
     scheduleConflictCheck();
     scheduleSessionStatePush();
     scheduleDocAutosave();
-    window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
+    window.requestAnimationFrame(revealMarkdownEditorCaret);
+  }
+
+  // R8b review R1: the textarea wraps the full source, the drawn layer a shorter text, so their lines drift apart.
+  // After a key, a drawn caret out of view scrolls the drawn layer alone; the gap is kept for the next scrolls.
+  function revealMarkdownEditorCaret() {
+    updateMarkdownEditorVisualSelection();
+    const editor = el("docEditor"), layer = el("docHighlighter"), caret = el("markdownEditorCaret");
+    if (!editor || !layer || !caret || caret.hidden) return;
+    const view = layer.getBoundingClientRect(), rect = caret.getBoundingClientRect();
+    const shift = rect.top < view.top ? rect.top - view.top - 24 : rect.bottom > view.bottom ? rect.bottom - view.bottom + 24 : 0;
+    if (!shift) return;
+    layer.scrollTop += shift;
+    state.markdownScrollDelta = layer.scrollTop - editor.scrollTop;
+    updateMarkdownEditorVisualSelection();
   }
 
   function enterMarkdownEditorAtPoint(event) {
