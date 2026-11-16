@@ -239,11 +239,19 @@ test("@layout Skills & MCP lists what each provider finds per level, flags a nam
       top: document.querySelector("#projectSkillsMcp").getBoundingClientRect().top,
       wide: document.querySelector("#projectSkillsMcp").scrollWidth - document.querySelector("#projectSkillsMcp").clientWidth,
     }));
-    expect(box.top).toBeGreaterThanOrEqual(box.tiles);
+    // Firefox rounds a scrolled box to a fraction of a pixel: 735.13330078 against 735.13333129.
+    expect(box.top).toBeGreaterThanOrEqual(box.tiles - 0.5);
     expect(box.wide).toBeLessThanOrEqual(0);
     await panel.locator("[data-sm-close]").click();
     await expect(panel).toBeHidden();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // Close and Escape give the focus back to the toggle; the panel takes it when it opens.
+    await expect(toggle).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(panel).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(toggle).toBeFocused();
   } finally {
     fs.rmSync(path.join(home, ".claude", "skills", "review"), { recursive: true, force: true });
     fs.rmSync(path.join(home, ".agents", "skills", "review"), { recursive: true, force: true });

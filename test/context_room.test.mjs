@@ -3461,20 +3461,19 @@ test("appearance, sound, and shortcut preferences are shared across Context Room
     }
   }
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.colorMode, "system");
-  assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.autoOpenGitDiff, true);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.showHiddenFiles, true);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.hideEmptyReviewToolbar, false);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).shortcuts.codexReference, DEFAULT_CODEX_REFERENCE_SHORTCUT);
   assert.deepEqual(readGlobalContextRoomPreferences(preferencesPath).sounds, { enabled: true, volume: 0.35 });
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).explorer.computerRoot, os.homedir());
   writeGlobalContextRoomPreferences({
-    appearance: { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false, hideEmptyReviewToolbar: true },
+    appearance: { fileTheme: "dracula", colorMode: "dark", showHiddenFiles: false, hideEmptyReviewToolbar: true },
     shortcuts: { codexReference: "Mod+Alt+K" },
     sounds: { enabled: false, volume: 0.6 },
     explorer: { computerRoot: firstRoot },
   }, preferencesPath);
-  assert.deepEqual(readResolvedContextRoomSettings(firstRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false, hideEmptyReviewToolbar: true });
-  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false, hideEmptyReviewToolbar: true });
+  assert.deepEqual(readResolvedContextRoomSettings(firstRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", showHiddenFiles: false, hideEmptyReviewToolbar: true });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", showHiddenFiles: false, hideEmptyReviewToolbar: true });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).shortcuts, { codexReference: "Mod+Alt+K" });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: false, volume: 0.6 });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: firstRoot });
@@ -3485,17 +3484,17 @@ test("appearance, sound, and shortcut preferences are shared across Context Room
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/settings`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
-    body: JSON.stringify({ settings: { ...readMemoryWebappSettings(firstRoot), appearance: { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true }, shortcuts: { codexReference: "Mod+Shift+R" }, sounds: { enabled: true, volume: 0.2 }, explorer: { computerRoot: secondRoot } } }),
+    body: JSON.stringify({ settings: { ...readMemoryWebappSettings(firstRoot), appearance: { fileTheme: "github-dark", colorMode: "light", showHiddenFiles: true }, shortcuts: { codexReference: "Mod+Shift+R" }, sounds: { enabled: true, volume: 0.2 }, explorer: { computerRoot: secondRoot } } }),
   });
   const payload = await response.json();
   const savedProject = JSON.parse(fs.readFileSync(path.join(firstRoot, CONFIG_FILE), "utf8"));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: true });
+  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", colorMode: "light", showHiddenFiles: true, hideEmptyReviewToolbar: true });
   assert.deepEqual(payload.settings.shortcuts, { codexReference: "Mod+Shift+R" });
   assert.deepEqual(payload.settings.sounds, { enabled: true, volume: 0.2 });
   assert.deepEqual(payload.settings.explorer, { computerRoot: secondRoot });
-  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: true });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", colorMode: "light", showHiddenFiles: true, hideEmptyReviewToolbar: true });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).shortcuts, { codexReference: "Mod+Shift+R" });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: true, volume: 0.2 });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: secondRoot });
@@ -7619,7 +7618,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(editorSource, /editor\.setSelectionRange\(snapshot\.selectionStart, snapshot\.selectionEnd, snapshot\.selectionDirection\)/);
   assert.doesNotMatch(html, /data-markdown-source-toggle/);
   assert.match(editorSource, /const sourceColumn = Math\.min\(sourceLine\.length, renderedCaretOffsetAtPoint\(line, x, y\)\);/);
-  assert.match(editorSource, /line\.classList\.toggle\("md-cursor", focused && index >= from && index <= to\);/);
+  assert.match(editorSource, /line\.classList\.toggle\("md-cursor", signs && index >= from && index <= to\);/);
   assert.match(editorSource, /function updateMarkdownEditorVisualSelection\(\)/);
   assert.match(html, /id="markdownEditorCaret"/);
   assert.match(html, /highlighter\.scrollTop = top <= 0 \? 0 : end \? highlighter\.scrollHeight : top \+ \(state\.markdownScrollDelta \|\| 0\);/);
@@ -8173,7 +8172,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /const visualHtmlReview = isHtmlDocumentPath\(change\.path\);/);
   assert.match(html, /const jumpAction = summary\.pending && !visualHtmlReview/);
   assert.match(html, /const bulkActions = summary\.pending\s*\?/);
-  assert.match(html, /savable: !isHtmlDocument/);
+  assert.doesNotMatch(html, /savable:/);
   assert.match(html, /function docTapEditable\(\)[\s\S]{0,600}!isHtmlDocumentPath\(path\)/);
 });
 
@@ -8187,7 +8186,6 @@ test("image and PDF files open in the shared zoomable viewer", () => {
   assert.match(html, /import\("\/assets\/ui\/document-viewer\.mjs"\)/);
   assert.match(html, /initialImageBackground: true/);
   assert.match(html, /isImageDocument\s*\? renderImageDocumentPreview\(state\.selectedVisualAsset\)/);
-  assert.match(html, /savable: !isHtmlDocument && !isImageDocument/);
   assert.match(html, /isImageDocumentPath\(path\) \? Promise\.resolve\(null\)/);
   assert.doesNotMatch(html, /imagePreviewActualSize|data-image-size-toggle/);
   assert.equal(NOTEBOOK_WEB_ASSETS.get("/assets/ui/document-viewer.mjs")?.file, "ui/document-viewer.mjs");
@@ -8402,7 +8400,8 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time"/);
   assert.match(html, /checkboxLabel: additionalAcknowledgement \? checkboxLabel/);
   assert.match(html, /checkboxRequired: true/);
-  const singleFileDecisionSource = html.slice(html.indexOf("async function requestReviewDecision"), html.indexOf("async function verifyCurrentFile"));
+  const singleFileDecisionSource = html.slice(html.indexOf("async function requestReviewDecision"), html.indexOf("function renderPlanetSystem"));
+  assert.doesNotMatch(html, /verifyCurrentFile/);
   assert.doesNotMatch(singleFileDecisionSource, /showHumanReviewDecisionDialog/);
   assert.match(singleFileDecisionSource, /await applyReviewDecision\(path, normalizedStatus\)/);
   assert.match(html, /<strong>First review<\/strong> <span>No previous baseline exists for this first review\./);

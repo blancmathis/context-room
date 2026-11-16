@@ -135,3 +135,41 @@ test('agent levels: PLAN/CONTEXT tokens are counted apart from skill bodies', ()
   assert.equal(level.documentTokens, 50);
   assert.equal(level.onDemandTokens, 0);
 });
+
+test('agent levels: a top-level folder named like a level stays its own level', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-levels-names-'));
+  try {
+    for (const rel of ['root/AGENTS.md', 'global/AGENTS.md', '__proto__/AGENTS.md']) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), '# ' + rel + '\n');
+    }
+    const rows = subfolderAgentRows(root, 'codex', { skip: (name) => name.startsWith('.') });
+    const levels = groupAgentLevels([], { root, extra: rows });
+    assert.deepEqual(levels.map((level) => [level.level, level.files.map((file) => file.path)]), [
+      ['root', []],
+      ['__proto__', ['__proto__/AGENTS.md']],
+      ['./global', ['global/AGENTS.md']],
+      ['./root', ['root/AGENTS.md']],
+    ]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('agent levels: hooks sit at their level with their events, an unproven one included', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-levels-hooks-'));
+  try {
+    const real = fs.realpathSync(root);
+    const hook = (id, absolutePath, scope, status, event) => ({ resource: { id, kind: 'hook', locator: absolutePath, metadata: { name: path.basename(absolutePath), absolutePath, event, injectsContext: event.includes('SessionStart') ? ['SessionStart'] : [] } }, application: { scope, subtree: '.', status } });
+    const effective = {
+      instructions: [], skills: [],
+      hooks: [hook('h1', real + '/.claude/settings.json', 'project', 'active', 'PreToolUse, SessionStart'), hook('h2', '/home/x/.claude/settings.json', 'device', 'active', 'Stop')],
+      inactive: [hook('h3', real + '/.codex/hooks.json', 'project', 'uncertain', 'Stop'), hook('h4', real + '/off.json', 'project', 'disabled', 'Stop')],
+      cost: { entries: {} },
+    };
+    const levels = groupAgentLevels([{ folder: '.', effective }], { root });
+    assert.deepEqual(levels.map((level) => [level.level, level.files.map((file) => [file.kind, file.name, file.path, file.event, file.addsOutput, file.unproven])]), [
+      ['global', [['hook', 'settings.json', '', 'Stop', false, false]]],
+      ['root', [['hook', 'settings.json', '.claude/settings.json', 'PreToolUse, SessionStart', true, false], ['hook', 'hooks.json', '.codex/hooks.json', 'Stop', false, true]]],
+    ]);
+    assert.equal(levels[1].startupTokens, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -36,6 +36,9 @@ export function agentLevelFolders(root, provider, { skip = (name) => name.starts
   return found;
 }
 
+/** The level of one subfolder: its path, except a top-level folder named like a level (`root/`, `global/`) gets `./`. */
+export const folderLevel = (rel) => rel === "root" || rel === "global" ? "./" + rel : rel;
+
 const EXTRA_DOCUMENTS = ["PLAN.md", "CONTEXT.md"];
 const readText = (file) => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
 const tokensOf = (text) => text ? estimateTokens(text) : 0;
@@ -52,7 +55,7 @@ export function subfolderAgentRows(root, provider, { skip, limit = MAX_LEVEL_FOL
   for (const rel of agentLevelFolders(root, provider, { skip, limit })) {
     const folder = path.join(root, rel);
     const seen = new Set();
-    const push = (row) => { if (!seen.has(row.absolutePath)) { seen.add(row.absolutePath); rows.push({ level: rel, ...row }); } };
+    const push = (row) => { if (!seen.has(row.absolutePath)) { seen.add(row.absolutePath); rows.push({ level: folderLevel(rel), ...row }); } };
     for (const profile of profiles) {
       // Same rules as the inventory: one file per folder where the provider takes only one; Claude managed-only drops project files.
       if (instructions && !(profile.id === "claude-code" && managedOnly)) {
@@ -97,7 +100,7 @@ function levelOf(application) {
   if (application.scope === "device") return "global";
   const subtree = String(application.subtree || ".").replaceAll("\\", "/");
   if (subtree === ".." || subtree.startsWith("../")) return "global";
-  return application.scope === "subtree" && subtree !== "." ? subtree : "root";
+  return application.scope === "subtree" && subtree !== "." ? folderLevel(subtree) : "root";
 }
 
 /**
@@ -131,6 +134,29 @@ export function groupAgentLevels(results, { root = "", extra = [] } = {}) {
           onDemandTokens: cost.onDemandTokens ?? null,
         });
       }
+    }
+  }
+  // Hooks (decision 11): at their own level, with their events. One whose activation is not proven is still shown.
+  for (const { effective } of results) {
+    const hooks = [...effective?.hooks || [], ...(effective?.inactive || []).filter(({ resource, application }) => resource.kind === "hook" && application.status === "uncertain")];
+    for (const { resource, application } of hooks) {
+      if (seen.has(resource.id)) continue;
+      seen.add(resource.id);
+      const level = levelOf(application);
+      const absolute = String(resource.metadata?.absolutePath || "");
+      const relPath = base && absolute ? path.relative(base, absolute).replaceAll("\\", "/") : "";
+      if (!levels.has(level)) levels.set(level, []);
+      levels.get(level).push({
+        kind: "hook",
+        name: String(resource.metadata?.name || path.basename(resource.locator || "")),
+        locator: String(resource.locator || ""),
+        path: level !== "global" && relPath && !relPath.startsWith("../") && !path.isAbsolute(relPath) ? relPath : "",
+        event: String(resource.metadata?.event || ""),
+        addsOutput: Boolean(resource.metadata?.injectsContext?.length),
+        unproven: application.status === "uncertain",
+        startupTokens: null,
+        onDemandTokens: null,
+      });
     }
   }
   // Rows found by the single walk (see subfolderAgentRows): skip a file the root context already listed.

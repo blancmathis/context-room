@@ -390,6 +390,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
     @media (max-width: 980px) { #cr-main:not(:has(#home:not([hidden]))) .hub-home-action kbd { display: none; } }
+    @media (pointer: coarse) { .hub-home-action kbd { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
@@ -2357,7 +2358,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .startup-context-item { grid-template-columns: 1fr; }
       .diff-code, .doc-content, .doc-editor { padding: 12px; }
       .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 32px; }
-      .file-panel .doc-editor.markdown-view .markdown-line::before { left: -27px; width: 20px; font-size: 8px; }
+      .file-panel:has([data-doc-review-banner]) .doc-editor.markdown-view .markdown-line::before { left: -27px; width: 20px; font-size: 8px; }
       #docReader.doc-editor, .markdown-editor-shell .doc-editor { font-size: 16px; }
     }
     /* LAYOUT CONTRACT: START */
@@ -3464,10 +3465,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-review"] #graphPage,
     html[data-context-room-runtime-profile="hosted-review"] #contextPanelToggle,
     html[data-context-room-runtime-profile="hosted-review"] #back,
-    html[data-context-room-runtime-profile="hosted-review"] #forward,
-    html[data-context-room-runtime-profile="hosted-review"] [data-file-git-diff],
-    html[data-context-room-runtime-profile="hosted-review"] [data-file-save],
-    html[data-context-room-runtime-profile="hosted-review"] [data-file-delete] { display: none !important; }
+    html[data-context-room-runtime-profile="hosted-review"] #forward { display: none !important; }
     html[data-context-room-runtime-profile="hosted-review"] .app { grid-template-columns: minmax(0, 1fr) !important; }
     html[data-context-room-runtime-profile="hosted-review"] .app > main { width: 100vw; min-width: 0; }
     html[data-context-room-runtime-profile="hosted-review"] .workspace-title { display: block; }
@@ -8599,11 +8597,10 @@ function saveProjectListPrefs(prefs) {
   try { window.localStorage.setItem(PROJECT_LIST_PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: this visit only */ }
   renderGlobalProjectExplorer();
 }
-// Out of the Projects list, but a search, ⌘K and the open project still reach them.
+// Out of the Projects list, but a search and ⌘K still reach them. A project hidden while open leaves the list at once.
 function projectListShows(project) {
-  if (project.projectKey === state.sharedProposalProject) return true;
-  if (isInternalHubProject(project) && projectListPrefs().showInternal !== true) return false;
-  return !projectListHidden().includes(project.projectKey);
+  if (projectListHidden().includes(project.projectKey)) return false;
+  return project.projectKey === state.sharedProposalProject || !isInternalHubProject(project) || projectListPrefs().showInternal === true;
 }
 
 function renderGlobalProjectExplorer() {
@@ -17722,8 +17719,8 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
     (own && view && html ? button('data-html-contents', 'Contents') : '') +
     menu('More', '⋯', (editing ? button('data-editor-find', 'Find') : '')
       + (editing || own && view && !isImageDocumentPath(path) && (modeToggle === "edit" || html) ? button('data-reading-settings aria-label="Text size"', 'Aa') : '')
-      + (own && diff?.available !== false && diff?.changed ? button('data-file-git-diff', state.diffCollapsed ? 'Changes since last commit' : 'Hide changes') : '')
-      + (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : ''));
+      + (!IS_HOSTED_REVIEW && own && diff?.available !== false && diff?.changed ? button('data-file-git-diff', state.diffCollapsed ? 'Changes since last commit' : 'Hide changes') : '')
+      + (deletable && !IS_HOSTED_REVIEW ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : ''));
 }
 
 function reviewStatusForPath(path) {
@@ -21742,12 +21739,6 @@ async function requestReviewDecision(path, status) {
   await applyReviewDecision(path, normalizedStatus);
 }
 
-async function verifyCurrentFile() {
-  if (!state.selected) return;
-  if (state.reviewModePath !== state.selected) return;
-  await requestReviewDecision(state.selected, "verified");
-}
-
 function renderPlanetSystem() {
   const holder = el("planetSystem");
   if (!holder) return;
@@ -22106,7 +22097,7 @@ function renderViewer() {
       ? renderFileActionsLoading()
       : externalChange && !conflict
       ? renderExternalReviewActions(externalChange, { fileActionOptions: externalReviewFileActionOptions() })
-      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, savable: !isHtmlDocument && !isImageDocument && state.mode === "edit", modeToggle: !isHtmlDocument && !isImageDocument && !(state.selectedStartupContext?.readOnly || state.selectedReadOnly) ? state.mode === "edit" ? "view" : "edit" : null });
+      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, modeToggle: !isHtmlDocument && !isImageDocument && !(state.selectedStartupContext?.readOnly || state.selectedReadOnly) ? state.mode === "edit" ? "view" : "edit" : null });
   const conflictMarkup = conflict ? renderConflictPanel(conflict, text) : "";
   const editorMarkup = loadError
     ? renderFileLoadError(loadError)
@@ -22125,7 +22116,7 @@ function renderViewer() {
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile()
-    || (state.mode === "view" && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? docReviewBannerMarkup(file.path, hasDiff && diff) : "");
+    || (state.mode === "view" && !IS_HOSTED_CONTEXT_ROOM && state.reviewModePath !== file.path && !conflict && !externalChange && !loadError && !loadingFile && !state.selectedReadOnly && docAwaitingReview(file.path) ? docReviewBannerMarkup(file.path, hasDiff && diff) : "");
   const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
     ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "") + reviewDocumentChecksMarkup(externalChange.documentChecks)
     : "";
@@ -22221,9 +22212,9 @@ function docAwaitingReview(path) {
 // R5: a doc in « To review » shows one line, wherever it is opened from: what changed and Accept / Reject.
 // The Git diff no longer opens by itself (it stays behind « Show Git diff »). The choice runs in an on-demand module.
 function docReviewBannerMarkup(path, diff) {
-  const item = reviewQueueItemForPath(path), added = item?.reviewReason === "added";
+  const item = reviewQueueItemForPath(path), reason = item?.reviewReason, added = reason === "added";
   const choice = state.selectedStartupContext ? '<em>Accept it in To review to edit</em>' : '<button type="button" class="primary" data-doc-review="accept">Accept</button><button type="button" data-doc-review="reject">Reject</button><em>Accept or reject, then edit</em>';
-  return '<div class="doc-review-banner" data-doc-review-banner><strong>' + (added ? "New file from an agent" : "Changed by an agent") + '</strong>' + (diff && !added ? '<span>+' + diff.additions + ' −' + diff.deletions + '</span>' : "") + choice + '</div>';
+  return '<div class="doc-review-banner" data-doc-review-banner><strong>' + (added ? "New file from an agent" : reason === "dependency-changed" ? "A doc it depends on changed" : item?.initialReview ? "Not reviewed yet" : "Changed by an agent") + '</strong>' + (diff && !added ? '<span>+' + diff.additions + ' −' + diff.deletions + '</span>' : "") + choice + '</div>';
 }
 function decideDocReview(action) {
   import("/assets/ui/review-banner.mjs")
@@ -22351,8 +22342,11 @@ function renderMarkdownLineView(text, options = {}) {
 
 // R8a: a relative image shows under its line in the reader. Its bytes come through /api/file, scoped to the project;
 // it stays hidden until they arrive (CSS hides an image without src).
+let mdImages = {};
 function wireMarkdownImages() {
-  for (const img of document.querySelectorAll("#docReader img[data-md-image]")) api("/api/file?path=" + encodeURIComponent(img.dataset.mdImage)).then((file) => file.dataUrl && (img.src = file.dataUrl), () => {});
+  const doc = state.activeProjectLocationId + "\n" + state.selected;
+  if (mdImages[""] !== doc) mdImages = { "": doc };
+  for (const img of document.querySelectorAll("#docReader img[data-md-image]")) (mdImages[img.dataset.mdImage] ||= api("/api/file?path=" + encodeURIComponent(img.dataset.mdImage)).then((file) => file.dataUrl, () => 0)).then((url) => url && (img.src = url));
 }
 
 function usePlainTextSurface(filePath, text) {
@@ -23712,7 +23706,7 @@ function renderMarkdownLine(line, index, options = {}) {
   }
   const tag = options.semantic ? "p" : "div";
   const image = options.reader && raw.match(/!\[([^\]]*)\]\(<?([^)\s>]+)/), imagePath = image && resolveDocLinkPath(image[2]);
-  return '<' + tag + ' class="markdown-line body' + (/^\s*\|/.test(raw) ? " table" : "") + '"' + attrs + '>' + renderMarkdownInline(raw, options) + (imagePath ? '<img class="markdown-image" data-md-image="' + escapeHtml(imagePath) + '" alt="' + escapeHtml(image[1]) + '">' : "") + '</' + tag + '>';
+  return '<' + tag + ' class="markdown-line body' + (/^\s*\|/.test(raw) || !options.reader && /!\[/.test(raw) ? " table" : "") + '"' + attrs + '>' + renderMarkdownInline(raw, options) + (imagePath ? '<img class="markdown-image" data-md-image="' + escapeHtml(imagePath) + '" alt="' + escapeHtml(image[1]) + '">' : "") + '</' + tag + '>';
 }
 
 function renderMarkdownInline(value, options = {}) {
@@ -24104,7 +24098,6 @@ function externalReviewFileActionOptions() {
     // it. An unexpected external replacement must still be reconciled first.
     conversationBlocked: activeExternalChange()?.source !== "review",
     deletable: !Boolean(state.selectedStartupContext),
-    savable: !isHtmlDocumentPath(state.selected),
   };
 }
 
@@ -24759,7 +24752,6 @@ function replaceExternalReviewActionsInPlace(text = "") {
     blockedByConflict: Boolean(activeFileConflict()),
     readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly),
     deletable: !Boolean(state.selectedStartupContext || state.selectedReadOnly),
-    savable: !isHtmlDocumentPath(state.selected),
   });
   wireFileActionButtons(document.querySelector(".file-panel > header") || document);
 }
@@ -28115,7 +28107,9 @@ el("graphCanvas")?.addEventListener("keydown", (event) => {
   }
 });
 // A file menu (▾ or ⋯) closes after a choice or a click elsewhere.
-document.addEventListener("click", (event) => document.querySelectorAll("details.file-menu[open]").forEach((menu) => (!menu.contains(event.target) || event.target.closest(".file-menu-list button")) && menu.removeAttribute("open")));
+const closeFileMenus = (event) => document.querySelectorAll("details.file-menu[open]").forEach((menu) => event.key || !menu.contains(event.target) || event.target.closest(".file-menu-list button") ? (menu.removeAttribute("open"), menu.contains(document.activeElement) && menu.firstChild.focus()) : 0);
+document.addEventListener("click", closeFileMenus);
+document.addEventListener("keydown", (event) => event.key === "Escape" && closeFileMenus(event));
 el("contextPanelToggle")?.addEventListener("click", () => setDocumentContextOpen(!state.inspectorOpen));
 el("documentContextClose")?.addEventListener("click", () => setDocumentContextOpen(false));
 el("watchSelected").addEventListener("click", () => addSelectedToWatch().catch((error) => setStatus(error.message)));

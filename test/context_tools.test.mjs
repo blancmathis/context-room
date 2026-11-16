@@ -135,3 +135,40 @@ test('the panel is its own asset, loaded by the project page on the first press'
   assert.match(page, /import\('\/assets\/ui\/skills-mcp\.mjs'\)/);
   assert.match(page, /data-pp-tools/);
 });
+
+test('an MCP file that cannot be parsed stays visible as « Cannot be read », never as no server', (t) => {
+  const { root, read } = fixture(t);
+  fs.writeFileSync(path.join(root, 'app/.mcp.json'), '{ "mcpServers": { "figma": ');
+  const { mcp } = read();
+  assert.deepEqual(level(mcp, 'app').items.map((entry) => [entry.name, entry.source, entry.status, entry.providers]), [['.mcp.json', 'app/.mcp.json', 'unreadable', ['claude-code']]]);
+  assert.equal(level(mcp, 'root').items.some((entry) => entry.status === 'unreadable'), false);
+});
+
+test('a linked skill folder, a subfolder entry of ~/.claude.json and a folder named root are read; too many skills cut the list', (t) => {
+  const { home, root, read } = fixture(t);
+  const outside = path.join(path.dirname(root), 'shared-skill');
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(outside, 'SKILL.md'), skill('linked', 'A linked skill.', 'Linked body.'));
+  fs.symlinkSync(outside, path.join(root, '.claude/skills/linked'));
+  const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+  claude.projects[path.join(root, 'app')] = { mcpServers: { sub: { command: 's3cr3t-sub' } } };
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify(claude));
+  fs.mkdirSync(path.join(root, 'root/.claude/skills/named'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'root/.claude/skills/named/SKILL.md'), skill('named', 'In a folder named root.', 'Body.'));
+  const { skills, mcp, truncated } = read();
+  const linked = item(skills, 'root', 'linked');
+  assert.equal(linked.source, '.claude/skills/linked/SKILL.md');
+  assert.equal(linked.path, '', 'a file outside the project does not open in the Hub');
+  assert.ok(linked.startupTokens > 0);
+  assert.deepEqual(item(mcp, 'app', 'sub').local, true);
+  assert.deepEqual(level(skills, './root').items.map((entry) => entry.name), ['named']);
+  assert.equal(truncated, false);
+  for (let index = 0; index < 601; index += 1) {
+    const folder = path.join(root, '.claude/skills/many-' + String(index).padStart(3, '0'));
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'SKILL.md'), skill('many', 'Many.', 'Body.'));
+  }
+  const cut = read();
+  assert.equal(cut.truncated, true);
+  assert.equal(countItems(cut.skills), 600);
+});

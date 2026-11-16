@@ -9,7 +9,7 @@ import { listContextProviderProfiles } from "./provider_profiles.mjs";
 import { frontmatterField } from "./context_losses.mjs";
 import { estimateTokens } from "./documentation.mjs";
 import { createContextInventoryReaders } from "./context_inventory.mjs";
-import { agentLevelFolders } from "./context_levels.mjs";
+import { agentLevelFolders, folderLevel } from "./context_levels.mjs";
 
 const MAX_ROWS = 600;
 const MAX_DESCRIPTION = 200;
@@ -17,6 +17,7 @@ const MAX_DESCRIPTION = 200;
 const real = (file) => { try { return fs.realpathSync(file); } catch { return path.resolve(file); } };
 const readText = (file) => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
 const sha = (text) => createHash("sha256").update(text).digest("hex");
+const parses = (text) => { try { JSON.parse(text); return true; } catch { return false; } };
 const listed = (read) => { try { return read() || []; } catch { return []; } };
 const withoutFrontmatter = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
 const projectPaths = (profile) => (profile.mcp || []).map((source) => source.path).filter((item) => !item.startsWith("~"));
@@ -57,7 +58,7 @@ export function skillAndMcpLevels(root, { skip, readers = createContextInventory
     const folder = path.join(root, rel);
     for (const profile of profiles) {
       for (const location of listed(() => readers.listProviderSkillFolders(root, folder, profile.id))) {
-        const level = location.scope === "device" ? "global" : location.scope === "subtree" && location.subtree !== "." ? location.subtree : "root";
+        const level = location.scope === "device" ? "global" : location.scope === "subtree" && location.subtree !== "." ? folderLevel(location.subtree) : "root";
         for (const name of location.skills || []) {
           const found = path.join(location.absolutePath, name, "SKILL.md");
           const file = real(found);
@@ -80,9 +81,10 @@ export function skillAndMcpLevels(root, { skip, readers = createContextInventory
       }
       // A subfolder is read for MCP only when it holds an MCP file of this provider: the device files are not parsed again for nothing.
       if (rel && !projectPaths(profile).some((item) => fs.existsSync(path.join(folder, item)))) continue;
-      for (const server of listed(() => readers.listProviderMcpServers(folder, profile.id))) {
+      const found = listed(() => readers.listProviderMcpServers(folder, profile.id));
+      for (const server of found) {
         const file = real(server.absolutePath);
-        const level = server.scope === "device" ? "global" : rel || "root";
+        const level = server.scope === "device" ? "global" : folderLevel(rel) || "root";
         reads(row(servers, level + "\n" + file + "\n" + server.name, () => ({
           level,
           name: String(server.name),
@@ -92,6 +94,17 @@ export function skillAndMcpLevels(root, { skip, readers = createContextInventory
           status: server.disabled ? "disabled" : server.approvalRequired ? "approval" : "configured",
           hash: String(server.fingerprint || ""),
         })), profile.id);
+      }
+      // An MCP file that exists but cannot be read or parsed stays visible: « No server here » would be false.
+      for (const source of profile.mcp || []) {
+        const device = source.path.startsWith("~");
+        if (device && rel) continue;
+        const file = device ? path.join(home, source.path.slice(2)) : path.join(folder, source.path);
+        if (found.some((server) => real(server.absolutePath) === real(file)) || !fs.existsSync(file)) continue;
+        const text = readText(file);
+        if (text != null && (source.format !== "json" || parses(text))) continue;
+        const level = device ? "global" : folderLevel(rel) || "root";
+        reads(row(servers, level + "\n" + real(file) + "\n", () => ({ level, name: path.basename(file), source: shown(real(file)), local: false, status: "unreadable", hash: "" })), profile.id);
       }
     }
   }

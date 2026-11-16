@@ -120,9 +120,18 @@ const reviewCount = (project) => Number(project?.localReviewCount || 0) + Number
 const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
 const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
   + '<small>' + escapeHtml(detail) + '</small>' + (right ? '<span>' + escapeHtml(right) + '</span>' : '') + '</li>';
-const levelMarkup = (level) => '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml((Object.hasOwn(LEVEL_NAMES, level.level) ? LEVEL_NAMES[level.level] : level.level + '/')) + '</strong><span>'
-  + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
-  + (level.files.length ? level.files.map((file) => fileRow(file, (file.kind === 'skill' ? 'Skill · ' : file.kind === 'document' ? 'Doc · ' : '') + (file.path || file.locator), file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens))).join('') : '<li class="pp-empty">No agent file here.</li>') + '</ul></details>';
+// A hook shows its events; « Create … here » makes the provider's instruction file at a level that lacks it (decision 11).
+const fileDetail = (file) => file.kind === 'hook' ? 'Hook · ' + (file.event ? file.event + ' · ' : '') + (file.path || file.locator) + (file.unproven ? ' · may not run' : '') : (file.kind === 'skill' ? 'Skill · ' : file.kind === 'document' ? 'Doc · ' : '') + (file.path || file.locator);
+const fileCost = (file) => file.kind === 'hook' ? (file.addsOutput ? 'adds its output' : '') : file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens);
+const levelMarkup = (level, provider) => {
+  const named = Object.hasOwn(LEVEL_NAMES, level.level);
+  const name = provider === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md';
+  const target = (named ? '' : level.level.replace(/^\.\//, '') + '/') + name;
+  return '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml(named ? LEVEL_NAMES[level.level] : level.level + '/') + '</strong><span>'
+    + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + (named ? '' : 'adds ') + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
+    + (level.files.length ? level.files.map((file) => fileRow(file, fileDetail(file), fileCost(file))).join('') : '<li class="pp-empty">No agent file here.</li>')
+    + (level.level === 'global' || level.files.some((file) => file.path === target || file.kind === 'instruction' && file.name === name) ? '' : '<li><button type="button" class="pp-link" data-pp-create="' + escapeHtml(target) + '">Create ' + name + ' here</button></li>') + '</ul></details>';
+};
 
 export function createProjectPage() {
   const style = document.createElement('style');
@@ -153,6 +162,8 @@ export function createProjectPage() {
   levelsBox.hidden = true;
   el('contextHealth')?.before(levelsBox);
   const levels = new Map();
+  // A reply after a close is dropped.
+  let generation = 0;
   let levelsShown = '';
   let recent = null;
   let entered = '';
@@ -276,7 +287,7 @@ export function createProjectPage() {
   function openFile(project, filePath) {
     const worktree = globalProjectSelectedWorktree(project);
     listedInProject(project, filePath, 'file').then((found) => {
-      if (!found) return setStatus(filePath + ' is not in this project any more');
+      if (!found) return setStatus(filePath + (/(^|\/)\./.test(filePath) ? ' is not in the tree: hidden files may be off in Settings' : ' is not in this project any more'));
       if (!isExplorerDesktopViewport()) setExplorerCollapsedFromUser(true);
       return openContextHubProject(worktree?.id || project.id, { filePath });
     }).catch((error) => setStatus(error.message));
@@ -314,8 +325,10 @@ export function createProjectPage() {
     const key = worktree.id + '|' + provider;
     if (!levels.has(key)) {
       levels.set(key, null);
+      const asked = generation;
+      const keep = (data) => { if (asked === generation) levels.set(key, data); };
       api('/api/context-hub/project-agents?projectId=' + encodeURIComponent(worktree.id) + '&provider=' + encodeURIComponent(provider))
-        .then((data) => levels.set(key, data), (error) => levels.set(key, { error: error.message }))
+        .then(keep, (error) => keep({ error: error.message }))
         .finally(sync);
     }
     const data = levels.get(key);
@@ -324,7 +337,7 @@ export function createProjectPage() {
     if (shown === levelsShown) return;
     levelsShown = shown;
     levelsBox.innerHTML = '<h3>Per level · ' + escapeHtml(AGENT_PROVIDER_LABELS[provider] || provider) + '</h3>'
-      + (!data ? '<p class="pp-empty">Reading agent files…</p>' : data.error ? '<p class="pp-empty">' + escapeHtml(data.error) + '</p>' : data.levels.map(levelMarkup).join(''));
+      + (!data ? '<p class="pp-empty">Reading agent files…</p>' : data.error ? '<p class="pp-empty">' + escapeHtml(data.error) + '</p>' : data.levels.map((level) => levelMarkup(level, provider)).join(''));
   }
 
   // « Skills & MCP » is its own module (skills-mcp.mjs), fetched on the first press and placed under the shortcuts.
@@ -339,6 +352,7 @@ export function createProjectPage() {
       }, () => {
         toolsOpen = false;
         sync();
+        head.querySelector('[data-pp-tools]')?.focus();
       }));
       toolsView.catch((error) => {
         toolsView = null;
@@ -424,10 +438,10 @@ export function createProjectPage() {
     }
     if (!pages.has(project.projectKey)) void load(project);
     const all = (state.contextHub?.projects || []).reduce((sum, item) => sum + reviewCount(item), 0);
-    head.innerHTML = '<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
+    setHead('<button class="secondary pp-back" type="button" data-pp-home>‹ To review' + (all ? ' · ' + all : '') + '</button><h2>' + escapeHtml(project.title || project.id) + '</h2>'
       + '<span class="pp-count">' + (toReview ? toReview + ' to review' : 'Nothing to review') + '</span>'
       + '<button class="secondary pp-end" type="button" data-pp-tools aria-expanded="' + toolsOpen + '">Skills &amp; MCP ›</button>'
-      + '<button class="secondary" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>';
+      + '<button class="secondary" type="button" data-pp-agents aria-expanded="' + String(Boolean(state.projectAgentsOpen)) + '">What agents load ›</button>');
     const list = tilesOf(project);
     const keys = new Set(list.map(projectTileKey));
     const addable = [{ type: 'agents' }, { type: 'all' }, { type: 'recent' }, ...(rootFolders(project) || []).map((path) => ({ type: 'folder', path }))]
@@ -436,6 +450,18 @@ export function createProjectPage() {
       + (list.length ? '<ul class="pp-grid">' + list.map((tile, index) => tileMarkup(tile, index, list.length)).join('') + '</ul>' : '<p class="pp-empty">No shortcut. Edit adds one; ⋯ › Pin to project page in the tree pins a file or a folder.</p>')
       + (editing && addable.length ? '<div class="pp-add">Add: ' + addable.map((tile) => '<button class="secondary" type="button" data-tile-add="' + escapeHtml(JSON.stringify(tile)) + '">' + escapeHtml(tileName(tile)) + '</button>').join('') + '</div>' : '')
       + recentMarkup(project);
+  }
+
+  // Redrawn only on a change; ⋯ (project-more.mjs) and the focus stay.
+  let headShown = '';
+  function setHead(markup) {
+    if (markup === headShown) return;
+    headShown = markup;
+    const more = head.querySelector('[data-pp-more]');
+    const focused = head.contains(document.activeElement) ? [...document.activeElement.attributes].find((item) => item.name.startsWith('data-pp-'))?.name : '';
+    head.innerHTML = markup;
+    if (more) head.append(more);
+    if (focused) head.querySelector('[' + focused + ']')?.focus({ preventScroll: true });
   }
 
   // On « To review » (all projects), one heading per project run: « Name · N », then Open project ›.
@@ -502,12 +528,23 @@ export function createProjectPage() {
 
   levelsBox.addEventListener('click', (event) => {
     const button = event.target.closest('[data-pp-open]');
+    const create = event.target.closest('[data-pp-create]');
     const project = currentProject();
     if (button && project) openFile(project, button.dataset.ppOpen);
+    // An empty file, written by the person, so accepted at once; it opens to be written.
+    if (create && project) {
+      const id = globalProjectSelectedWorktree(project)?.id || project.id;
+      const filePath = create.dataset.ppCreate;
+      create.disabled = true;
+      api('/api/markdown/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: filePath }), targetProjectId: id })
+        .then(() => { generation += 1; levels.clear(); return openContextHubProject(id, { filePath }); })
+        .catch((error) => { create.disabled = false; setStatus(error.message); });
+    }
   });
 
   function closeAgents() {
     state.projectAgentsOpen = false;
+    generation += 1;
     levels.clear();
     renderContextHealth();
     sync();
