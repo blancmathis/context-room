@@ -651,7 +651,7 @@ test("@layout executable geometry contract stays continuous at every breakpoint"
   }
 });
 
-test("@layout the 272px Explorer keeps project identity and metrics in separate readable rows", async ({ page }) => {
+test("@layout the 272px Explorer shows each project on one line, path on hover", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${data.origin}/?hub=1&view=hub&explorer=expanded`);
@@ -683,11 +683,15 @@ test("@layout the 272px Explorer keeps project identity and metrics in separate 
   });
   expect(geometry.explorerWidth).toBeCloseTo(272, 0);
   expect(geometry.title?.width || 0).toBeGreaterThan(24);
-  expect(geometry.main?.bottom || 0).toBeLessThanOrEqual((geometry.side?.top || 0) + 0.5);
-  // The menu button is a 44 px target at the end of the metrics line; it takes no width from the project name.
+  // One line: name and metrics side by side, the path only in the hover title.
+  expect(geometry.row?.height || 0).toBeLessThanOrEqual(44);
+  expect(geometry.main?.right || 0).toBeLessThanOrEqual((geometry.side?.left || 0) + 0.5);
+  expect(await row.getAttribute("title")).toBeTruthy();
+  await expect(row.locator(".global-project-row-location")).toHaveCount(0);
+  // The menu button is 44 px wide at the end of the line, as tall as the row; it takes no width from the project name.
   expect(geometry.metrics?.right || 0).toBeLessThanOrEqual((geometry.action?.left || 0) + 0.5);
-  expect(Math.min(geometry.action?.width || 0, geometry.action?.height || 0)).toBeGreaterThanOrEqual(44);
-  expect(geometry.action?.bottom || 0).toBeLessThanOrEqual((geometry.row?.bottom || 0) + 0.5);
+  expect(geometry.action?.width || 0).toBeGreaterThanOrEqual(44);
+  expect(geometry.action?.height || 0).toBeCloseTo(geometry.row?.height || 0, 0);
   for (const child of [geometry.main, geometry.side]) {
     expect(child?.left || 0).toBeGreaterThanOrEqual((geometry.row?.left || 0) - 0.5);
     expect(child?.right || 0).toBeLessThanOrEqual((geometry.row?.right || 0) + 0.5);
