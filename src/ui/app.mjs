@@ -386,10 +386,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-menu:hover, .global-project-row-menu:focus-visible, .global-project-notes-row:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
-    /* Hub home shortcuts sit in the top bar, on the home only; "New note" shows on a touch screen only (Go to › New note on a keyboard). */
-    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action, .app.explorer-view-on .hub-home-action { display: none; }
+    /* Hub home shortcuts sit in the top bar, on the home only, except "Go to" (every view); "New note" shows on a touch screen only (Go to › New note on a keyboard). */
+    #cr-main:not(:has(#home:not([hidden]))) .hub-home-action:not([data-context-hub-project-goto]), .app.explorer-view-on .hub-home-action:not([data-context-hub-project-goto]) { display: none; }
     @media not all and (any-pointer: coarse) { [data-notebook-space-new] { display: none !important; } }
     @media (max-width: 639px) { .hub-home-action kbd, .workspace-dock [data-notebook-space-new] { display: none; } }
+    @media (max-width: 980px) { #cr-main:not(:has(#home:not([hidden]))) .hub-home-action kbd { display: none; } }
     /* One project list on screen: the Explorer carries it while it is open. */
     .app:not(.sidebar-collapsed) #contextHubProjectsPanel { display: none; }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
@@ -8787,10 +8788,36 @@ function contextHubProjectPickerChoices() {
   const open = state.contextHubProjectPickerPurpose === "open";
   // "New note" is an action of "Go to": a keyboard-only way to draw a note outside a project.
   const actions = open && IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB && "new note".includes(needle) ? [{ gotoKind: "action", name: "New note" }] : [];
+  const docs = gotoDocumentChoices();
+  // An exact file name ("runbook" or "runbook.md") goes before the projects.
+  const exact = docs.some((item) => item.gotoKind === "file" && [item.name, item.name.replace(/\.[^.]+$/, "")].some((name) => searchFold(name) === needle));
   return {
     projects,
-    choices: needle || open ? [...projects, ...actions, ...gotoDocumentChoices()] : [null, ...projects],
+    choices: !open ? (needle ? projects : [null, ...projects]) : needle ? (exact ? [...docs, ...projects, ...actions] : [...projects, ...actions, ...docs]) : [...gotoRecentChoices(), ...projects, ...actions],
   };
+}
+
+// "Go to" with no query: the 5 files opened last, the open one left out, so ⌘K + Enter goes back.
+const GOTO_RECENT_KEY = "context-room-goto-recent";
+function gotoRecentList() {
+  try { return JSON.parse(localStorage.getItem(GOTO_RECENT_KEY) || "[]"); } catch { return []; }
+}
+
+function rememberGotoRecent(path) {
+  const projectId = state.activeProjectLocationId;
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !projectId || !path) return;
+  const list = gotoRecentList().filter((item) => item.projectId !== projectId || item.path !== path);
+  try { localStorage.setItem(GOTO_RECENT_KEY, JSON.stringify([{ projectId, path }, ...list].slice(0, 6))); } catch {}
+}
+
+function gotoRecentChoices() {
+  if (IS_HOSTED_HUB) return [];
+  const projects = state.contextHub?.projects || [];
+  return gotoRecentList().flatMap((item) => {
+    const project = projects.find((entry) => entry.id === item.projectId || (entry.worktrees || []).some((worktree) => worktree?.id === item.projectId));
+    const open = state.page === "file" && state.selected === item.path && state.activeProjectLocationId === item.projectId;
+    return project && !open ? [{ ...item, gotoKind: "recent", name: item.path.split("/").pop(), projectKey: project.projectKey, projectTitle: project.title }] : [];
+  }).slice(0, 5);
 }
 
 const GOTO_GROUP_LIMIT = 8;
@@ -8838,7 +8865,7 @@ function renderGotoPickerOption(item, index, active) {
 }
 
 function gotoGroupLabel(kind) {
-  return kind === "file" ? "Files" : kind === "text" ? "In text" : kind === "action" ? "Actions" : "Projects";
+  return kind === "file" ? "Files" : kind === "recent" ? "Recent" : kind === "text" ? "In text" : kind === "action" ? "Actions" : "Projects";
 }
 
 function resetGotoSearch() {
@@ -8965,7 +8992,7 @@ function activateContextHubProjectPickerIndex(index) {
     createSpaceNotebook().catch((error) => setStatus(error.message));
     return;
   }
-  if (item?.gotoKind === "file" || item?.gotoKind === "text") {
+  if (item?.gotoKind === "file" || item?.gotoKind === "text" || item?.gotoKind === "recent") {
     if (state.sharedContextBusy) return;
     closeContextHubProjectPicker({ restoreFocus: false });
     openGotoDocument(item).catch((error) => setStatus(error.message));
@@ -9091,7 +9118,7 @@ function openContextHubProjectPicker(trigger, { purpose = "filter", initialQuery
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
   const selectedIndex = projects.findIndex((project) => project.projectKey === state.sharedProposalProject);
   const offset = state.contextHubProjectPickerPurpose === "open" ? 0 : 1;
-  state.contextHubProjectPickerIndex = selectedIndex >= 0 ? selectedIndex + offset : 0;
+  state.contextHubProjectPickerIndex = purpose === "open" && !state.contextHubProjectPickerQuery.trim() && gotoRecentChoices().length ? 0 : selectedIndex >= 0 ? selectedIndex + offset : 0;
   renderContextHubProjectPicker();
   state.contextHubProjectPickerIsolationRelease?.();
   state.contextHubProjectPickerIsolationRelease = isolateContextRoomModalBackground(el("contextHubProjectPicker"));
@@ -15477,6 +15504,7 @@ async function selectFile(path, options = {}) {
     state.fileLoadError = null;
     el("editor").value = data.content || "";
     state.fileContentReadyPath = path;
+    rememberGotoRecent(path);
     if (preserveViewer) {
       updateHeader();
       updateHistoryButtons();
