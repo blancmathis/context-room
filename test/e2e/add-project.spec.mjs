@@ -193,6 +193,8 @@ test("@smoke the project page lists its notebooks, and ⋯ hides the project and
     // ⋯ › Hide: out of the list, still found by a search.
     const more = page.locator("#projectPageHead [data-pp-more]");
     await expect(more).toHaveAttribute("aria-label", "Project actions · Existing Docs");
+    // The offer comes with the Hub snapshot: wait for its banner before reading the menu.
+    await expect(page.locator("[data-pp-trust]")).toBeVisible({ timeout: 30_000 });
     // From the keyboard (WebKit does not focus a clicked button): Escape gives the focus back to ⋯.
     await more.focus();
     await page.keyboard.press("Enter");
