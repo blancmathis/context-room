@@ -1738,9 +1738,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-review-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
     .context-hub-review-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .45fr); gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-card) 72%, transparent); }
     body.focused-review-context-room .context-room-review-toolbar { grid-template-columns: minmax(140px, .45fr) minmax(210px, 1fr); }
-    .context-room-review-search { width: 100%; min-width: 0; min-height: 32px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
-    .context-room-review-search::placeholder { color: var(--muted); }
-    .context-room-review-search:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
     .context-hub-review-filter { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 760; }
     .context-hub-review-filter[hidden] { display: none !important; }
     .context-hub-review-filter select { width: 100%; min-width: 0; min-height: 32px; padding: 5px 26px 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
@@ -2612,7 +2609,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     }
     body.workbench-resizing { cursor: col-resize; user-select: none; }
     .search-row { gap: 5px; margin: 4px 0 8px; }
-    .search, .context-room-review-search, .shared-proposal-search,
+    .search, .shared-proposal-search,
     input[type="text"]:where(:not(#settingsSearch)), input[type="search"]:where(:not(#settingsSearch)), select, textarea {
       min-height: 32px;
       border: 1px solid var(--control-line);
@@ -2621,8 +2618,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       color: var(--text);
       box-shadow: none;
     }
-    .search, .context-room-review-search, .shared-proposal-search { padding: 6px 9px; }
-    #contextRoomReviewSearch { min-height: 40px; }
+    .search, .shared-proposal-search { padding: 6px 9px; }
     input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
     input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, [tabindex]:focus-visible {
       outline: 2px solid var(--native-focus);
@@ -3235,7 +3231,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .shared-proposal-workspace, .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
       .shared-proposal-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 38vh) minmax(0, 1fr); }
       .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr 1fr; }
-      .context-room-review-search { grid-column: 1 / -1; }
       .settings-section-head { flex-direction: column; }
       .settings-section-actions { justify-content: flex-start; width: 100%; }
     }
@@ -3299,7 +3294,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
       .global-explorer-mode, .watch-filter, .global-project-watch-filter,
       .context-hub-project-trigger, .context-hub-review-filter select,
-      .context-room-review-search, .clear-search { min-height: 40px; }
+      .clear-search { min-height: 40px; }
       .context-hub-project-picker-dialog button,
       .context-hub-project-picker-dialog input,
       .settings-page button,
@@ -3344,7 +3339,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .clear-search { min-width: 40px; }
       .tree button, .global-project-row, .global-project-tree-entry { min-height: 44px; }
       .context-hub-home-project-destination { min-height: 44px; }
-      .search-row .search, #contextRoomReviewSearch { min-height: 44px; font-size: 13px; }
+      .search-row .search { min-height: 44px; font-size: 13px; }
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back { width: 40px; min-width: 40px; height: 40px; }
       .explorer-open { top: 4px; left: 4px; }
       .file-panel > header { min-height: auto; }
@@ -3353,7 +3348,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .file-actions .file-action, .graph-toolbar .file-action { min-width: 40px; min-height: 40px; }
       .external-review-block-controls .external-choice.icon { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
       .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr; padding: 8px var(--workbench-gutter-compact); }
-      .context-room-review-search { grid-column: auto; }
       .review-item, .context-room-proposal-row, .context-hub-review-item,
       .context-attention-head, .context-attention-row,
       .proposal-review-meta, .proposal-review-file,
@@ -3742,7 +3736,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                     <option value="shared">Shared proposals</option>
                   </select>
                 </label>
-                <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
               </details>
@@ -9810,8 +9803,7 @@ function renderContextRoomGlobalReviewQueue() {
   const summary = el("reviewSummary");
   const limit = el("contextRoomReviewLimit");
   const sourceFilter = el("contextRoomReviewSourceFilter");
-  const search = el("contextRoomReviewSearch");
-  if (!queueElement || !summary || !limit || !sourceFilter || !search) return;
+  if (!queueElement || !summary || !limit || !sourceFilter) return;
   renderReviewFlowPanel();
   renderReviewFlowBar();
   renderReviewHistoryPanel();
@@ -9897,10 +9889,7 @@ function renderContextRoomGlobalReviewQueue() {
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
   const hiddenReviewCount = Math.max(0, renderedReviews.length - visibleReviews.length);
   sourceFilter.value = state.contextHubSource;
-  search.placeholder = IS_GLOBAL_CONTEXT_ROOM ? "Search reviews or projects…" : "Search this project…";
-  if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
   sourceFilter.disabled = Boolean(state.sharedContextBusy);
-  search.disabled = Boolean(state.sharedContextBusy);
   const reviewToolbar = queueElement.closest(".docqa-panel")?.querySelector(".context-room-review-toolbar");
   // The toolbar keeps its place on a clean queue (no layout jump) unless the
   // user chose to hide it.
@@ -9950,7 +9939,7 @@ function renderContextRoomGlobalReviewQueue() {
   if (showDeletionBatch) wireDeletionReviewBatch();
   limit.hidden = hiddenReviewCount === 0;
   limit.textContent = hiddenReviewCount
-    ? "Showing the first " + visibleReviews.length + " of " + renderedReviews.length + " items. Choose a project or refine the search to narrow the queue."
+    ? "Showing the first " + visibleReviews.length + " of " + renderedReviews.length + " items. Open a project to narrow the queue."
     : "";
   renderContextRoomOtherAttention();
   enforceHostedHubSourceFilters();
@@ -17764,8 +17753,8 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
   const menu = (label, mark, items) => items ? '<details class="file-menu"><summary class="file-action" aria-label="' + label + '">' + mark + '</summary><div class="file-menu-list">' + items + '</div></details>' : '';
   return '' +
     (IS_LOCAL && own && !readOnly && /\.(md|markdown|txt|html?)$/i.test(path) ? button('data-file-conversation', 'Discuss', off ? off + ' title="Save or resolve the original document first"' : ' title="Type to the agent about this document"')
-      + menu('More ways to discuss', '▾', button('data-file-dictate', 'Dictate', conversationBlocked ? ' disabled' : '') + button('data-file-voice', 'Voice', off)
-        + (view && /\.(md|markdown)$/i.test(path) && !usePlainTextSurface(path, state.saved) ? button('data-file-annotate', 'Annotate', ' aria-pressed="' + Boolean(handAnnotation) + '"' + off) : '')) : '') +
+      + menu('More ways to discuss', '▾', button('data-file-dictate title="Speak to type text into this document"', 'Dictate', conversationBlocked ? ' disabled' : '') + button('data-file-voice title="Talk out loud with the agent about this document"', 'Voice', off)
+        + (view && /\.(md|markdown)$/i.test(path) && !usePlainTextSurface(path, state.saved) ? button('data-file-annotate title="Mark a passage and ask the agent about it"', 'Annotate', ' aria-pressed="' + Boolean(handAnnotation) + '"' + off) : '')) : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? button('data-file-review-decision="' + escapeHtml(reviewAction.status) + '"', escapeHtml(reviewAction.label)) : '') +
     (secondaryReviewAction ? button('data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '"', escapeHtml(secondaryReviewAction.label)) : '') +
@@ -27512,12 +27501,6 @@ el("contextEngineProvider")?.addEventListener("change", (event) => {
   if (!state.contextEngineInspection) return;
   state.contextEngineInspection.provider = event.target.value;
   loadContextEngineInspection().catch((error) => setStatus(error.message));
-});
-el("contextRoomReviewSearch")?.addEventListener("input", (event) => {
-  if (state.sharedContextBusy) return;
-  state.sharedProposalSearch = event.target.value;
-  state.contextHubSelection = "";
-  renderContextRoomGlobalReviewQueue();
 });
 el("contextRoomReviewSourceFilter")?.addEventListener("change", (event) => {
   if (state.sharedContextBusy) return;

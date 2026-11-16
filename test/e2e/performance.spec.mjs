@@ -155,6 +155,14 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   }).on("error", reject));
   expect(skillsMcp.status).toBe(200);
   expect(zlib.brotliCompressSync(skillsMcp.body).length).toBeLessThan(3_600);
+  // « All docs » (R9) loads with the project page: 3 039 on 2026-11-16, limit +10 %.
+  const projectDocs = await new Promise((resolve, reject) => http.get(new URL("/assets/ui/project-docs.mjs", samples[0].jsUrls[0]), (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
+  }).on("error", reject));
+  expect(projectDocs.status).toBe(200);
+  expect(zlib.brotliCompressSync(projectDocs.body).length).toBeLessThan(3_400);
 
   await page.waitForTimeout(2_000);
   const idleStartedAt = Date.now();

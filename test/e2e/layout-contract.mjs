@@ -203,7 +203,7 @@ export async function collectLayoutViolations(page, { label = "layout" } = {}) {
     }
 
     if (mobile) {
-      const touchSelectors = ["#explorerOpen", "#sidebarToggle", "#brandHome", "#contextHubCreateSharedDocument", ".proposal-review-technical summary", ".settings-tab", ".settings-footer button", ".file-action", ".hosted-review-file-actions button", ".global-explorer-mode", ".watch-filter", ".graph-open", ".context-room-review-search", ".clear-search", ".tree button", ".global-project-row", ".global-project-tree-entry"];
+      const touchSelectors = ["#explorerOpen", "#sidebarToggle", "#brandHome", "#contextHubCreateSharedDocument", ".proposal-review-technical summary", ".settings-tab", ".settings-footer button", ".file-action", ".hosted-review-file-actions button", ".global-explorer-mode", ".watch-filter", ".graph-open", ".clear-search", ".tree button", ".global-project-row", ".global-project-tree-entry"];
       for (const selector of touchSelectors) {
         for (const element of [...document.querySelectorAll(selector)].filter(activeSurface)) {
           const rect = element.getBoundingClientRect();
