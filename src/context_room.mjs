@@ -18172,9 +18172,14 @@ function contextHubLocalProjectSummary(project, currentRoot) {
   let queue = [];
   let queueError = "";
   let hubSections = [];
+  let trustOffered = false;
   if (project.available) {
     try {
-      queue = buildAgentReviewQueue(project.root, { readOnly: true }).queue || [];
+      const built = buildAgentReviewQueue(project.root, { readOnly: true });
+      queue = built.queue || [];
+      // The cheap offer hint of the report (no count): the project page shows "Trust the current versions"
+      // from it, and only the dialog reads the exact list (GET /api/context-hub/trust-current).
+      trustOffered = built.summary?.trustCurrent?.offered === true;
     } catch (error) {
       queueError = error.message;
     }
@@ -18186,6 +18191,7 @@ function contextHubLocalProjectSummary(project, currentRoot) {
   }
   const summary = {
     localReviewCount: project.available && !queueError ? queue.length : null,
+    trustOffered,
     localReviewFiles: queue.map((item) => item.path),
     localReviews: queue.map((item) => ({
       path: item.path,
@@ -18292,6 +18298,7 @@ function contextHubGroupedLocalProjects(localProjects = []) {
         main: entry.worktree?.main === true,
         worktree: entry.worktree || null,
         localReviewCount: entry.localReviewCount ?? null,
+        trustOffered: entry.trustOffered === true,
         localReviewError: entry.localReviewError || "",
         shared: entry.shared || null,
         sharedRecovery: entry.sharedRecovery || null,

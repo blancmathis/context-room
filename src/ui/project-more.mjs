@@ -2,7 +2,7 @@
 // project is accepted, the project's notebooks, and a ⋯ button (hide the project, the internal Hub folder, Trust…).
 // Loaded on demand with the first project page; it calls the page's own functions and `state`.
 
-/* global state, api, escapeHtml, setStatus, globalProjectSelectedWorktree, showTrustCurrentVersionsDialog,
+/* global state, IS_HOSTED_HUB, escapeHtml, setStatus, globalProjectSelectedWorktree, showTrustCurrentVersionsDialog,
    captureNotebookApi, openContextRoomNotebook, openGlobalExplorerContextMenu */
 
 const CSS = `#projectTrust{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
@@ -27,8 +27,6 @@ export function createProjectMore(head, docsBox) {
   notes.setAttribute('aria-labelledby', 'projectNotebooksHeading');
   notes.hidden = true;
   docsBox.after(notes);
-  // The offer is asked again when the project's review count changes (a trust, its undo, a new scan).
-  const offers = new Map();
   const notebooks = new Map();
   let entered = '';
 
@@ -44,10 +42,13 @@ export function createProjectMore(head, docsBox) {
   function render() {
     const project = current();
     const shown = Boolean(project) && !head.hidden;
-    const offer = shown ? offers.get(project.projectKey + ':' + Number(project.localReviewCount || 0)) : null;
+    // The offer comes from the Hub snapshot's cheap hint (no file of the project accepted yet), never from a
+    // request of its own: only the dialog reads the exact list and its count.
+    const worktree = shown && worktreeOf(project);
+    const offer = mounted(worktree) && worktree.trustOffered === true && !IS_HOSTED_HUB;
     trust.hidden = !offer;
     if (offer) {
-      trust.innerHTML = '<p><strong>' + offer + (offer === 1 ? ' file has' : ' files have') + ' no accepted version yet.</strong> Agents get none of them until they are accepted.</p>'
+      trust.innerHTML = '<p><strong>No file of this project has an accepted version yet.</strong> Agents get none of them until they are accepted.</p>'
         + '<button class="primary" type="button" data-pp-trust>Trust the current versions…</button>';
     }
     const list = shown ? notebooks.get(project.projectKey) : null;
@@ -65,19 +66,10 @@ export function createProjectMore(head, docsBox) {
     }
     if (!project) entered = '';
     const worktree = project && worktreeOf(project);
-    if (mounted(worktree)) {
-      const offerKey = project.projectKey + ':' + Number(project.localReviewCount || 0);
-      if (!offers.has(offerKey)) {
-        void ask(offers, offerKey, async () => {
-          const preview = await api('/api/context-hub/trust-current?projectId=' + encodeURIComponent(worktree.id));
-          return preview?.offered ? (preview.items || []).length : 0;
-        });
-      }
-      // Notebooks are read again each time the page is entered: one may have been made from the tree.
-      if (entered !== project.projectKey) {
-        entered = project.projectKey;
-        void ask(notebooks, project.projectKey, async () => [...((await captureNotebookApi(project.id).api('/api/notebooks')).notebooks || [])].sort(byDate));
-      }
+    // Notebooks are read again each time the page is entered: one may have been made from the tree.
+    if (mounted(worktree) && entered !== project.projectKey) {
+      entered = project.projectKey;
+      void ask(notebooks, project.projectKey, async () => [...((await captureNotebookApi(project.id).api('/api/notebooks')).notebooks || [])].sort(byDate));
     }
     render();
   }

@@ -111,7 +111,13 @@ const projectRow = (page, title) => page.locator("#globalProjectList a.global-pr
 test("@smoke Trust the current versions from the project page leaves a receipt that undoes it", async ({ page }) => {
   const hub = await emptyHub();
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  const failed = [];
+  // A page.reload cuts a refresh short; WebKit reports that as "due to access control checks". Other errors count.
+  page.on("pageerror", (error) => { if (!/due to access control checks/.test(error.message)) errors.push(error.message); });
+  page.on("response", (response) => { if (response.status() >= 400) failed.push(response.status() + " " + response.url()); });
+  // Only the dialog reads the exact list: the page itself never asks for it (the offer is the snapshot's hint).
+  let listReads = 0;
+  page.on("request", (request) => { if (request.method() === "GET" && request.url().includes("/api/context-hub/trust-current")) listReads += 1; });
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
     await page.getByRole("button", { name: "Add a project…" }).click();
@@ -123,13 +129,24 @@ test("@smoke Trust the current versions from the project page leaves a receipt t
     await page.getByRole("dialog", { name: "Trust the current versions?" }).getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
     const offer = page.locator("#projectTrust");
-    await expect(offer).toContainText("1 file has no accepted version yet", { timeout: 30_000 });
+    await expect(offer).toContainText("No file of this project has an accepted version yet", { timeout: 30_000 });
+    expect(listReads).toBe(1);
     await offer.getByRole("button", { name: "Trust the current versions…" }).click();
     const trust = page.getByRole("dialog", { name: "Trust the current versions?" });
     await expect(trust.getByRole("list", { name: "1 file to trust" })).toContainText("docs/guide.md");
     await trust.getByRole("button", { name: "Trust 1 file" }).click();
     await expect(page.locator("#status")).toContainText("Trusted 1 current version · undo from Recent decisions");
     await expect(offer).toBeHidden({ timeout: 30_000 });
+    expect(listReads).toBe(2);
+
+    // An agent then changes the accepted file: it waits for review, and the offer does not come back (a version is accepted).
+    fs.writeFileSync(path.join(hub.folder, "docs", "guide.md"), "# Existing guide\n\nChanged by an agent.\n");
+    await expect(async () => {
+      await page.reload();
+      await expect(page.locator("#projectPageHead .pp-count")).toHaveText("1 to review", { timeout: 5_000 });
+    }).toPass({ timeout: 90_000 });
+    await expect(offer).toBeHidden();
+    expect(listReads).toBe(2);
 
     // The receipt is in Recent decisions; undoing it brings the offer back on the project page.
     await page.goto(hub.origin + "/?hub=1&view=hub");
@@ -142,8 +159,10 @@ test("@smoke Trust the current versions from the project page leaves a receipt t
     await expect(page.locator("#status")).toContainText("Trust undone");
     await projectRow(page, "Existing Docs").click();
     await expect(page.locator("#projectPageHead h2")).toHaveText("Existing Docs");
-    await expect(offer).toContainText("1 file has no accepted version yet", { timeout: 30_000 });
+    await expect(offer).toContainText("No file of this project has an accepted version yet", { timeout: 30_000 });
+    expect(listReads).toBe(2);
     expect(errors).toEqual([]);
+    expect(failed).toEqual([]);
   } finally {
     await hub.close();
   }
@@ -174,8 +193,15 @@ test("@smoke the project page lists its notebooks, and ⋯ hides the project and
     // ⋯ › Hide: out of the list, still found by a search.
     const more = page.locator("#projectPageHead [data-pp-more]");
     await expect(more).toHaveAttribute("aria-label", "Project actions · Existing Docs");
-    await more.click();
+    // From the keyboard (WebKit does not focus a clicked button): Escape gives the focus back to ⋯.
+    await more.focus();
+    await page.keyboard.press("Enter");
     const menu = page.locator("#explorerContextMenu");
+    // Nothing is accepted yet in this project, so the menu offers Trust.
+    await expect(menu.getByRole("menuitem", { name: "Trust the current versions…" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(more).toBeFocused();
+    await more.click();
     await menu.getByRole("menuitem", { name: "Hide from the Projects list" }).click();
     await expect(page.locator("#status")).toContainText("Existing Docs is hidden from the Projects list");
     await page.goto(hub.origin + "/?hub=1&view=hub");

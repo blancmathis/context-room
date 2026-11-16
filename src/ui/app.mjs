@@ -6996,6 +6996,7 @@ function explorerContextMenuPosition(event) {
 }
 
 const EXPLORER_CONTEXT_FOCUS_ATTRIBUTES = [
+  "data-pp-more",
   "data-file-path",
   "data-folder-path",
   "data-global-project-key",
@@ -7067,7 +7068,7 @@ function renderGlobalExplorerContextMenu(x, y) {
           + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
         : "")
       + (target.kind === "project"
-        ? '<button class="secondary" type="button" data-global-context-trust>Trust the current versions…</button>'
+        ? (worktree?.trustOffered && !IS_HOSTED_HUB ? '<button class="secondary" type="button" data-global-context-trust>Trust the current versions…</button>' : '')
           + '<button class="secondary" type="button" data-global-context-hide>' + (projectListHidden().includes(project.projectKey) ? "Show in the Projects list" : "Hide from the Projects list") + '</button>'
           + ((state.contextHub?.projects || []).some(isInternalHubProject) ? '<button class="secondary" type="button" data-global-context-internal>' + (projectListPrefs().showInternal === true ? "Hide" : "Show") + ' the internal Hub folder</button>' : '')
           + '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>'
@@ -7132,7 +7133,7 @@ function renderGlobalExplorerContextMenu(x, y) {
   });
   menu.querySelector("[data-global-context-trust]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
-    void showTrustCurrentVersionsDialog(worktree?.id || project.id, project.title || project.id);
+    void showTrustCurrentVersionsDialog(worktree.id, project.title || project.id);
   });
   menu.querySelector("[data-global-context-hide]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
