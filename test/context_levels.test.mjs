@@ -135,3 +135,21 @@ test('agent levels: PLAN/CONTEXT tokens are counted apart from skill bodies', ()
   assert.equal(level.documentTokens, 50);
   assert.equal(level.onDemandTokens, 0);
 });
+
+test('agent levels: a top-level folder named like a level stays its own level', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-levels-names-'));
+  try {
+    for (const rel of ['root/AGENTS.md', 'global/AGENTS.md', '__proto__/AGENTS.md']) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), '# ' + rel + '\n');
+    }
+    const rows = subfolderAgentRows(root, 'codex', { skip: (name) => name.startsWith('.') });
+    const levels = groupAgentLevels([], { root, extra: rows });
+    assert.deepEqual(levels.map((level) => [level.level, level.files.map((file) => file.path)]), [
+      ['root', []],
+      ['__proto__', ['__proto__/AGENTS.md']],
+      ['./global', ['global/AGENTS.md']],
+      ['./root', ['root/AGENTS.md']],
+    ]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
