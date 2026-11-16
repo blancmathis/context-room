@@ -3964,7 +3964,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /id="contextHubProjectPickerSearch"/);
   assert.doesNotMatch(rootSource, /data-context-hub-project-picker-trigger="room-home"/, "the project page scopes To review; the queue has no Project filter");
   assert.match(rootSource, /id="contextRoomReviewSourceFilter"/);
-  assert.match(rootSource, /id="contextRoomReviewSearch"/);
+  assert.doesNotMatch(rootSource, /id="contextRoomReviewSearch"/);
   assert.match(rootSource, /data-context-room-review/);
   assert.match(rootSource, /class="context-room-review-proposal/);
   assert.match(rootSource, /class="context-room-proposal-hitbox"/);

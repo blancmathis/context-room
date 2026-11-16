@@ -117,6 +117,36 @@ test("@layout shortcuts are edited on the page, pinned from the tree, and kept a
   }
 });
 
+test("@layout All docs filters while one types, sorts by date, folds the other files, and Enter opens the first result", async ({ page }) => {
+  const data = fixture();
+  await openAtlas(page, data);
+  // R9: the queue has no search field any more; the project page filters its own docs.
+  await expect(page.locator("#contextRoomReviewSearch")).toHaveCount(0);
+  const docs = page.locator("#projectDocs");
+  await expect(docs.locator("#projectDocsHeading")).toHaveText(/^All docs · \d+$/);
+  // Root files first, then each folder; the first « # » heading sits next to a name that does not say it.
+  await expect(docs.locator(".pd-cols > details > summary").first()).toContainText("Atlas/");
+  await expect(docs.locator('[data-pd-open="AGENTS.md"]').locator("xpath=..")).toContainText("Atlas agent instructions");
+  await expect(docs.locator('[data-pd-open^=".context-room/"]')).toHaveCount(0);
+  // Other files are folded: the diagram is listed there, closed.
+  const others = docs.locator("[data-pd-others]");
+  await expect(others).not.toHaveAttribute("open", /.*/);
+  await expect(others.locator('[data-pd-open="docs/diagram.mmd"]')).toBeAttached();
+
+  // By date: one flat list, the folder under each name.
+  await docs.locator("[data-pd-sort]").selectOption("date");
+  await expect(docs.locator(".pd-cols > details")).toHaveCount(0);
+  await expect(docs.locator('[data-pd-open="docs/operations.md"]')).toBeVisible();
+  await docs.locator("[data-pd-sort]").selectOption("folder");
+
+  // The filter works while one types; Enter opens the first result.
+  const filter = docs.locator("[data-pd-filter]");
+  await filter.pressSequentially("operat");
+  await expect(docs.locator("[data-pd-open]")).toHaveCount(1);
+  await filter.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/operations.md");
+});
+
 test("@layout Skills & MCP lists what each provider finds per level, flags a name seen twice and shows no MCP value", async ({ page }) => {
   const data = fixture();
   // The server of this run reads a temporary home (global-setup): the global skills and MCP servers go there only.

@@ -186,7 +186,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /\/api\/shared-skills\/locations/);
   assert.match(html, /function contextHubProjectPickerChoices/);
   assert.match(html, /id="contextRoomReviewSourceFilter"/);
-  assert.match(html, /id="contextRoomReviewSearch"/);
+  assert.doesNotMatch(html, /id="contextRoomReviewSearch"/, "R9: the project page filters its docs; the queue has no search field");
   assert.match(html, /data-context-room-review/);
   assert.match(html, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
   assert.match(html, /const visibleEntries = entries\.slice\(0, Math\.max\(40, Number\(state\.proposalReviewVisibleCount \|\| 40\)\)\)/);
