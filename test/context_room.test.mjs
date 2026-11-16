@@ -9617,3 +9617,21 @@ test("first init without --allow reports how many discovered documents Git ignor
   const outside = initializeContextRoomProject(outsideGit).gitIgnoredDocumentation;
   assert.ok(outside === null || outside.count === 0);
 });
+
+test("createMarkdownFile: a file created and left empty is not in the review queue, and ifMissing opens an existing one", () => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  fs.mkdirSync(path.join(root, "api"), { recursive: true });
+  const queueHas = (file) => JSON.stringify(buildAgentReviewQueue(root)).includes(file);
+
+  createMarkdownFile(root, { path: "other.md" });
+  assert.equal(queueHas("other.md"), true, "the plain create keeps its review");
+  createMarkdownFile(root, { path: "api/CLAUDE.md", ifMissing: true });
+  assert.equal(fs.readFileSync(path.join(root, "api", "CLAUDE.md"), "utf8"), "");
+  assert.equal(queueHas("api/CLAUDE.md"), false, "an empty file made by « Create … here » never waits for review");
+
+  fs.writeFileSync(path.join(root, "api", "CLAUDE.md"), "keep me\n");
+  assert.throws(() => createMarkdownFile(root, { path: "api/CLAUDE.md" }), /already exists/);
+  assert.deepEqual(createMarkdownFile(root, { path: "api/CLAUDE.md", ifMissing: true }), { path: "api/CLAUDE.md", existed: true });
+  assert.equal(fs.readFileSync(path.join(root, "api", "CLAUDE.md"), "utf8"), "keep me\n");
+});

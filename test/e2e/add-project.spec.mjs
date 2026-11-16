@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
-import { createMemoryServer, initializeContextRoomProject, writeGlobalContextRoomPreferences } from "../../src/context_room.mjs";
+import { createMemoryServer, initializeContextRoomProject, readMemoryWebappSettings, writeGlobalContextRoomPreferences, writeMemoryWebappSettings } from "../../src/context_room.mjs";
 import { contextHubHostRoot, registerContextHubProject } from "../../src/context_hub.mjs";
 import { openNotebook } from "../../src/notebooks.mjs";
 
@@ -245,7 +245,7 @@ test("@smoke « What agents load » shows hooks per level and creates the instru
     await page.locator("#projectPageHead [data-pp-agents]").click();
     const root = page.locator('#projectAgentLevels [data-pp-level="root"]');
     await expect(root).toContainText("Hook · SessionStart · .claude/settings.json", { timeout: 30_000 });
-    await expect(root).toContainText("adds its output");
+    await expect(root).toContainText("can add its output");
     await expect(page.locator('#projectAgentLevels [data-pp-level="api"] [data-pp-create="api/CLAUDE.md"]')).toHaveText("Create CLAUDE.md here");
     await expect(page.locator('#projectAgentLevels [data-pp-create]')).toHaveCount(2);
 
@@ -254,6 +254,50 @@ test("@smoke « What agents load » shows hooks per level and creates the instru
     await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("CLAUDE.md");
     expect(fs.readFileSync(path.join(hub.folder, "CLAUDE.md"), "utf8")).toBe("");
     expect(errors).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("« Create … here » on a file that already exists opens it, with no error and no overwrite (R1)", async ({ page }) => {
+  const hub = await emptyHub({ registered: true });
+  const errors = [], bad = [];
+  page.on("pageerror", (error) => { if (!/due to access control checks/.test(error.message)) errors.push(error.message); });
+  page.on("response", (response) => { if (response.status() >= 400) bad.push(response.status() + " " + response.url()); });
+  await page.addInitScript(() => { try { localStorage.setItem("context-room:agent-provider", "claude-code"); } catch {} });
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await projectRow(page, "Existing Docs").click({ timeout: 30_000 });
+    await page.locator("#projectPageHead [data-pp-agents]").click();
+    const button = page.locator('#projectAgentLevels [data-pp-create="CLAUDE.md"]');
+    await expect(button).toBeVisible({ timeout: 30_000 });
+    // The file appears after the button: a race, or another device wrote it.
+    fs.writeFileSync(path.join(hub.folder, "CLAUDE.md"), "keep me\n");
+    await button.click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("CLAUDE.md");
+    expect(fs.readFileSync(path.join(hub.folder, "CLAUDE.md"), "utf8")).toBe("keep me\n");
+    expect(bad).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("Codex: no « Create AGENTS.md here » at a level that has AGENTS.override.md (M2)", async ({ page }) => {
+  const hub = await emptyHub({ registered: true });
+  // Startup instruction files are listed per level only when this setting is on (off by default).
+  const settings = readMemoryWebappSettings(hub.folder);
+  writeMemoryWebappSettings(hub.folder, { ...settings, startupContext: { ...settings.startupContext, enabled: true } });
+  fs.mkdirSync(path.join(hub.folder, "api"));
+  fs.writeFileSync(path.join(hub.folder, "api", "AGENTS.override.md"), "# Override\n");
+  await page.addInitScript(() => { try { localStorage.setItem("context-room:agent-provider", "codex"); } catch {} });
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await projectRow(page, "Existing Docs").click({ timeout: 30_000 });
+    await page.locator("#projectPageHead [data-pp-agents]").click();
+    const level = page.locator('#projectAgentLevels [data-pp-level="api"]');
+    await expect(level).toContainText("AGENTS.override.md", { timeout: 30_000 });
+    await expect(level.locator("[data-pp-create]")).toHaveCount(0);
   } finally {
     await hub.close();
   }

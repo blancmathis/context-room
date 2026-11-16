@@ -120,9 +120,9 @@ const reviewCount = (project) => Number(project?.localReviewCount || 0) + Number
 const LEVEL_NAMES = { global: 'Global', root: 'Project root' };
 const fileRow = (file, detail, right = '') => '<li>' + (file.path ? '<button type="button" class="pp-link" data-pp-open="' + escapeHtml(file.path) + '">' + escapeHtml(file.name) + '</button>' : '<span>' + escapeHtml(file.name) + '</span>')
   + '<small>' + escapeHtml(detail) + '</small>' + (right ? '<span>' + escapeHtml(right) + '</span>' : '') + '</li>';
-// A hook shows its events; « Create … here » makes the provider's instruction file at a level that lacks it (decision 11).
+// Hooks show their events; « Create … here » makes the instruction file a level lacks.
 const fileDetail = (file) => file.kind === 'hook' ? 'Hook · ' + (file.event ? file.event + ' · ' : '') + (file.path || file.locator) + (file.unproven ? ' · may not run' : '') : (file.kind === 'skill' ? 'Skill · ' : file.kind === 'document' ? 'Doc · ' : '') + (file.path || file.locator);
-const fileCost = (file) => file.kind === 'hook' ? (file.addsOutput ? 'adds its output' : '') : file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens);
+const fileCost = (file) => file.kind === 'hook' ? (file.addsOutput ? 'can add its output' : '') : file.kind === 'document' ? formatTokenEstimate(file.onDemandTokens) + ' on request' : formatTokenEstimate(file.startupTokens);
 const levelMarkup = (level, provider) => {
   const named = Object.hasOwn(LEVEL_NAMES, level.level);
   const name = provider === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md';
@@ -130,7 +130,7 @@ const levelMarkup = (level, provider) => {
   return '<details class="pp-level" data-pp-level="' + escapeHtml(level.level) + '"' + (level.level === 'global' ? '' : ' open') + '><summary><strong>' + escapeHtml(named ? LEVEL_NAMES[level.level] : level.level + '/') + '</strong><span>'
     + level.files.length + (level.files.length === 1 ? ' file' : ' files') + ' · ' + (named ? '' : 'adds ') + formatTokenEstimate(level.startupTokens) + ' tokens at start' + (level.onDemandTokens ? ' · ' + formatTokenEstimate(level.onDemandTokens) + ' on demand' : '') + (level.documentTokens ? ' · ' + formatTokenEstimate(level.documentTokens) + ' in PLAN/CONTEXT, read on request' : '') + '</span></summary><ul class="pp-list">'
     + (level.files.length ? level.files.map((file) => fileRow(file, fileDetail(file), fileCost(file))).join('') : '<li class="pp-empty">No agent file here.</li>')
-    + (level.level === 'global' || level.files.some((file) => file.path === target || file.kind === 'instruction' && file.name === name) ? '' : '<li><button type="button" class="pp-link" data-pp-create="' + escapeHtml(target) + '">Create ' + name + ' here</button></li>') + '</ul></details>';
+    + (level.level === 'global' || level.files.some((file) => file.path === target || file.kind === 'instruction' && (file.name === name || name === 'AGENTS.md' && file.name === 'AGENTS.override.md')) ? '' : '<li><button type="button" class="pp-link" data-pp-create="' + escapeHtml(target) + '">Create ' + name + ' here</button></li>') + '</ul></details>';
 };
 
 export function createProjectPage() {
@@ -531,12 +531,12 @@ export function createProjectPage() {
     const create = event.target.closest('[data-pp-create]');
     const project = currentProject();
     if (button && project) openFile(project, button.dataset.ppOpen);
-    // An empty file, written by the person, so accepted at once; it opens to be written.
+    // An empty file, accepted at once; it opens to be written. A file already there just opens.
     if (create && project) {
       const id = globalProjectSelectedWorktree(project)?.id || project.id;
       const filePath = create.dataset.ppCreate;
       create.disabled = true;
-      api('/api/markdown/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: filePath }), targetProjectId: id })
+      api('/api/markdown/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: filePath, ifMissing: true }), targetProjectId: id })
         .then(() => { generation += 1; levels.clear(); return openContextHubProject(id, { filePath }); })
         .catch((error) => { create.disabled = false; setStatus(error.message); });
     }
