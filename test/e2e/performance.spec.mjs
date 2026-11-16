@@ -127,7 +127,8 @@ test("@perf the unchanged workbench meets its hot runtime budgets", async ({ pag
   expect(projectPage.status).toBe(200);
   // Raised 5 600 -> 7 900 on 2026-11-13 for R3b (agent files per level, Recent docs, review groups, 820 px drawer): 7 167, limit +10 %.
   // 7 900 -> 8 400 after the PR #165 review (band from the real queue, groups in project order with true counts): 7 597, limit +10 %.
-  expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(8_400);
+  // 8 400 -> 8 800 on 2026-11-16 for decision 11 (hooks per level, « Create … here »): 8 357 before, about 8 760 after.
+  expect(zlib.brotliCompressSync(projectPage.body).length).toBeLessThan(8_800);
   // The Markdown editor core (undo, pointer selection, caret, find) moved out of the main script in R7 and loads with
   // the first Markdown doc: 4 333 on 2026-11-13 (the main script lost 3 282), limit +10 %.
   // R2 (tap to edit, autosave) adds the tap-to-caret mapping: ~4 830, limit raised to 5 400.

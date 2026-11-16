@@ -136,6 +136,29 @@ export function groupAgentLevels(results, { root = "", extra = [] } = {}) {
       }
     }
   }
+  // Hooks (decision 11): at their own level, with their events. One whose activation is not proven is still shown.
+  for (const { effective } of results) {
+    const hooks = [...effective?.hooks || [], ...(effective?.inactive || []).filter(({ resource, application }) => resource.kind === "hook" && application.status === "uncertain")];
+    for (const { resource, application } of hooks) {
+      if (seen.has(resource.id)) continue;
+      seen.add(resource.id);
+      const level = levelOf(application);
+      const absolute = String(resource.metadata?.absolutePath || "");
+      const relPath = base && absolute ? path.relative(base, absolute).replaceAll("\\", "/") : "";
+      if (!levels.has(level)) levels.set(level, []);
+      levels.get(level).push({
+        kind: "hook",
+        name: String(resource.metadata?.name || path.basename(resource.locator || "")),
+        locator: String(resource.locator || ""),
+        path: level !== "global" && relPath && !relPath.startsWith("../") && !path.isAbsolute(relPath) ? relPath : "",
+        event: String(resource.metadata?.event || ""),
+        addsOutput: Boolean(resource.metadata?.injectsContext?.length),
+        unproven: application.status === "uncertain",
+        startupTokens: null,
+        onDemandTokens: null,
+      });
+    }
+  }
   // Rows found by the single walk (see subfolderAgentRows): skip a file the root context already listed.
   const seenFiles = new Set(results.flatMap(({ effective }) => ["instructions", "skills"].flatMap((kind) => (effective?.[kind] || []).map(({ resource }) => String(resource.metadata?.absolutePath || "")))));
   for (const row of extra) {
