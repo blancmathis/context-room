@@ -446,12 +446,38 @@ test('a changed doc opened from the tree shows the review banner, not the Git di
     await openMore(page);
     await page.getByRole('button', { name: 'Hide changes', exact: true }).click();
     await expect(page.locator('.diff-panel')).toHaveCount(0);
+    // PR #173 review: Escape closes ⋯ and gives the focus back to its button.
+    const more = page.locator('.file-actions summary[aria-label="More"]');
+    await more.focus(); await page.keyboard.press('Enter');
+    await expect(page.locator('details.file-menu[open]')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('details.file-menu[open]')).toHaveCount(0);
+    await expect(more).toBeFocused();
 
     await banner.getByRole('button', { name: 'Accept', exact: true }).click();
     await expect(banner).toHaveCount(0);
     await expect(page.locator('#docReader[data-tap-edit]')).toBeVisible();
     expect(fs.readFileSync(file, 'utf8')).toBe(agentText);
     expect(await page.evaluate(() => state.docqa.queue.some((item) => item.path === 'docs/DESIGN.md'))).toBe(false);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// PR #170 review: in a project served alone there is no Hub item; Reject opens the review and says so.
+test('Reject on the review banner without a Hub item opens the review and says why', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const file = path.join(f.root, 'docs/Other.md'), agentText = '# Other document\n\nAgent rewrote this line.\n';
+    fs.writeFileSync(file, agentText);
+    await expect.poll(() => page.evaluate(async () => {
+      applyBackgroundReportPayload(await api('/api/reports'));
+      return Boolean(state.docqa?.queue?.some((item) => item.path === 'docs/Other.md'));
+    }), { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => selectFile('docs/Other.md'));
+    await page.locator('[data-doc-review-banner]').getByRole('button', { name: 'Reject', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => state.reviewModePath)).toBe('docs/Other.md');
+    await expect(page.locator('#status')).toContainText('reject it here');
+    expect(fs.readFileSync(file, 'utf8')).toBe(agentText);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
@@ -469,6 +495,8 @@ test('a README reads as clean text with its image; line numbers only in review',
     acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/README.md']);
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
     await awaitAccepted(page, ['docs/README.md']);
+    const imageReads = [];
+    page.on('request', (request) => { if (request.url().includes('diagram.png')) imageReads.push(request.url()); });
     await page.evaluate(() => selectFile('docs/README.md'));
     const reader = page.locator('#docReader');
     await expect(reader.locator('p.markdown-line').first()).toContainText('Context Room keeps');
@@ -476,6 +504,10 @@ test('a README reads as clean text with its image; line numbers only in review',
     await expect(image).toHaveCount(1);
     await expect(image).toBeVisible();
     await expect.poll(() => image.evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
+    // PR #172 review: a new render keeps the image and does not read it again.
+    await page.evaluate(() => { renderViewer(); renderViewer(); });
+    await expect.poll(() => image.evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
+    expect(imageReads).toHaveLength(1);
     await expect(page.locator('[data-doc-review-banner]')).toHaveCount(0);
     const look = await reader.evaluate((node) => {
       const prose = node.querySelector('p.markdown-line'), range = document.createRange();
@@ -493,6 +525,12 @@ test('a README reads as clean text with its image; line numbers only in review',
     test.info().annotations.push({ type: 'characters per line', description: String(Math.round(look.perLine)) });
     // The measure aims at 68-72 characters; system fonts differ by platform, so the check is wider. Phones are narrower.
     if ((page.viewportSize()?.width || 1280) >= 1000) { expect(look.perLine).toBeGreaterThan(58); expect(look.perLine).toBeLessThan(84); }
+    // #177 review M3: in the editor the image line shows its source, never an empty line.
+    await reader.locator('p.markdown-line').first().click();
+    await expect(page.locator('#docEditor')).toBeFocused();
+    await expect(page.locator('#docHighlighter .markdown-line', { hasText: '![Diagram](img/diagram.png)' })).toBeVisible();
+    await page.locator('#docEditor').press('Escape');
+    await expect(reader.locator('img.markdown-image')).toHaveCount(1);
 
     // An agent changes it: the doc waits in « To review » and its lines are numbered again.
     fs.writeFileSync(file, text + '\nAgent line.\n');
@@ -554,6 +592,17 @@ test('Markdown signs show only on the cursor line', async ({ page }) => {
     await editor.press('ArrowDown'); await editor.press('ArrowDown');
     await expect.poll(() => shown(highlighter)).toEqual(expect.arrayContaining(['A bolder word and npm test here.', 'See [the other doc](Other.md) or [the site](https://example.com/x).']));
     await expect.poll(() => fs.readFileSync(file, 'utf8'), { timeout: 10_000 }).toBe(text.replace('**bold**', '**bolder**'));
+    // #177 review M5: while ⌘F has the focus, a match inside a hidden URL shows its line's source.
+    await editor.press('ArrowUp'); await editor.press('ArrowUp');
+    await expect(highlighter.locator('.md-cursor')).not.toContainText('example.com');
+    await page.keyboard.press('ControlOrMeta+f');
+    const bar = page.locator('.find-bar');
+    await bar.getByRole('searchbox', { name: 'Find' }).fill('example.com');
+    await expect(bar.locator('[data-find-count]')).toHaveText('1 match');
+    await bar.getByRole('searchbox', { name: 'Find' }).press('Enter');
+    await expect(highlighter.locator('.md-cursor')).toContainText('https://example.com/x');
+    await bar.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeFocused();
     await editor.press('Escape');
     await expect.poll(() => shown(reader).then((list) => list.join('\n'))).not.toMatch(/\*|\]\(|`/);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }

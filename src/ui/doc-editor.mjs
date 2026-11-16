@@ -398,6 +398,8 @@ export function createDocEditor(app) {
     return { left: lineRect.left, top: lineRect.top, height: Number.parseFloat(getComputedStyle(position.line).lineHeight) || 24 };
   }
 
+  // A scroll keeps the selection and the drawn lines: no work (M2).
+  let cursorMark = "", cursorFirst = null;
   function updateMarkdownEditorVisualSelection() {
     const editor = el("docEditor");
     const highlighter = el("docHighlighter");
@@ -407,11 +409,17 @@ export function createDocEditor(app) {
     const focused = document.activeElement === editor;
     const collapsed = editor.selectionStart === editor.selectionEnd;
     // R8b: the cursor line (or the selected lines) shows its Markdown signs; set before the caret is measured.
-    const value = editor.value, from = value.slice(0, editor.selectionStart).split("\n").length - 1;
-    const to = from + value.slice(editor.selectionStart, editor.selectionEnd).split("\n").length - 1;
-    for (const line of highlighter.querySelectorAll(".markdown-line")) {
-      const index = Number(line.dataset.lineIndex);
-      line.classList.toggle("md-cursor", focused && index >= from && index <= to);
+    // ⌘F shows the signs around a match (M5).
+    const signs = focused || Boolean(state.editorFind?.element.contains(document.activeElement));
+    const mark = signs + "," + editor.selectionStart + "," + editor.selectionEnd;
+    if (mark !== cursorMark || highlighter.firstElementChild !== cursorFirst) {
+      cursorMark = mark; cursorFirst = highlighter.firstElementChild;
+      const value = editor.value, from = value.slice(0, editor.selectionStart).split("\n").length - 1;
+      const to = from + value.slice(editor.selectionStart, editor.selectionEnd).split("\n").length - 1;
+      for (const line of highlighter.querySelectorAll(".markdown-line")) {
+        const index = Number(line.dataset.lineIndex);
+        line.classList.toggle("md-cursor", signs && index >= from && index <= to);
+      }
     }
     caret.hidden = !focused || !collapsed;
     if (focused && collapsed) {
