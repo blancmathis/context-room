@@ -368,6 +368,10 @@ test("@layout a direct link to a doc shows the breadcrumb, opens the tree on it 
   // An untracked doc is new to review: its dot is the hollow one.
   const fresh = path.join(data.projects.atlas.root, "docs", "fresh-note.md");
   fs.writeFileSync(fresh, "# Fresh note\n");
+  // The fixture is shared: this test puts operations.md in the queue itself instead of relying on another test's state.
+  const operations = path.join(data.projects.atlas.root, "docs", "operations.md");
+  const operationsBefore = fs.readFileSync(operations, "utf8");
+  fs.writeFileSync(operations, operationsBefore + "\nA change waiting for review.\n");
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=file&file=docs/operations.md&explorer=expanded`);
@@ -397,5 +401,6 @@ test("@layout a direct link to a doc shows the breadcrumb, opens the tree on it 
     await expect(page.locator("#projectPageHead h2")).toHaveText("Atlas");
   } finally {
     fs.rmSync(fresh, { force: true });
+    fs.writeFileSync(operations, operationsBefore);
   }
 });

@@ -1340,9 +1340,9 @@ export function listProjectExplorerPage(root = process.cwd(), {
       if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath) && !isProjectNotebookFile(relPath))) return [];
       return [{ path: relPath, name: entry.name, type: "file-candidate" }];
     }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
-    // Folders and links that exist but are not listed (skipped, blocked, symbolic links): a doc link into them is not "missing".
+    // Folders, links and files that exist but are not listed (skipped, blocked, symbolic links): a doc link into them is not "missing".
     const listed = new Set(entries.map((entry) => entry.name));
-    unlisted = children.filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith(".") && !listed.has(entry.name)).map((entry) => entry.name).slice(0, 100);
+    unlisted = children.filter((entry) => !entry.name.startsWith(".") && !listed.has(entry.name)).sort((left, right) => Number(left.isFile()) - Number(right.isFile())).map((entry) => entry.name).slice(0, 100);
   }
   // The settings folder is not documentation: the tree and its search never list it.
   entries = entries.filter((entry) => !/^\.context-room(\/|$)/.test(entry.path ?? entry));
