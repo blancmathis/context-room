@@ -3262,7 +3262,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .workspace-dock { height: var(--native-titlebar-height); padding-right: var(--workbench-gutter-compact); }
       .workspace-title { display: none; }
       .dock-status { flex: 0 1 88px; min-width: 0; max-width: 88px; margin-inline: 2px; font-size: 10px; }
-      .context-room-brand { min-width: max-content; min-height: 40px; padding-inline: 7px; }
+      .context-room-brand { min-width: 40px; min-height: 40px; padding-inline: 7px; justify-content: center; }
+      .context-room-brand strong { display: none; }
       .workspace-dock > .dock-button { min-height: 40px; }
       #back.dock-button, #forward.dock-button, #graphLocal.dock-button { min-width: 40px; }
       #graphLocal span { display: none; }
