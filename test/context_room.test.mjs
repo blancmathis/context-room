@@ -7624,7 +7624,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /id="markdownEditorCaret"/);
   assert.match(html, /highlighter\.scrollTop = top <= 0 \? 0 : end \? highlighter\.scrollHeight : top \+ \(state\.markdownScrollDelta \|\| 0\);/);
   assert.match(html, /highlighter\.scrollLeft = editor\.scrollLeft;/);
-  assert.match(html, /if \(options\.sourceFaithful\) \{/);
+  assert.match(html, /if \(options\.sourceFaithful\) return sourceLink\(escapeHtml\(link\[2\]\), docLinkAttrs\);/);
   assert.match(html, /renderMarkdownLines\(next, \{ sourceFaithful: true \}\)/);
   assert.match(html, /class="markdown-link-label"/);
   assert.match(html, /class="markdown-link-target md-sign"/);
