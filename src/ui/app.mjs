@@ -3594,7 +3594,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
-    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button { min-height: 44px; } .file-actions .file-action { min-width: 44px; min-height: 44px; } }
+    @media (pointer: coarse) { .global-project-tree-entry, .workspace-title button, [data-context-hub-project-goto] { min-height: 44px; } .file-actions .file-action { min-width: 44px; min-height: 44px; } }
     /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
@@ -8800,7 +8800,10 @@ function contextHubProjectPickerChoices() {
 // "Go to" with no query: the 5 files opened last, the open one left out, so ⌘K + Enter goes back.
 const GOTO_RECENT_KEY = "context-room-goto-recent";
 function gotoRecentList() {
-  try { return JSON.parse(localStorage.getItem(GOTO_RECENT_KEY) || "[]"); } catch { return []; }
+  try {
+    const list = JSON.parse(localStorage.getItem(GOTO_RECENT_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((item) => item && typeof item.path === "string") : [];
+  } catch { return []; }
 }
 
 function rememberGotoRecent(path) {
