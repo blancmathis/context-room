@@ -6695,7 +6695,8 @@ let revealedTreePath = "";
 function revealCurrentInTree() {
   const project = markCurrentTreeRow();
   const filePath = project && explorerDocumentPathForProject(project);
-  if (filePath && filePath !== revealedTreePath && !state.globalProjectSearch && state.explorerDocumentView !== "related" && !document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]') && (revealedTreePath = filePath)) void revealSelectedDocumentLocation(project).catch(() => {});
+  const key = filePath && globalProjectExplorerCacheKey(project) + "::" + filePath;
+  if (filePath && key !== revealedTreePath && !state.globalProjectSearch && state.explorerDocumentView !== "related" && !document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]') && (revealedTreePath = key)) void revealSelectedDocumentLocation(project).catch(() => { if (revealedTreePath === key) revealedTreePath = ""; });
 }
 
 async function revealSelectedDocumentLocation(project) {

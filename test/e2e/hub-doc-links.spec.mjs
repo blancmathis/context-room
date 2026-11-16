@@ -29,7 +29,11 @@ async function fixture() {
       "docs/deep/notes.md": "# Deep notes\n",
       "docs/other/page.md": "# Other page\n",
       "INTRO.md": "# Intro\n\nThe [Other](docs/other/page.md) and the [Lost page](docs/lost.md).\n",
+      "node_modules/pkg/index.md": "# Pkg\n",
+      "tool.bin": "x",
+      "LINKS.md": "# Links\n\nThe [Package](node_modules/pkg/index.md), the [Tool](tool.bin) and the [Lost](docs/lost.md).\n",
     },
+    Beta: { "README.md": "# Beta\n", "docs/deep/notes.md": "# Beta deep notes\n" },
   })) {
     const root = path.join(base, name);
     for (const [file, content] of Object.entries(files)) write(root, file, content);
@@ -127,6 +131,35 @@ test("@links a doc opened while folders are still read gets its links checked", 
     await expect(reader.locator("a[data-doc-link-path]", { hasText: "Other" })).toHaveCount(1, { timeout: 15_000 });
     await expect(reader.locator(".markdown-doc-link-missing")).toHaveText(["Lost page"]);
     expect(failures).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
+
+test("@links a link into a folder or file the tree leaves out is not greyed; a missing one still is", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=file&file=LINKS.md&project=" + encodeURIComponent(hub.projects.Alpha));
+    const reader = page.locator("#docReader");
+    await expect(reader).toContainText("The", { timeout: 15_000 });
+    await expect(reader.locator(".markdown-doc-link-missing")).toHaveText(["Lost"], { timeout: 15_000 });
+    await expect(reader.locator("a", { hasText: "Package" })).toHaveCount(0);
+    await expect(reader).toContainText("Package");
+    await expect(reader).toContainText("Tool");
+  } finally {
+    await hub.close();
+  }
+});
+
+test("@links the tree opens on a doc of the second project even when the first had the same path", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=file&file=docs/deep/notes.md&project=" + encodeURIComponent(hub.projects.Alpha));
+    const row = page.locator('[data-global-project-file="docs/deep/notes.md"]');
+    await expect(row).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
+    await page.evaluate((id) => openContextHubProject(id, { filePath: "docs/deep/notes.md" }), hub.projects.Beta);
+    await expect(page.locator("#workspaceTitle")).toContainText("Beta", { timeout: 15_000 });
+    await expect(row).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
   } finally {
     await hub.close();
   }

@@ -3868,11 +3868,12 @@ test("Hub project Explorer never lists .context-room, and names the folders and 
   fs.writeFileSync(path.join(root, "docs", "config-notes.md"), "# Notes\n", "utf8");
   fs.writeFileSync(path.join(root, "node_modules", "pkg", "README.md"), "# Pkg\n", "utf8");
   fs.symlinkSync(path.join(root, "docs"), path.join(root, "linked"));
+  fs.writeFileSync(path.join(root, "tool.bin"), "x");
   initializeContextRoomProject(root, { title: "Config folder", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
   assert.ok(fs.existsSync(path.join(root, ".context-room", "config.json")));
   const top = listProjectExplorerPage(root);
   assert.deepEqual(top.entries.map((entry) => entry.path), ["docs"]);
-  assert.deepEqual(top.unlisted.sort(), ["linked", "node_modules"]);
+  assert.deepEqual(top.unlisted.sort(), ["linked", "node_modules", "tool.bin"]);
   assert.deepEqual(listProjectExplorerPage(root, { directory: ".context-room" }).entries, []);
   assert.deepEqual(listProjectExplorerPage(root, { query: "config" }).entries.map((entry) => entry.path), ["docs/config-notes.md"]);
 });
