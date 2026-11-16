@@ -4032,7 +4032,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /id="contextHubProjectPickerSearch"/);
   assert.doesNotMatch(rootSource, /data-context-hub-project-picker-trigger="room-home"/, "the project page scopes To review; the queue has no Project filter");
   assert.match(rootSource, /id="contextRoomReviewSourceFilter"/);
-  assert.match(rootSource, /id="contextRoomReviewSearch"/);
+  assert.doesNotMatch(rootSource, /id="contextRoomReviewSearch"/);
   assert.match(rootSource, /data-context-room-review/);
   assert.match(rootSource, /class="context-room-review-proposal/);
   assert.match(rootSource, /class="context-room-proposal-hitbox"/);
@@ -4962,8 +4962,10 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
   const bundle = contextRoomWebAssetBundle();
   assert.ok(Buffer.byteLength(html) < 100_000);
   assert.match(bundle.js, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
-  // The live picker lists every matching project, uncut; "Go to" adds its document rows after them.
-  assert.match(bundle.js, /choices: needle \|\| open \? \[\.\.\.projects, \.\.\.actions, \.\.\.gotoDocumentChoices\(\)\] : \[null, \.\.\.projects\]/);
+  // The live picker lists every matching project, uncut; "Go to" adds its document rows after them
+  // (before them only for an exact file name).
+  assert.match(bundle.js, /needle \? \(exact \? \[\.\.\.docs, \.\.\.projects, \.\.\.actions\] : \[\.\.\.projects, \.\.\.actions, \.\.\.docs\]\)/);
+  assert.match(bundle.js, /!open \? \(needle \? projects : \[null, \.\.\.projects\]\)/);
   assert.doesNotMatch(bundle.js, /projects\.slice\([^)]*\)[^;]*gotoDocumentChoices/);
   assert.match(bundle.js, /contextHubProjectPickerQuery = event\.target\.value/);
 });

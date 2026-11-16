@@ -24411,7 +24411,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     return;
   }
-  if (req.method === "GET" && ["/api/context-hub/project-agents", "/api/context-hub/project-recent", "/api/context-hub/project-tools"].includes(url.pathname)) {
+  if (req.method === "GET" && ["/api/context-hub/project-agents", "/api/context-hub/project-recent", "/api/context-hub/project-docs", "/api/context-hub/project-tools"].includes(url.pathname)) {
     const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
     if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
     const project = registeredContextHubWorktree(requestedProjectId);
@@ -24426,6 +24426,29 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
         .slice(0, 8)
         .map((file) => ({ path: file.path, updatedAt: file.updatedAt }));
+      sendJson(res, 200, { files });
+      return;
+    }
+    if (url.pathname.endsWith("/project-docs")) {
+      // Every doc of this project for « All docs » (R9): path, date, and the first « # » heading of a Markdown doc,
+      // read from its first 2 KB and only for the first 2 000 Markdown docs (a huge project still answers fast).
+      let titled = 0;
+      const files = listMemoryFiles(project.root, { readOnly: true, metadataOnly: true, expectedRootIdentity: project.rootIdentity })
+        .filter((file) => file.exists && !file.path.startsWith("~") && !file.path.startsWith(".context-room/") && !resolveExternalPath(file.path))
+        .map((file) => {
+          const doc = { path: file.path, updatedAt: file.updatedAt || "" };
+          if (/\.(md|mdx|markdown)$/i.test(file.path) && titled++ < 2000) {
+            try {
+              const handle = fs.openSync(path.join(project.root, file.path), "r");
+              const head = Buffer.alloc(2048);
+              const read = fs.readSync(handle, head, 0, head.length, 0);
+              fs.closeSync(handle);
+              const title = head.subarray(0, read).toString("utf8").match(/^#[ \t]+(.+)$/m)?.[1]?.replace(/[#*_`]+/g, "").trim();
+              if (title) doc.title = title.slice(0, 120);
+            } catch {}
+          }
+          return doc;
+        });
       sendJson(res, 200, { files });
       return;
     }

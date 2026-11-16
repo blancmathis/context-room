@@ -137,8 +137,14 @@ export function createProjectPage() {
   tiles.className = 'docqa-panel pp-tiles';
   tiles.setAttribute('aria-labelledby', 'projectTilesHeading');
   tiles.hidden = true;
+  // « All docs » (R9) is its own module, fetched with the first project page.
+  const docsBox = document.createElement('section');
+  docsBox.id = 'projectDocs';
+  docsBox.hidden = true;
+  let docsView = null;
   queue?.before(head);
   queue?.after(tiles);
+  tiles.after(docsBox);
   // « What agents load »: the agent files of each level (global, root, subfolders) with their tokens, above the checks.
   const levelsBox = document.createElement('section');
   levelsBox.className = 'pp-levels';
@@ -397,6 +403,10 @@ export function createProjectPage() {
     band(project);
     syncLevels(project);
     syncTools(project);
+    if (project || docsView) (docsView ||= import('/assets/ui/project-docs.mjs').then((module) => module.createProjectDocs(docsBox, (filePath) => {
+      const now = currentProject();
+      if (now) openFile(now, filePath);
+    }))).then((view) => view.show(currentProject()), (error) => setStatus(error.message));
     group();
     if (!project) {
       editing = false;

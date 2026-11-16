@@ -50,7 +50,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     // A Hub refresh may re-render the queue between press and release.
     // The unchanged draft button must survive it, or the click is lost.
     await draftButton.hover(); await page.mouse.down();
-    await page.locator('#contextRoomReviewSearch').dispatchEvent('input');
+    await page.locator('#contextRoomReviewSourceFilter').dispatchEvent('change');
     await page.mouse.up();
     const dialog = page.getByRole('dialog', { name: `Recovered draft · Recovered.${format}` });
     let expected = original;

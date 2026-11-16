@@ -1584,7 +1584,7 @@ test("@smoke Back cancels a delayed proposal opening and Forward starts one clea
     preparing: Boolean(state.contextRoomPreparingProposal),
   }))).toEqual({ page: "hub", busy: false, opening: "", preparing: false });
   await expect(page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]')).toBeFocused();
-  await expect(page.locator("#contextRoomReviewSearch")).toBeEnabled();
+  await expect(page.locator("#contextRoomReviewSourceFilter")).toBeEnabled();
   releaseFirstReview();
   await page.waitForTimeout(100);
   await expect.poll(() => page.evaluate(() => state.page)).toBe("hub");
