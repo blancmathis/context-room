@@ -8,6 +8,7 @@ export function createDocEditor(app) {
     if (!docEditor) return;
     prepareMarkdownEditorHistory(docEditor);
     state.markdownHighlightLastText = el("editor").value;
+    state.markdownScrollDelta = 0;
     wireEditorFind(docEditor);
     syncMarkdownEditorScroll();
     docEditor.addEventListener("beforeinput", (event) => captureMarkdownEditorHistory(docEditor, event));
@@ -28,7 +29,7 @@ export function createDocEditor(app) {
       }
       if (handleMarkdownEditorHistoryShortcut(event, docEditor)) return;
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) resetMarkdownEditorHistoryGroup();
-      window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
+      window.requestAnimationFrame(revealMarkdownEditorCaret);
     });
     docEditor.addEventListener("select", () => {
       updateMarkdownEditorVisualSelection();
@@ -157,7 +158,21 @@ export function createDocEditor(app) {
     scheduleConflictCheck();
     scheduleSessionStatePush();
     scheduleDocAutosave();
-    window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
+    window.requestAnimationFrame(revealMarkdownEditorCaret);
+  }
+
+  // R8b review R1: the textarea wraps the full source, the drawn layer a shorter text, so their lines drift apart.
+  // After a key, a drawn caret out of view scrolls the drawn layer alone; the gap is kept for the next scrolls.
+  function revealMarkdownEditorCaret() {
+    updateMarkdownEditorVisualSelection();
+    const editor = el("docEditor"), layer = el("docHighlighter"), caret = el("markdownEditorCaret");
+    if (!editor || !layer || !caret || caret.hidden) return;
+    const view = layer.getBoundingClientRect(), rect = caret.getBoundingClientRect();
+    const shift = rect.top < view.top ? rect.top - view.top - 24 : rect.bottom > view.bottom ? rect.bottom - view.bottom + 24 : 0;
+    if (!shift) return;
+    layer.scrollTop += shift;
+    state.markdownScrollDelta = layer.scrollTop - editor.scrollTop;
+    updateMarkdownEditorVisualSelection();
   }
 
   function enterMarkdownEditorAtPoint(event) {
@@ -301,8 +316,8 @@ export function createDocEditor(app) {
       if (!Number.isInteger(lineIndex)) return null;
       const sourceLines = editor.value.split("\n");
       const sourceLine = sourceLines[lineIndex] || "";
-      const renderedOffset = renderedCaretOffsetAtPoint(line, x, y);
-      const sourceColumn = markdownSourceOffsetForRenderedOffset(sourceLine, renderedOffset);
+      // The highlighter keeps every source character (R8b: signs are hidden, not removed): rendered offset = source column.
+      const sourceColumn = Math.min(sourceLine.length, renderedCaretOffsetAtPoint(line, x, y));
       const lineStart = sourceLines.slice(0, lineIndex).reduce((total, current) => total + current.length + 1, 0);
       return Math.min(editor.value.length, lineStart + sourceColumn);
     } finally {
@@ -344,45 +359,6 @@ export function createDocEditor(app) {
     return line.textContent?.length || 0;
   }
 
-  function markdownSourceOffsetForRenderedOffset(sourceLine, renderedOffset) {
-    const source = String(sourceLine || "");
-    const wanted = Math.max(0, Number(renderedOffset) || 0);
-    const pattern = /\[([^\]\n]+)\]\(([^) \n]+)\)/g;
-    let sourceIndex = 0;
-    let renderedIndex = 0;
-    for (const match of source.matchAll(pattern)) {
-      const plainLength = match.index - sourceIndex;
-      if (wanted <= renderedIndex + plainLength) return sourceIndex + (wanted - renderedIndex);
-      renderedIndex += plainLength;
-      const label = match[1];
-      if (wanted <= renderedIndex + label.length) return match.index + 1 + (wanted - renderedIndex);
-      renderedIndex += label.length;
-      sourceIndex = match.index + match[0].length;
-    }
-    return Math.min(source.length, sourceIndex + (wanted - renderedIndex));
-  }
-
-  function markdownRenderedOffsetForSourceOffset(sourceLine, sourceOffset) {
-    const source = String(sourceLine || "");
-    const wanted = Math.max(0, Math.min(source.length, Number(sourceOffset) || 0));
-    const pattern = /\[([^\]\n]+)\]\(([^) \n]+)\)/g;
-    let sourceIndex = 0;
-    let renderedIndex = 0;
-    for (const match of source.matchAll(pattern)) {
-      const plainLength = match.index - sourceIndex;
-      if (wanted <= match.index) return renderedIndex + (wanted - sourceIndex);
-      renderedIndex += plainLength;
-      const labelStart = match.index + 1;
-      const labelEnd = labelStart + match[1].length;
-      if (wanted <= labelEnd) return renderedIndex + Math.max(0, wanted - labelStart);
-      renderedIndex += match[1].length;
-      const linkEnd = match.index + match[0].length;
-      if (wanted <= linkEnd) return renderedIndex;
-      sourceIndex = linkEnd;
-    }
-    return renderedIndex + (wanted - sourceIndex);
-  }
-
   function markdownEditorDomPosition(sourceOffset) {
     const editor = el("docEditor");
     const highlighter = el("docHighlighter");
@@ -391,8 +367,7 @@ export function createDocEditor(app) {
     const before = editor.value.slice(0, safeOffset);
     const lineIndex = before.split("\n").length - 1;
     const lineStart = before.lastIndexOf("\n") + 1;
-    const sourceLine = editor.value.split("\n")[lineIndex] || "";
-    let renderedOffset = markdownRenderedOffsetForSourceOffset(sourceLine, safeOffset - lineStart);
+    let renderedOffset = safeOffset - lineStart;
     const line = highlighter.querySelector('.markdown-line[data-line-index="' + lineIndex + '"]');
     if (!line) return null;
     const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
@@ -431,6 +406,13 @@ export function createDocEditor(app) {
     if (globalThis.CSS?.highlights) CSS.highlights.delete("markdown-editor-selection");
     const focused = document.activeElement === editor;
     const collapsed = editor.selectionStart === editor.selectionEnd;
+    // R8b: the cursor line (or the selected lines) shows its Markdown signs; set before the caret is measured.
+    const value = editor.value, from = value.slice(0, editor.selectionStart).split("\n").length - 1;
+    const to = from + value.slice(editor.selectionStart, editor.selectionEnd).split("\n").length - 1;
+    for (const line of highlighter.querySelectorAll(".markdown-line")) {
+      const index = Number(line.dataset.lineIndex);
+      line.classList.toggle("md-cursor", focused && index >= from && index <= to);
+    }
     caret.hidden = !focused || !collapsed;
     if (focused && collapsed) {
       const position = markdownEditorDomPosition(editor.selectionStart);

@@ -1218,6 +1218,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .file-panel .markdown-editor-shell .doc-editor { padding-right: max(22px, calc(100% - 62ch - 36px)); }
     #docReader :is(.markdown-line:is(.code, .fence, .table), .markdown-inline-code) { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
     #docReader .table { white-space: pre; overflow-x: auto; }
+    :is(#docReader, #docHighlighter) .markdown-line:not(.md-cursor, .table) :is(.md-sign, :not(.list) > .markdown-marker) { display: none; }
+    .file-panel:has([data-doc-review-banner]) #docReader .markdown-line :is(.md-sign, .markdown-marker) { display: inline; }
+    .md-sign { color: var(--file-marker); }
+    :is(#docReader, .markdown-view) strong { font-size: inherit; font-weight: 700; letter-spacing: normal; text-transform: none; }
+    :is(#docReader, #docHighlighter) em { font-style: italic; font-synthesis: style; }
     .markdown-image { display: block; max-width: 100%; }
     .markdown-image:not([src]) { display: none; }
     #docReader [data-heading-id] { scroll-margin-top: 12px; }
@@ -23585,7 +23590,7 @@ function documentEditorAccessibleName(filePath = state.selected) {
 
 function renderMarkdownEditor(text, filePath = state.selected) {
   return '<div class="markdown-editor-shell" data-source-mode="false">' +
-    '<div id="docHighlighter" class="doc-editor markdown-view markdown-editor-highlight" aria-hidden="true" data-source-faithful="false">' + renderMarkdownLines(text) + '</div>' +
+    '<div id="docHighlighter" class="doc-editor markdown-view markdown-editor-highlight" aria-hidden="true">' + renderMarkdownLines(text, { sourceFaithful: true }) + '</div>' +
     '<textarea id="docEditor" class="doc-editor markdown-editor-input" aria-label="' + escapeHtml(documentEditorAccessibleName(filePath)) + '" spellcheck="false">' + escapeHtml(text) + '</textarea>' +
     '<span id="markdownEditorCaret" class="markdown-editor-caret" hidden></span>' +
   '</div>';
@@ -23697,7 +23702,7 @@ function renderMarkdownEditorHighlightNow(text) {
   const highlighter = el("docHighlighter");
   if (!highlighter) return;
   const next = String(text || "");
-  highlighter.innerHTML = renderMarkdownLines(next);
+  highlighter.innerHTML = renderMarkdownLines(next, { sourceFaithful: true });
   state.markdownHighlightLastText = next;
   docEditorCore?.updateMarkdownEditorVisualSelection();
 }
@@ -23706,7 +23711,9 @@ function syncMarkdownEditorScroll() {
   const editor = el("docEditor");
   const highlighter = el("docHighlighter");
   if (editor && highlighter) {
-    highlighter.scrollTop = editor.scrollTop;
+    // R8b review R1: keep the gap the caret reveal set (doc-editor.mjs), except at the very top and bottom.
+    const top = editor.scrollTop, end = top >= editor.scrollHeight - editor.clientHeight - 1;
+    highlighter.scrollTop = top <= 0 ? 0 : end ? highlighter.scrollHeight : top + (state.markdownScrollDelta || 0);
     highlighter.scrollLeft = editor.scrollLeft;
   }
   docEditorCore?.updateMarkdownEditorVisualSelection();
@@ -23724,7 +23731,6 @@ function renderMarkdownLine(line, index, options = {}) {
     const level = Math.min(4, semanticLevel);
     const text = heading[3].trim();
     const tag = options.semantic ? "h" + semanticLevel : "div";
-    if (!options.semantic) return '<div class="markdown-line h' + level + '"' + attrs + ' data-heading-marker="' + escapeHtml(heading[2]) + '" data-heading-text="' + escapeHtml(text) + '">' + renderMarkdownInline(raw, options) + '</div>';
     const semanticHeading = raw.match(/^(\s{0,3}#{1,6}\s+)(.+?)(\s+#+\s*)?$/);
     const prefix = semanticHeading?.[1] || heading[1] + heading[2] + " ";
     const content = semanticHeading?.[2] || text;
@@ -23732,7 +23738,7 @@ function renderMarkdownLine(line, index, options = {}) {
     const headingId = options.headingSlugs?.get(index);
     return '<' + tag + ' class="markdown-line h' + level + '"' + attrs + (headingId ? ' data-heading-id="' + escapeHtml(headingId) + '"' : '') + ' data-heading-marker="' + escapeHtml(heading[2]) + '" data-heading-text="' + escapeHtml(text) + '"><span class="markdown-marker" aria-hidden="true">' + escapeHtml(prefix) + '</span>' + renderMarkdownInline(content, options) + (suffix ? '<span class="markdown-marker" aria-hidden="true">' + escapeHtml(suffix) + '</span>' : '') + '</' + tag + '>';
   }
-  if (options.inFence) return '<div class="markdown-line ' + (/^\s*(\`\`\`|~~~)/.test(raw) ? "fence" : "code") + '"' + attrs + '>' + escapeHtml(raw || " ") + '</div>';
+  if (options.inFence) return '<div class="markdown-line ' + (/^\s*(\`\`\`|~~~)/.test(raw) ? "fence" : "code") + '"' + attrs + '>' + escapeHtml(raw || " ").replace(/^(\s*)(\`{3,}|~{3,})/, (_, space, fence) => space + mdSign(fence)) + '</div>';
   if (/^\s*[-*_]{3,}\s*$/.test(raw)) return '<div class="markdown-line hr"' + attrs + (options.semantic ? ' role="separator" aria-label="Thematic break"' : '') + '>' + escapeHtml(raw) + '</div>';
   if (trimmed === "---" || trimmed === "...") return '<div class="markdown-line frontmatter"' + attrs + '>' + escapeHtml(raw) + '</div>';
   const quote = raw.match(/^(\s*>+\s?)(.*)$/);
@@ -23753,11 +23759,11 @@ function renderMarkdownLine(line, index, options = {}) {
 function renderMarkdownInline(value, options = {}) {
   return String(value || "").split(/(\`[^\`\n]+\`)/g).map((part) => {
     if (/^\`[^\`\n]+\`$/.test(part)) {
-      const token = part.slice(1, -1);
+      const token = part.slice(1, -1), code = mdSign("\`") + escapeHtml(token) + mdSign("\`");
       const docLinkAttrs = markdownDocLinkAttributes(token, options);
       const className = 'markdown-inline-code' + (isMarkdownPathToken(token) ? ' markdown-path' : '');
-      if (options.interactiveLinks && docLinkAttrs) return '<a href="#" class="' + className + '"' + docLinkAttrs + '>' + escapeHtml(part) + '</a>';
-      return '<span class="' + className + '"' + docLinkAttrs + '>' + escapeHtml(part) + '</span>';
+      if (options.interactiveLinks && docLinkAttrs) return '<a href="#" class="' + className + '"' + docLinkAttrs + '>' + code + '</a>';
+      return '<span class="' + className + '"' + docLinkAttrs + '>' + code + '</span>';
     }
     return renderMarkdownPlainInline(part, options);
   }).join("");
@@ -23767,36 +23773,43 @@ function isMarkdownPathToken(value) {
   return isMarkdownDocLinkTarget(value) || /^(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)[A-Za-z0-9_./@~-]+$/.test(String(value || ""));
 }
 
+// R8b: Markdown signs stay in the text, in .md-sign; CSS hides them except on the editor's cursor line.
+function mdSign(text) {
+  return '<span class="md-sign">' + text + '</span>';
+}
+
 function renderMarkdownPlainInline(value, options = {}) {
-  return String(value || "").split(/(\[[^\]\n]+\]\([^) \n]+\))/g).map((part) => {
-    const link = part.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
-    if (link && options.reader && /^#[^#\s]+$/.test(link[2])) {
-      return '<a href="' + escapeHtml(link[2]) + '" class="markdown-doc-link markdown-anchor-link" data-doc-anchor="' + escapeHtml(link[2].slice(1)) + '">' + renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false }) + '</a>';
+  return String(value || "").split(/(!?\[[^\]\n]+\]\([^) \n]+\))/g).map((part) => {
+    const link = part.match(/^(!?)\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (link && options.reader && link[1]) return mdSign(escapeHtml(part));
+    if (link && options.reader && /^#[^#\s]+$/.test(link[3])) {
+      return '<a href="' + escapeHtml(link[3]) + '" class="markdown-doc-link markdown-anchor-link" data-doc-anchor="' + escapeHtml(link[3].slice(1)) + '">' + renderMarkdownPlainInline(link[2], { ...options, interactiveLinks: false }) + '</a>';
     }
     if (link) {
-      const docLinkAttrs = markdownDocLinkAttributes(link[2], { ...options, interactiveLinks: !options.sourceFaithful });
-      if (options.sourceFaithful && docLinkAttrs) {
-        return '<span class="markdown-source-link markdown-path"' + docLinkAttrs + '>' +
-          '<span class="markdown-link-punctuation">[</span>' +
-          '<span class="markdown-link-label">' + escapeHtml(link[1]) + '</span>' +
-          '<span class="markdown-link-punctuation">](</span>' +
-          '<span class="markdown-link-target">' + escapeHtml(link[2]) + '</span>' +
-          '<span class="markdown-link-punctuation">)</span>' +
+      const docLinkAttrs = markdownDocLinkAttributes(link[3], { ...options, interactiveLinks: !options.sourceFaithful });
+      // R8b: the source link keeps its target in the DOM (hidden by CSS), so review shows it.
+      const sourceLink = (labelHtml, attrs) => '<span class="markdown-source-link' + (attrs ? ' markdown-path"' + attrs : '"') + '>' +
+          '<span class="markdown-link-punctuation md-sign">' + link[1] + '[</span>' +
+          '<span class="markdown-link-label">' + labelHtml + '</span>' +
+          '<span class="markdown-link-punctuation md-sign">](</span>' +
+          '<span class="markdown-link-target md-sign">' + escapeHtml(link[3]) + '</span>' +
+          '<span class="markdown-link-punctuation md-sign">)</span>' +
         '</span>';
-      }
-      const label = renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false });
+      if (options.sourceFaithful) return sourceLink(escapeHtml(link[2]), docLinkAttrs);
+      const label = renderMarkdownPlainInline(link[2], { ...options, interactiveLinks: false });
       if (docLinkAttrs && options.interactiveLinks) return '<a href="#" class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</a>';
       if (docLinkAttrs) return '<span class="markdown-doc-link markdown-path"' + docLinkAttrs + '>' + label + '</span>';
-      if (options.reader && !state.files.length && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[2])) {
-        return hubDocLinkMissing(link[2]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[2]) + '">' + label + '</span>' : label;
+      if (options.reader && !state.files.length && IS_GLOBAL_CONTEXT_ROOM && isMarkdownDocLinkTarget(link[3])) {
+        return hubDocLinkMissing(link[3]) ? '<span class="markdown-doc-link-missing" title="Not in this project: ' + escapeHtml(link[3]) + '">' + label + '</span>' : label;
       }
-      return escapeHtml(part);
+      return options.reader ? sourceLink(label, "") : escapeHtml(part);
     }
     return escapeHtml(part).replace(/(^|[\s([{])((?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)?[A-Za-z0-9_./@~-]*[A-Za-z0-9_@~-]+\.[A-Za-z0-9_-]+(?:#[A-Za-z0-9_.-]+)?|(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)[A-Za-z0-9_./@~-]+)/g, (match, prefix, rawPath) => {
       const docLinkAttrs = markdownDocLinkAttributes(rawPath, options);
       if (options.interactiveLinks && docLinkAttrs) return prefix + '<a href="#" class="markdown-path"' + docLinkAttrs + '>' + rawPath + '</a>';
       return prefix + '<span class="markdown-path"' + docLinkAttrs + '>' + rawPath + '</span>';
-    });
+    }).replace(/\*\*(?=\S)(.*?\S)\*\*/g, "<strong>" + mdSign("**") + "$1" + mdSign("**") + "</strong>")
+      .replace(/(^|[^*\w/])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![*\w])/g, "$1<em>" + mdSign("*") + "$2" + mdSign("*") + "</em>");
   }).join("");
 }
 

@@ -507,6 +507,147 @@ test('a README reads as clean text with its image; line numbers only in review',
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+// R8b: Markdown signs are hidden, except on the line that holds the caret; the source never changes.
+test('Markdown signs show only on the cursor line', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Signs.md');
+    const text = '# Signs title\n\nA **bold** word and `npm test` here.\n\nSee [the other doc](Other.md) or [the site](https://example.com/x).\n\n> A *quoted* line.\n\n```bash\nnpm install\n```\n';
+    fs.writeFileSync(file, text);
+    acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/Signs.md']);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page, ['docs/Signs.md']);
+    await page.evaluate(() => selectFile('docs/Signs.md'));
+    const reader = page.locator('#docReader');
+    await expect(reader.locator('.markdown-line', { hasText: 'bold' })).toBeVisible();
+    const shown = (root) => root.evaluate((node) => [...node.querySelectorAll('.markdown-line')].map((line) => line.innerText.trim()).filter(Boolean));
+    const lines = await shown(reader);
+    expect(lines.join('\n')).not.toMatch(/\*|\]\(|`|^#|^>|https:/m);
+    expect(lines).toEqual(expect.arrayContaining(['Signs title', 'A bold word and npm test here.', 'See the other doc or the site.', 'A quoted line.', 'bash', 'npm install']));
+    expect(await reader.locator('strong').count()).toBe(1);
+    // Bold keeps the text size (the panel's own `.file-panel strong` header rule must not reach it); emphasis is italic.
+    expect(await reader.locator('strong').evaluate((node) => [getComputedStyle(node).fontSize === getComputedStyle(node.parentElement).fontSize, getComputedStyle(node.closest('.markdown-line').querySelector('em') || document.querySelector('#docReader em')).fontStyle])).toEqual([true, 'italic']);
+
+    // A click on « bold » puts the caret in the source, inside the signs; only that line shows them.
+    const box = await reader.locator('strong').evaluate((node) => { const rect = node.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; });
+    await page.mouse.click(box.x, box.y);
+    const editor = page.locator('#docEditor');
+    await expect(editor).toBeFocused();
+    const at = await editor.evaluate((node) => node.selectionStart);
+    expect(text.slice(text.indexOf('**bold**') + 2, text.indexOf('**bold**') + 6)).toBe('bold');
+    expect(at).toBeGreaterThanOrEqual(text.indexOf('**bold**') + 2);
+    expect(at).toBeLessThanOrEqual(text.indexOf('**bold**') + 6);
+    const highlighter = page.locator('#docHighlighter');
+    await expect(highlighter.locator('.md-cursor')).toHaveCount(1);
+    await expect.poll(() => shown(highlighter)).toEqual(expect.arrayContaining(['Signs title', 'A **bold** word and `npm test` here.', 'See the other doc or the site.']));
+
+    // The caret drawn by the app sits right after the typed text, on the visible line.
+    await editor.evaluate((node, offset) => node.setSelectionRange(offset, offset), text.indexOf('** word'));
+    await editor.pressSequentially('er');
+    await expect.poll(() => shown(highlighter)).toContain('A **bolder** word and `npm test` here.');
+    const caret = await page.evaluate(() => { const caret = el('markdownEditorCaret').getBoundingClientRect(), line = document.querySelector('#docHighlighter .md-cursor').getBoundingClientRect(); return { x: caret.left, y: caret.top + caret.height / 2, top: line.top, bottom: line.bottom }; });
+    expect(caret.y).toBeGreaterThan(caret.top); expect(caret.y).toBeLessThan(caret.bottom);
+    const after = await page.evaluate(() => { const node = [...document.querySelectorAll('#docHighlighter .md-cursor strong .md-sign')].at(-1), rect = node.getBoundingClientRect(); return rect.left; });
+    expect(Math.abs(caret.x - after)).toBeLessThan(3);
+
+    // Two lines down: the link line shows its source, the bold line hides its signs again.
+    await editor.press('ArrowDown'); await editor.press('ArrowDown');
+    await expect.poll(() => shown(highlighter)).toEqual(expect.arrayContaining(['A bolder word and npm test here.', 'See [the other doc](Other.md) or [the site](https://example.com/x).']));
+    await expect.poll(() => fs.readFileSync(file, 'utf8'), { timeout: 10_000 }).toBe(text.replace('**bold**', '**bolder**'));
+    await editor.press('Escape');
+    await expect.poll(() => shown(reader).then((list) => list.join('\n'))).not.toMatch(/\*|\]\(|`/);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// R8b review B1: bold in the review diff keeps the text size and case (the panel's `.file-panel strong` header rule must not reach it).
+test('bold in the review diff stays text-sized', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    acceptDocs(f.root);
+    const file = path.join(f.root, 'docs/Original.md');
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page);
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await expect(page.locator('#docReader')).toContainText('Human original content.');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '\n**Attention** : agent line.\n');
+    await expect.poll(async () => { await page.evaluate(() => refreshFromDisk()); return page.locator('.file-panel .external-review-lines strong').count(); }, { timeout: 10_000 }).toBeGreaterThan(0);
+    const style = await page.locator('.file-panel .external-review-lines strong').first().evaluate((node) => {
+      const own = getComputedStyle(node), line = getComputedStyle(node.closest('.markdown-line'));
+      return [own.fontSize === line.fontSize, own.textTransform, own.letterSpacing, node.innerText];
+    });
+    expect(style).toEqual([true, 'none', 'normal', '**Attention**']);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// R8b review B2: with the review banner, a changed external link shows its new target (the reader keeps it in the DOM).
+test('a changed external link shows its target under the review banner', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Links.md');
+    fs.writeFileSync(file, '# Links\n\nRead [docs](https://good.example/a) first.\n\nGlobs src/*.mjs and lib/*.js stay.\n');
+    acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/Links.md']);
+    const git = (args) => execFileSync('git', args, { cwd: f.root, stdio: 'ignore' });
+    git(['init', '--initial-branch=main']);
+    git(['config', 'user.email', 'links@example.test']);
+    git(['config', 'user.name', 'Links Test']);
+    git(['add', '.']);
+    git(['commit', '-m', 'Initial']);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    fs.writeFileSync(file, '# Links\n\nRead [docs](https://other.example/b) first.\n\nGlobs src/*.mjs and lib/*.js stay.\n');
+    await expect.poll(() => page.evaluate(async () => {
+      applyBackgroundReportPayload(await api('/api/reports'));
+      return state.docqa?.queue?.find((item) => item.path === 'docs/Links.md')?.reviewReason || null;
+    }), { timeout: 10_000 }).toBe('changed');
+    await page.evaluate(() => selectFile('docs/Links.md'));
+    await expect(page.locator('[data-doc-review-banner]')).toContainText('Changed by an agent');
+    const line = page.locator('#docReader .markdown-line', { hasText: 'first.' });
+    await expect(line.locator('.markdown-link-target')).toBeVisible();
+    await expect.poll(() => line.evaluate((node) => node.innerText.trim())).toBe('Read [docs](https://other.example/b) first.');
+    // A `*` after `/` is a glob, not emphasis (review M1).
+    const globs = page.locator('#docReader .markdown-line', { hasText: 'Globs' });
+    expect(await globs.evaluate((node) => [node.innerText.trim(), node.querySelectorAll('em').length])).toEqual(['Globs src/*.mjs and lib/*.js stay.', 0]);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+// R8b review R1: the textarea wraps the full source, the drawn layer a shorter text (hidden URLs and signs). In a long
+// doc the two drift apart; after a key the caret drawn by the app must still be in view, on the edited line.
+test('in a long doc with hidden URLs, the drawn caret stays in view after typing and arrows', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Long.md');
+    const lines = Array.from({ length: 300 }, (_, i) => i % 5 === 1
+      ? `Line ${i} see [site ${i}](https://example.com/${'long-segment/'.repeat(14)}${i}) here.`
+      : `Line ${i} plain text.`);
+    fs.writeFileSync(file, '# Long\n' + lines.join('\n') + '\n');
+    acceptDocs(f.root, ['docs/Original.md', 'docs/Other.md', 'docs/Long.md']);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await awaitAccepted(page, ['docs/Long.md']);
+    await page.evaluate(() => selectFile('docs/Long.md'));
+    const target = page.locator('#docReader .markdown-line', { hasText: /^Line 250 plain text\.$/ });
+    await target.scrollIntoViewIfNeeded();
+    const box = await target.evaluate((node) => { const range = document.createRange(); range.selectNodeContents(node); const rect = range.getClientRects()[0]; return { x: rect.right - 1, y: rect.top + rect.height / 2 }; });
+    await page.mouse.click(box.x, box.y);
+    const editor = page.locator('#docEditor');
+    await expect(editor).toBeFocused();
+    // ArrowDown moves by textarea rows, so a long URL line takes several presses: the drawn line must be the source line.
+    const check = async (label, lineText = expect.any(String)) => {
+      await expect.poll(() => page.evaluate(() => {
+        const caret = el('markdownEditorCaret'), view = el('docHighlighter').getBoundingClientRect(), line = document.querySelector('#docHighlighter .md-cursor');
+        if (!caret || caret.hidden || !line) return 'no caret';
+        const editor = el('docEditor'), source = editor.value.slice(0, editor.selectionStart).split('\n').length - 1;
+        const c = caret.getBoundingClientRect(), mid = c.top + c.height / 2, l = line.getBoundingClientRect();
+        return [mid >= view.top && mid <= view.bottom ? 'in view' : `out ${Math.round(c.top - view.top)} of ${Math.round(view.height)}`, mid >= l.top && mid <= l.bottom ? 'on line' : 'off line', Number(line.dataset.lineIndex) === source ? 'source line' : `line ${line.dataset.lineIndex} vs ${source}`, line.innerText.trim()];
+      }), { message: label, timeout: 3_000 }).toEqual(['in view', 'on line', 'source line', lineText]);
+    };
+    await editor.press('x');
+    await check('after a key', 'Line 250 plain text.x');
+    await editor.press('ArrowDown');
+    await check('after ArrowDown', expect.stringMatching(/^Line 251 see \[site 251\]/));
+    for (let press = 1; press <= 8; press++) { await editor.press('ArrowDown'); await check(`after ${press} more ArrowDown`); }
+    for (let press = 1; press <= 4; press++) { await editor.press('ArrowUp'); await check(`after ${press} ArrowUp`); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
 test('a finger drag on the doc never opens the editor; a short tap does', async ({ page }) => {
   const f = await assistantFixture();
   try {
