@@ -3400,24 +3400,31 @@ function writeMemoryFileWithExpectedHash(root, relPath, content, expectedContent
   }
 }
 
-export function createMarkdownFile(root, { path: relPath, title = "New document", templateId = "context-golden", applyTemplate = false, metadata = {} } = {}, { expectedRootIdentity = null } = {}) {
+export function createMarkdownFile(root, { path: relPath, title = "New document", templateId = "context-golden", applyTemplate = false, metadata = {}, ifMissing = false } = {}, { expectedRootIdentity = null } = {}) {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const normalized = normalizeMarkdownTemplateTarget(relPath);
   if (isCronJobMarkdownPath(normalized)) {
-    return withCronStoreLock(() => createMarkdownFileLocked(root, { relPath: normalized, title, templateId, applyTemplate, metadata }, { expectedRootIdentity }));
+    return withCronStoreLock(() => createMarkdownFileLocked(root, { relPath: normalized, title, templateId, applyTemplate, metadata, ifMissing }, { expectedRootIdentity }));
   }
-  return createMarkdownFileLocked(root, { relPath: normalized, title, templateId, applyTemplate, metadata }, { expectedRootIdentity });
+  return createMarkdownFileLocked(root, { relPath: normalized, title, templateId, applyTemplate, metadata, ifMissing }, { expectedRootIdentity });
 }
 
-function createMarkdownFileLocked(root, { relPath, title, templateId, applyTemplate, metadata }, { expectedRootIdentity = null } = {}) {
+function createMarkdownFileLocked(root, { relPath, title, templateId, applyTemplate, metadata, ifMissing = false }, { expectedRootIdentity = null } = {}) {
   const normalized = normalizeMarkdownTemplateTarget(relPath);
   const settings = effectiveMemoryWebappSettings(root, { expectedRootIdentity });
   const alreadyAllowed = isAllowedMemoryPath(normalized, settings);
   const abs = alreadyAllowed ? resolveMemoryPath(root, normalized) : resolveCreatableRepoPath(root, normalized);
-  if (fs.existsSync(abs)) throw new Error(`Markdown file already exists: ${normalized}`);
+  if (fs.existsSync(abs)) {
+    // « ifMissing »: the file is already there (a race, or another device wrote it); the caller just opens it.
+    if (ifMissing) return { path: normalized, existed: true };
+    throw new Error(`Markdown file already exists: ${normalized}`);
+  }
   if (!alreadyAllowed) allowCreatedMemoryPath(root, normalized, { expectedRootIdentity });
   const content = applyTemplate ? renderMarkdownTemplateForPath(root, normalized, { title, templateId, metadata }) : "";
-  return writeMemoryFile(root, normalized, content, { expectedRootIdentity });
+  const saved = writeMemoryFile(root, normalized, content, { expectedRootIdentity });
+  // « Create … here » (ifMissing) makes an empty file the person will write: accepted at once, not left in « To review ».
+  if (ifMissing && content === "") writeDocReviewDecision(root, normalized, { status: "verified", expectedContentHash: saved.contentHash, note: "Created empty by the person", expectedRootIdentity });
+  return saved;
 }
 
 export function createFolder(root, { path: relPath } = {}, { expectedRootIdentity = null } = {}) {
@@ -26231,7 +26238,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/markdown/create") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, createMarkdownFile(root, { path: body.path, title: body.title, templateId: body.templateId, applyTemplate: body.applyTemplate, metadata: body.metadata }, { expectedRootIdentity }));
+    sendJson(res, 200, createMarkdownFile(root, { path: body.path, title: body.title, templateId: body.templateId, applyTemplate: body.applyTemplate, metadata: body.metadata, ifMissing: body.ifMissing === true }, { expectedRootIdentity }));
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/folder/create") {
