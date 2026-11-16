@@ -369,20 +369,19 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-explorer-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; color: var(--muted); font-size: 10px; }
     .global-project-explorer-summary strong { color: var(--text-soft); font-size: 11px; }
     .global-project-explorer-list { min-width: 0; display: grid; gap: 4px; }
-    .global-project-row { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; padding: 9px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; text-decoration: none; }
+    .global-project-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; text-decoration: none; }
     .global-project-row:hover { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); background: var(--surface-card-hover); }
     .global-project-row[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-card)); }
     .global-project-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
-    .global-project-row-main { min-width: 0; display: grid; gap: 4px; }
+    .global-project-row-main { flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
     .global-project-row-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
-    .context-hub-home-project .global-project-row-title > :not(strong) { flex: none; }
-    .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-    .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-    .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
-    .global-project-row-side > span:first-child { min-width: 0; justify-self: stretch; overflow: hidden; text-overflow: ellipsis; }
+    .global-project-row-title > :not(strong) { flex: none; }
+    .global-project-row-title strong { min-width: min(4.5em, 100%); overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .global-project-row-side { flex: 0 100 auto; max-width: 50%; min-width: 0; display: flex; color: var(--muted); font-size: 9px; white-space: nowrap; }
+    .global-project-row-side > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .global-project-row-wrap { position: relative; min-width: 0; }
-    .global-project-row-wrap .global-project-row-side { padding-right: 38px; }
-    .global-project-row-menu { position: absolute; right: 0; bottom: 0; width: 44px; height: 44px; padding: 20px 0 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .global-project-row-wrap .global-project-row { padding-right: 44px; }
+    .global-project-row-menu { position: absolute; top: 0; right: 0; bottom: 0; width: 44px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; }
     .global-project-row-menu:hover, .global-project-row-menu:focus-visible, .global-project-notes-row:hover { background: var(--surface-card-hover); color: var(--text); }
     .global-project-notes-row { min-height: 44px; padding: 0 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--text-soft); cursor: pointer; font-size: 11px; font-weight: 650; text-align: left; }
     .hub-home-action kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
@@ -2490,7 +2489,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     strong, b { font-weight: 650; }
     button, input, select, textarea { font: inherit; }
     button { letter-spacing: normal; }
-    code, pre, kbd, .workspace-title, .selected-path, .review-path, .global-project-row-location {
+    code, pre, kbd, .workspace-title, .selected-path, .review-path {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .ui-icon-sprite { position: fixed; width: 0; height: 0; overflow: hidden; pointer-events: none; }
@@ -2677,7 +2676,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     }
     .global-project-row { padding: 7px 8px; }
     .global-project-row-title strong, .global-project-tree-name { font-size: 12px; font-weight: 550; }
-    .global-project-row-location, .global-project-row-side, .global-project-tree-meta { font-size: 10px; }
+    .global-project-row-side, .global-project-tree-meta { font-size: 10px; }
     .global-project-explorer-empty { border: 0; background: color-mix(in srgb, var(--text) 3%, transparent); }
     main {
       padding: 0;
@@ -7452,8 +7451,7 @@ function renderContextHubHomeProjects() {
     const title = escapeHtml(project.title || project.id);
     const destination = (id, label) => '<button class="context-hub-home-project-destination" type="button" data-context-hub-project-destination="' + id + '" data-project-key="' + key + '" aria-label="' + escapeHtml(label + " · " + (project.title || project.id)) + '">' + escapeHtml(label) + '</button>';
     return '<li class="context-hub-home-project" aria-current="' + String(selected) + '">'
-      + '<span class="context-hub-home-project-main"><span class="global-project-row-title"><strong>' + title + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
-      + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+      + '<span class="context-hub-home-project-main" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '"><span class="global-project-row-title"><strong>' + title + '</strong>' + contextHubProjectSourceBadges(project) + '</span></span>'
       + '<span class="context-hub-home-project-attention" data-attention="' + contextHubProjectAttentionKind(project) + '">' + escapeHtml(contextHubProjectAttentionLabel(project)) + '</span>'
       + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
       + '</li>';
@@ -8732,9 +8730,8 @@ function renderGlobalProjectExplorer() {
         const attention = contextHubProjectAttentionLabel(project);
         const selected = project.projectKey === state.sharedProposalProject;
         const worktree = globalProjectSelectedWorktree(project);
-        return '<div class="global-project-row-wrap"><a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">'
-          + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
-          + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+        return '<div class="global-project-row-wrap"><a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">'
+          + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span></span>'
           + '<span class="global-project-row-side"><span>' + escapeHtml(attention) + '</span></span>'
           + '</a><button class="global-project-row-menu" type="button" data-global-project-menu="' + escapeHtml(project.projectKey) + '" aria-haspopup="menu" aria-label="Project actions · ' + escapeHtml(project.title || project.id) + '">⋯</button></div>';
       }).join("")
