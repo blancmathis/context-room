@@ -5100,6 +5100,8 @@ test("project page GET routes: levels with subfolders and PLAN/CONTEXT, and 400 
   // locationId cannot point the answer at another project than the checked one.
   const hijack = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&locationId=${encodeURIComponent(gone.id)}&provider=codex`);
   assert.equal(hijack.status, 200);
+  // The answer is the checked project's: its own AGENTS.md at the root.
+  assert.ok((await hijack.json()).levels.find((level) => level.level === "root").files.some((file) => file.path === "AGENTS.md"));
 
   const response = await fetch(`${origin}/api/context-hub/project-agents?projectId=${encodeURIComponent(target.id)}&provider=codex`);
   assert.equal(response.status, 200);

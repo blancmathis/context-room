@@ -27,11 +27,11 @@ const CSS = `
 .sm-list i{font-style:normal;font-weight:400;font-size:12px;padding:1px 8px;border:1px solid var(--line);border-radius:999px;color:var(--muted);white-space:nowrap}
 .sm-tok{min-width:15em;color:var(--muted);font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
 @media (max-width:639px){.sm-head h2{flex:1}.sm-head .sm-seg{order:1;flex-basis:100%}.sm-list li{grid-template-columns:minmax(0,1fr)}.sm-chips{justify-content:flex-start}.sm-tok{min-width:0;text-align:left}}
-@media (pointer:coarse){.sm-seg button,.sm-head button,.sm .pp-link{min-height:44px}}
+@media (pointer:coarse){.sm-seg button,.sm-head button,.sm .pp-link,.sm-level summary{min-height:44px}}
 `;
 
 const LEVELS = { global: 'Global', root: 'Project root' };
-const STATUS = { configured: 'Configured', disabled: 'Disabled', approval: 'Needs approval' };
+const STATUS = { configured: 'Configured', disabled: 'Disabled', approval: 'Needs approval', unreadable: 'Cannot be read' };
 const levelName = (level) => Object.hasOwn(LEVELS, level) ? LEVELS[level] : level + '/';
 const plural = (count, word) => count + ' ' + word + (count === 1 ? '' : 's');
 const sum = (items, key) => items.reduce((total, item) => total + (item[key] || 0), 0);
@@ -55,6 +55,8 @@ export function createSkillsMcp(anchor, openFile, onClose) {
   section.className = 'docqa-panel sm';
   section.setAttribute('aria-labelledby', 'projectSkillsMcpHeading');
   section.hidden = true;
+  // Focused on open, so Escape and Tab start in the panel.
+  section.tabIndex = -1;
   anchor.after(section);
   const closed = new Set();
   let key = '';
@@ -77,8 +79,8 @@ export function createSkillsMcp(anchor, openFile, onClose) {
     const skills = tab === 'skills';
     const word = skills ? 'skill' : 'server';
     const what = skills ? 'content' : 'settings';
-    // An MCP file in a subfolder counts only for an agent started there; a skills folder is found from the root too.
-    const scope = (level) => level === 'global' ? 'Every project on this device · ' : skills || level === 'root' ? '' : 'For an agent started in this folder · ';
+    // A subfolder counts only for an agent that works there: providers walk up from the folder where they start.
+    const scope = (level) => level === 'global' ? 'Every project on this device · ' : level === 'root' ? '' : 'For an agent working in this folder · ';
     const doubled = levels.some((level) => level.items.some((item) => item.duplicates.length));
     const note = (skills
       ? (provider
@@ -106,6 +108,9 @@ export function createSkillsMcp(anchor, openFile, onClose) {
         + (level.items.length ? '<ul class="sm-list">' + level.items.map(row).join('') + '</ul>' : '<p class="sm-empty">No ' + word + ' here.</p>') + '</details>').join('');
   }
 
+  section.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') onClose();
+  });
   section.addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (!button) return;
@@ -135,7 +140,10 @@ export function createSkillsMcp(anchor, openFile, onClose) {
         data = null;
         return;
       }
-      if (opening) window.requestAnimationFrame(() => section.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+      if (opening) window.requestAnimationFrame(() => {
+        section.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        section.focus({ preventScroll: true });
+      });
       if (id === key) return;
       key = id;
       data = null;

@@ -21,6 +21,8 @@ export function createProjectMore(head, docsBox) {
   const trust = document.createElement('div');
   trust.id = 'projectTrust';
   trust.hidden = true;
+  // The offer comes after a read: say it.
+  trust.setAttribute('role', 'status');
   head.after(trust);
   const notes = document.createElement('section');
   notes.id = 'projectNotebooks';
@@ -60,10 +62,9 @@ export function createProjectMore(head, docsBox) {
   }
 
   function show(project) {
-    if (project && !head.hidden && !head.querySelector('[data-pp-more]')) {
-      head.insertAdjacentHTML('beforeend', '<button class="secondary" type="button" data-pp-more aria-haspopup="menu" aria-label="'
-        + escapeHtml('Project actions · ' + (project.title || project.id)) + '">⋯</button>');
-    }
+    if (project && !head.hidden && !head.querySelector('[data-pp-more]')) head.insertAdjacentHTML('beforeend', '<button class="secondary" type="button" data-pp-more aria-haspopup="menu" aria-expanded="false">⋯</button>');
+    // The page keeps ⋯ from one project to the next: its name follows.
+    if (project) head.querySelector('[data-pp-more]')?.setAttribute('aria-label', 'Project actions · ' + (project.title || project.id));
     if (!project) entered = '';
     const worktree = project && worktreeOf(project);
     // Notebooks are read again each time the page is entered: one may have been made from the tree.
@@ -74,6 +75,10 @@ export function createProjectMore(head, docsBox) {
     render();
   }
 
+  // ⋯ says whether its menu is open.
+  const menu = document.getElementById('explorerContextMenu');
+  if (menu) new MutationObserver(() => head.querySelector('[data-pp-more]')?.setAttribute('aria-expanded', String(!menu.hidden && state.globalExplorerContextTarget?.kind === 'project')))
+    .observe(menu, { attributes: true, attributeFilter: ['hidden'] });
   head.addEventListener('click', (event) => {
     const project = current();
     if (project && event.target.closest('[data-pp-more]')) openGlobalExplorerContextMenu(event, { scope: 'project', kind: 'project', path: '', projectKey: project.projectKey });
