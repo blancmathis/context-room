@@ -228,3 +228,33 @@ test("@smoke the project page lists its notebooks, and ⋯ hides the project and
     await hub.close();
   }
 });
+
+test("@smoke « What agents load » shows hooks per level and creates the instruction file a level lacks", async ({ page }) => {
+  const hub = await emptyHub({ registered: true });
+  const errors = [];
+  page.on("pageerror", (error) => { if (!/due to access control checks/.test(error.message)) errors.push(error.message); });
+  // A project hook and a folder level (api/ has a skill but no CLAUDE.md), read as Claude Code.
+  fs.mkdirSync(path.join(hub.folder, ".claude"), { recursive: true });
+  fs.writeFileSync(path.join(hub.folder, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo start" }] }] } }));
+  fs.mkdirSync(path.join(hub.folder, "api", ".claude", "skills", "check"), { recursive: true });
+  fs.writeFileSync(path.join(hub.folder, "api", ".claude", "skills", "check", "SKILL.md"), "---\nname: check\ndescription: Check the API.\n---\nRun the checks.\n");
+  await page.addInitScript(() => { try { localStorage.setItem("context-room:agent-provider", "claude-code"); } catch {} });
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await projectRow(page, "Existing Docs").click({ timeout: 30_000 });
+    await page.locator("#projectPageHead [data-pp-agents]").click();
+    const root = page.locator('#projectAgentLevels [data-pp-level="root"]');
+    await expect(root).toContainText("Hook · SessionStart · .claude/settings.json", { timeout: 30_000 });
+    await expect(root).toContainText("adds its output");
+    await expect(page.locator('#projectAgentLevels [data-pp-level="api"] [data-pp-create="api/CLAUDE.md"]')).toHaveText("Create CLAUDE.md here");
+    await expect(page.locator('#projectAgentLevels [data-pp-create]')).toHaveCount(2);
+
+    // Creating the root CLAUDE.md writes an empty file and opens it.
+    await root.locator('[data-pp-create="CLAUDE.md"]').click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("CLAUDE.md");
+    expect(fs.readFileSync(path.join(hub.folder, "CLAUDE.md"), "utf8")).toBe("");
+    expect(errors).toEqual([]);
+  } finally {
+    await hub.close();
+  }
+});
