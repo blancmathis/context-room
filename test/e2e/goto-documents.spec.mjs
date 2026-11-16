@@ -47,7 +47,8 @@ test("@smoke Go to finds a document by its name, ignoring case", async ({ page }
   await expect(group).toBeVisible();
   await expect(group.getByRole("option").first()).toContainText("docs/runbook.md");
   await expect(group.getByRole("option").first()).toContainText("Beacon");
-  await page.keyboard.press("ArrowDown");
+  // An exact file name comes before the projects: Enter opens it.
+  await expect(page.locator("#contextHubProjectPickerList [role='option']").first()).toContainText("runbook.md");
   await page.keyboard.press("Enter");
   await expect(page.locator("#contextHubProjectPicker")).toBeHidden();
   await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/runbook.md");
@@ -192,4 +193,38 @@ test("Go to says search is unavailable, then searches again by itself", async ({
   await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Search unavailable", { timeout: 15_000 });
   expect(calls).toBeGreaterThanOrEqual(2);
   await expect(list).toContainText("Nothing found.");
+});
+
+test("Go to with no query lists the files opened last; from a doc, ⌘K + Enter reopens the doc before", async ({ page }) => {
+  const search = await openGoto(page);
+  await search.fill("runbook");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="Files"]')).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/runbook.md");
+  await expect(page.locator(".workspace-dock [data-context-hub-project-goto]")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.fill("procedure");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="In text"]')).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/operations.md");
+  await expect(page.locator(".doc-reader-body")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  const recent = page.locator('#contextHubProjectPickerList [role="group"][aria-label="Recent"]');
+  await expect(recent.getByRole("option")).toHaveCount(1);
+  await expect(recent.getByRole("option").first()).toContainText("docs/runbook.md");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/runbook.md");
+});
+
+test("Go to puts an exact file name before the projects", async ({ page }) => {
+  const { projects } = fixture();
+  await page.route("**/api/context-hub/document-search?*", (route) => route.fulfill({
+    json: { files: [{ projectKey: "local:x", projectId: projects.atlas.id, projectTitle: "Atlas", path: "docs/atlas.md", name: "atlas.md" }], text: [] },
+  }));
+  const search = await openGoto(page);
+  await search.fill("atlas");
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
+  await expect(page.locator("#contextHubProjectPickerList [role='group']").first()).toHaveAttribute("aria-label", "Files");
+  await expect(page.locator("#contextHubProjectPickerList [role='option']").first()).toContainText("atlas.md");
 });
