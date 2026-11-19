@@ -22108,7 +22108,7 @@ function renderViewer() {
         ? renderImageDocumentPreview(state.selectedVisualAsset)
       : !conflict && externalChange
         ? isHtmlDocument
-          ? renderHtmlDocumentPreview(externalChange.diskContent || "", file.path)
+          ? "<div data-html-review></div>"
           : renderExternalReviewDocument(externalReviewBaseContent(externalChange), externalChange.diskContent || "")
         : isHtmlDocument
           ? renderHtmlDocumentPreview(text, file.path)
@@ -22141,6 +22141,7 @@ function renderViewer() {
   wireImageDocumentPreview();
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
+  mountHtmlReview(externalChange);
   wireMarkdownDocLinks();
   wireMarkdownImages();
   wireMarkdownToc();
@@ -23462,6 +23463,12 @@ function sanitizedHtmlPreviewDocument(source) {
   doc.head.prepend(theme);
   doc.head.prepend(policy);
   return "<!doctype html>\n" + doc.documentElement.outerHTML;
+}
+
+// T-html-diff: a changed HTML page is reviewed as a page (html-review.mjs, loaded on demand).
+let htmlReview;
+function mountHtmlReview(change, root = document.querySelector("[data-html-review]")) {
+  if (root) (htmlReview ||= import("/assets/ui/html-review.mjs")).then((module) => root.isConnected && module.mount(root, change, externalReviewBaseContent(change), sanitizedHtmlPreviewDocument, wireHtmlPreviewNavigation), () => htmlReview = null);
 }
 
 function renderHtmlDocumentPreview(text, filePath = state.selected) {
