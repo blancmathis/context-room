@@ -22141,7 +22141,8 @@ function renderViewer() {
   wireImageDocumentPreview();
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
-  mountHtmlReview(externalChange);
+  const htmlReview = document.querySelector("[data-html-review]");
+  if (htmlReview) import("/assets/ui/html-review.mjs").then((module) => module.mount(htmlReview, externalChange), (error) => setStatus(error.message));
   wireMarkdownDocLinks();
   wireMarkdownImages();
   wireMarkdownToc();
@@ -23463,12 +23464,6 @@ function sanitizedHtmlPreviewDocument(source) {
   doc.head.prepend(theme);
   doc.head.prepend(policy);
   return "<!doctype html>\n" + doc.documentElement.outerHTML;
-}
-
-// T-html-diff: a changed HTML page is reviewed as a page (html-review.mjs, loaded on demand).
-let htmlReview;
-function mountHtmlReview(change, root = document.querySelector("[data-html-review]")) {
-  if (root) (htmlReview ||= import("/assets/ui/html-review.mjs")).then((module) => root.isConnected && module.mount(root, change, externalReviewBaseContent(change), sanitizedHtmlPreviewDocument, wireHtmlPreviewNavigation), () => htmlReview = null);
 }
 
 function renderHtmlDocumentPreview(text, filePath = state.selected) {

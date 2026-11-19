@@ -73,31 +73,41 @@ export function diffBlocks(a, b) {
     if (ae < a.length) ops.push({ type: "same", a: ae, b: be });
     ai = ae + 1; bi = be + 1;
   }
-  return { ops, units: groupUnits(ops, b) };
+  return { ops, units: groupUnits(ops, a, b) };
 }
 
-function groupUnits(ops, b) {
-  const secOf = ops.map(() => null);
-  for (let i = 0, last = null; i < ops.length; i += 1) if ("b" in ops[i]) secOf[i] = last = b[ops[i].b].s;
-  for (let i = ops.length - 1, next = null; i >= 0; i -= 1) {
-    if (secOf[i] === null) secOf[i] = next; else next = secOf[i];
-  }
+// A removed block joins the section of the shown block after it when both were in the same old section,
+// else the section of the shown block before it. Only removed blocks of the section's own old section count
+// toward « Rewritten »: a whole deleted section stays one « N blocks removed » line.
+function groupUnits(ops, a, b) {
+  const n = ops.length, prev = [], next = [];
+  for (let i = 0, p = -1; i < n; i += 1) { if ("b" in ops[i]) p = i; prev[i] = p; }
+  for (let i = n - 1, q = -1; i >= 0; i -= 1) { if ("b" in ops[i]) q = i; next[i] = q; }
+  const oldSec = (x) => x >= 0 && "a" in ops[x] ? a[ops[x].a].s : NaN;
+  const secOf = ops.map((op, i) => {
+    if ("b" in op) return b[op.b].s;
+    const home = next[i] >= 0 && (prev[i] < 0 || oldSec(next[i]) === a[op.a].s) ? next[i] : prev[i];
+    return home < 0 ? null : b[ops[home].b].s;
+  });
   const units = [];
-  for (let i = 0; i < ops.length;) {
+  for (let i = 0; i < n;) {
     let e = i;
-    while (e < ops.length && secOf[e] === secOf[i]) e += 1;
+    while (e < n && secOf[e] === secOf[i]) e += 1;
     const idx = Array.from({ length: e - i }, (_, x) => i + x);
-    const shown = idx.filter((x) => "b" in ops[x]).length;
-    const moved = idx.filter((x) => ops[x].type !== "same");
-    const removed = idx.filter((x) => ops[x].type === "removed").length;
-    if (shown >= REWRITE_MIN_BLOCKS && moved.length / (shown + removed) >= REWRITE_SHARE) {
-      units.push({ kind: moved.every((x) => ops[x].type === "added") && removed === 0 && moved.length === shown ? "added" : "rewritten", ops: idx });
-    } else {
-      for (const x of moved) {
-        const prev = units.at(-1);
-        if (ops[x].type === "removed" && prev?.kind === "removed" && prev.ops.at(-1) === x - 1) prev.ops.push(x);
-        else units.push({ kind: ops[x].type, ops: [x] });
-      }
+    const homes = new Set(idx.filter((x) => "a" in ops[x] && "b" in ops[x]).map(oldSec));
+    const own = idx.filter((x) => "b" in ops[x] || !homes.size || homes.has(oldSec(x)));
+    const shown = own.filter((x) => "b" in ops[x]).length;
+    const moved = own.filter((x) => ops[x].type !== "same");
+    const removed = moved.length - moved.filter((x) => "b" in ops[x]).length;
+    const rewrite = shown >= REWRITE_MIN_BLOCKS && moved.length / (shown + removed) >= REWRITE_SHARE;
+    let whole = null;
+    for (const x of idx) {
+      const type = ops[x].type, last = units.at(-1);
+      if (rewrite && own.includes(x)) {
+        if (!whole) units.push(whole = { kind: !removed && moved.length === shown && moved.every((y) => ops[y].type === "added") ? "added" : "rewritten", ops: [] });
+        whole.ops.push(x);
+      } else if (type === "removed" && last?.kind === "removed" && last.ops.at(-1) === x - 1) last.ops.push(x);
+      else if (type !== "same") units.push({ kind: type, ops: [x] });
     }
     i = e;
   }
@@ -115,6 +125,8 @@ const UI_CSS = ".crh-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
   + ".crh-frames iframe[data-off],.crh-frames.both .crh-old{position:absolute;inset:0;visibility:hidden}.crh-both{display:none}"
   + "@media (min-width:1280px){.crh-both{display:inline-flex}.crh-frames.both{grid-template-columns:1fr 1fr;gap:8px}.crh-frames.both iframe{order:2}.crh-frames.both .crh-old{position:static;visibility:visible;order:1}}";
 
+// Per project and page: mode, current change, open « before » blocks and reading place. A new render of the
+// view (a background refresh) keeps them while both versions stay the same.
 const prefs = new Map();
 let keysWired = false, active = null;
 
@@ -134,13 +146,17 @@ function addStyle(doc, css) {
   doc.head.append(s);
 }
 
-// root: the empty [data-html-review] box. change: the review (path, diskContent, changeKind).
-export function mount(root, change, beforeText, sanitize, wireNavigation) {
-  const path = change.path || "document", afterText = change.diskContent || "";
+// root: the empty [data-html-review] box. change: the review (path, baseContent, diskContent, changeKind).
+// The app's helpers (globals of its classic script) give the accepted text, sanitize both pages and wire the
+// first frame (links, zoom), so app.mjs only calls mount().
+export function mount(root, change) {
+  if (!root.isConnected) return;
+  const path = change.path || "document", afterText = change.diskContent || "", beforeText = externalReviewBaseContent(change);
   const deleted = change.changeKind === "deleted" || (!afterText.trim() && beforeText.trim());
   const added = !deleted && (change.changeKind === "added" || !beforeText.trim());
-  const pref = prefs.get(path) || { mode: "after", cur: -1 };
-  prefs.set(path, pref);
+  const key = state.projectId + "\n" + path, sig = beforeText + "\0" + afterText;
+  let pref = prefs.get(key);
+  if (pref?.sig !== sig) prefs.set(key, pref = { sig, mode: pref?.mode || "after", cur: -1, open: [], place: null });
   if (!document.querySelector("style[data-crh]")) {
     const s = document.createElement("style");
     s.dataset.crh = "";
@@ -148,15 +164,15 @@ export function mount(root, change, beforeText, sanitize, wireNavigation) {
     document.head.append(s);
   }
   const single = added || deleted;
-  const oldSrc = sanitize(beforeText), newSrc = sanitize(afterText);
+  const oldSrc = sanitizedHtmlPreviewDocument(beforeText), newSrc = sanitizedHtmlPreviewDocument(afterText);
   let diff = { ops: [], units: [] }, styleOnly = false;
   if (!single) {
     const parse = (src) => new DOMParser().parseFromString(src, "text/html");
-    const a = extractBlocks(parse(oldSrc)), b = extractBlocks(parse(newSrc));
-    diff = diffBlocks(a, b);
+    diff = diffBlocks(extractBlocks(parse(oldSrc)), extractBlocks(parse(newSrc)));
     styleOnly = !diff.units.length && beforeText.trim() !== afterText.trim();
   }
   const units = diff.units, total = units.length;
+  if (pref.cur >= total) pref.cur = -1;
   const note = deleted ? "Page deleted" : added ? "New page" : total ? total + (total === 1 ? " change" : " changes") : styleOnly ? "Style changed" : "No visible change";
   root.className = "crh";
   root.innerHTML = '<div class="crh-bar" role="toolbar" aria-label="Page changes"><span class="crh-note" data-crh-note>' + note + "</span>"
@@ -165,44 +181,59 @@ export function mount(root, change, beforeText, sanitize, wireNavigation) {
     + '</div><div class="html-preview-shell"><div class="crh-frames"></div></div>';
   const box = root.querySelector(".crh-frames");
   const label = (what) => "HTML preview: " + path + (what ? " (" + what + ")" : "");
-  // The first frame keeps the app's class, so links, zoom and scroll memory work as before.
+  // The first frame keeps the app's class, so links, zoom and scroll memory work as before. The app wires it
+  // first, so its zoom is on the page before the reading place is restored below.
   const main = frameTag("html-preview-frame", label(deleted ? "deleted page" : ""), deleted ? oldSrc : newSrc);
   box.append(main);
+  wireHtmlPreviewNavigation();
   const old = single ? null : frameTag("crh-old", label("before"), oldSrc);
   if (old) box.append(old);
-  const view = { root, main, old, units, ops: diff.ops, pref, total, layers: [] };
+  const view = { root, main, old, units, ops: diff.ops, pref, total };
   active = view;
   const ready = (frame, setup) => {
     const run = () => { const doc = frame.contentDocument; if (doc?.body && doc.URL === "about:srcdoc" && doc.readyState !== "loading" && frame.__crh !== doc) { frame.__crh = doc; setup(doc); } };
     frame.addEventListener("load", run);
     run();
   };
+  // The reading place of the page on screen, kept for the next render.
+  const track = (frame, doc) => doc.addEventListener("scroll", () => { if (!frame.hasAttribute("data-off")) pref.place = placeOf(doc); }, { passive: true });
+  // The earlier page follows every zoom (reading size) of the new one.
+  const zoom = () => {
+    const from = main.contentDocument?.documentElement?.style, to = old?.contentDocument?.documentElement?.style;
+    if (from && to) { to.zoom = from.zoom; to.fontSize = from.fontSize; }
+  };
   ready(main, (doc) => {
     doc.addEventListener("keydown", onKey);
-    if (single || !total) return;
-    addStyle(doc, FRAME_CSS);
+    if (single) return;
+    new MutationObserver(zoom).observe(doc.documentElement, { attributes: true, attributeFilter: ["style"] });
+    zoom();
     markAfter(view, doc);
+    pref.open.forEach((u) => toggleOld(view, u));
+    goTo(main, pref.place);
+    track(main, doc);
   });
   if (old) ready(old, (doc) => {
     doc.addEventListener("keydown", onKey);
     doc.addEventListener("click", (event) => { if (event.target.closest?.("a[href]")) event.preventDefault(); });
-    const zoom = main.contentDocument?.documentElement?.style;
-    if (zoom) { doc.documentElement.style.zoom = zoom.zoom; doc.documentElement.style.fontSize = zoom.fontSize; }
+    zoom();
     extractBlocks(doc).forEach((block, i) => { const op = view.ops.findIndex((o) => o.a === i); if (op >= 0) block.el.dataset.crR = op; });
+    goTo(old, pref.place);
+    track(old, doc);
   });
   root.querySelectorAll("[data-crh-mode]").forEach((button) => button.addEventListener("click", () => setMode(view, button.dataset.crhMode)));
   root.querySelectorAll("[data-crh-step]").forEach((button) => button.addEventListener("click", () => step(view, Number(button.dataset.crhStep))));
   applyMode(view);
   showCount(view);
   if (!keysWired) { keysWired = true; document.addEventListener("keydown", onKey); }
-  wireNavigation();
 }
 
+// Every shown block gets its row (data-cr-r), even with no change, so Before | After keeps the place.
 function markAfter(view, doc) {
-  const blocks = extractBlocks(doc), { ops, units } = view;
-  const oldDoc = new DOMParser().parseFromString(view.old.srcdoc, "text/html");
-  const oldBlocks = extractBlocks(oldDoc);
-  ops.forEach((op, i) => { if ("b" in op) blocks[op.b].el.dataset.crR = i; });
+  const blocks = extractBlocks(doc), { ops, units } = view, at = (op) => blocks[op.b]?.el;
+  ops.forEach((op, i) => { if (at(op)) at(op).dataset.crR = i; });
+  if (!view.total) return;
+  addStyle(doc, FRAME_CSS);
+  const oldBlocks = extractBlocks(new DOMParser().parseFromString(view.old.srcdoc, "text/html"));
   const layer = doc.createElement("div");
   layer.className = "cr-layer";
   doc.documentElement.append(layer);
@@ -210,29 +241,29 @@ function markAfter(view, doc) {
     unit.els = [];
     unit.old = [];
     for (const x of unit.ops) {
-      const op = ops[x];
-      if ("b" in op) { blocks[op.b].el.dataset.crU = u; unit.els.push(blocks[op.b].el); }
+      // The live page can hold other blocks than the parsed copy (a <noscript> runs differently): skip a miss.
+      const op = ops[x], el = at(op);
+      if (el) { el.dataset.crU = u; unit.els.push(el); }
       else if (unit.kind === "removed" && x === unit.ops[0]) {
         // One line where removed blocks were: before the next shown block, else after the last one.
         const line = doc.createElement("div");
         line.className = "cr-gone";
         line.dataset.crU = u;
         line.dataset.crR = x;
-        const count = unit.kind === "removed" ? unit.ops.length : 1;
+        const count = unit.ops.length;
         line.textContent = count + (count === 1 ? " block removed" : " blocks removed");
-        const next = ops.slice(x).find((o) => "b" in o), prev = ops.slice(0, x).findLast((o) => "b" in o);
-        if (next) blocks[next.b].el.before(line);
-        else if (prev) blocks[prev.b].el.after(line);
+        const next = ops.slice(x).find(at), prev = ops.slice(0, x).findLast(at);
+        if (next) at(next).before(line);
+        else if (prev) at(prev).after(line);
         else doc.body.append(line);
         unit.els.push(line);
       }
       // A rewritten section shows all its earlier blocks, unchanged ones included.
-      if ("a" in op) unit.old.push(oldBlocks[op.a].el);
+      if ("a" in op && oldBlocks[op.a]) unit.old.push(oldBlocks[op.a].el);
     }
   });
   view.doc = doc;
   view.layer = layer;
-  view.blocks = blocks;
   doc.addEventListener("click", (event) => {
     if (event.target.closest?.("a[href], [data-cr-document]")) return;
     const hit = event.target.closest?.("[data-cr-u]");
@@ -247,12 +278,12 @@ function markAfter(view, doc) {
 // A tap shows the unit's earlier blocks in place of the new ones; a second tap brings the new ones back.
 function toggleOld(view, u) {
   const unit = view.units[u], doc = view.doc;
+  if (!unit?.els?.length) return;
   if (unit.shown) {
     unit.shown.forEach((node) => node.remove());
     unit.els.forEach((el) => delete el.dataset.crHide);
     unit.shown = null;
   } else {
-    const anchor = unit.els[0];
     unit.shown = unit.old.map((el) => {
       const copy = doc.importNode(el, true);
       copy.classList.add("cr-was");
@@ -266,9 +297,10 @@ function toggleOld(view, u) {
       none.textContent = "Not in the earlier version";
       unit.shown.push(none);
     }
-    anchor.before(...unit.shown);
+    unit.els[0].before(...unit.shown);
     unit.els.forEach((el) => { el.dataset.crHide = ""; });
   }
+  view.pref.open = view.units.flatMap((one, i) => one.shown ? [i] : []);
   drawFrames(view);
 }
 
@@ -315,7 +347,8 @@ function setMode(view, mode) {
   const from = view.pref.mode === "before" ? view.old : view.main, to = mode === "before" ? view.old : view.main;
   view.pref.mode = mode;
   applyMode(view);
-  if (from !== to) keepPlace(from, to);
+  // The block at the top of the page shown stays at the top of the other one.
+  if (from !== to && from.contentDocument) goTo(to, placeOf(from.contentDocument));
 }
 
 function applyMode(view) {
@@ -327,17 +360,16 @@ function applyMode(view) {
   view.old.toggleAttribute("data-off", mode === "after");
 }
 
-// The block at the top of the page shown stays at the top of the other one.
-function keepPlace(from, to) {
-  const fromDoc = from.contentDocument, toDoc = to.contentDocument;
-  if (!fromDoc || !toDoc) return;
-  const rows = [...fromDoc.querySelectorAll("[data-cr-r]")];
-  const top = rows.find((el) => el.getBoundingClientRect().bottom > 0);
-  if (!top) return;
-  const r = Number(top.dataset.crR), offset = top.getBoundingClientRect().top;
-  const targets = [...toDoc.querySelectorAll("[data-cr-r]")];
-  const target = targets.findLast((el) => Number(el.dataset.crR) <= r) || targets[0];
-  if (target) to.contentWindow.scrollBy(0, target.getBoundingClientRect().top - offset);
+// The first row on screen and its offset from the top of the frame.
+function placeOf(doc) {
+  const top = [...doc.querySelectorAll("[data-cr-r]")].find((el) => el.getBoundingClientRect().bottom > 0);
+  return top ? { r: Number(top.dataset.crR), off: top.getBoundingClientRect().top } : null;
+}
+
+function goTo(frame, place) {
+  const doc = frame.contentDocument, rows = place && doc ? [...doc.querySelectorAll("[data-cr-r]")] : [];
+  const target = rows.findLast((el) => Number(el.dataset.crR) <= place.r && el.getClientRects().length) || rows[0];
+  if (target) frame.contentWindow.scrollBy(0, target.getBoundingClientRect().top - place.off);
 }
 
 function onKey(event) {

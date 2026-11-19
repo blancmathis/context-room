@@ -60,6 +60,26 @@ test('a new section of new blocks is one Added frame', () => {
   assert.deepEqual(kinds(diffBlocks(before, after)), ['added']);
 });
 
+test('a deleted section is one « blocks removed » line, not a Rewritten frame on its neighbour', () => {
+  const intact = [['H2', 'Keep', 3], ['P', 'K1', 3], ['P', 'K2', 3]];
+  const gone = [['H2', 'Gone', 2], ['P', 'G1', 2], ['P', 'G2', 2], ['P', 'G3', 2], ['P', 'G4', 2]];
+  const intro = [['H2', 'Intro', 1], ['P', 'I1', 1]];
+  // In the middle, at the top and at the end of the page.
+  for (const [before, after] of [[[...intro, ...gone, ...intact], [...intro, ...intact]], [[...gone, ...intact], intact], [[...intact, ...gone], intact]]) {
+    const result = diffBlocks(blocks(before), blocks(after));
+    assert.deepEqual(kinds(result), ['removed']);
+    assert.equal(result.units[0].ops.length, 5);
+  }
+});
+
+test('blocks removed at the end of a section count in that section', () => {
+  const before = blocks([['H2', 'Plan', 1], ['P', 'One', 1], ['P', 'Two', 1], ['P', 'Three', 1], ['P', 'Four', 1], ['H2', 'Next', 2], ['P', 'N1', 2]]);
+  const after = blocks([['H2', 'Plan', 1], ['P', 'One!', 1], ['P', 'Two!', 1], ['H2', 'Next', 2], ['P', 'N1', 2]]);
+  const result = diffBlocks(before, after);
+  assert.deepEqual(kinds(result), ['rewritten']);
+  assert.ok(result.units[0].ops.every((x) => [0, 1, 2, 3, 4].includes(result.ops[x].a)));
+});
+
 test('a huge page skips the quadratic table and still marks the middle', () => {
   const before = blocks(Array.from({ length: 2500 }, (_, i) => ['P', 'old ' + i, i]));
   const after = blocks(Array.from({ length: 2500 }, (_, i) => ['P', 'new ' + i, i]));
@@ -72,5 +92,7 @@ test('the module is served and loaded on demand from the main script', () => {
   assert.equal(NOTEBOOK_WEB_ASSETS.get('/assets/ui/html-review.mjs')?.file, 'ui/html-review.mjs');
   const app = fs.readFileSync(new URL('../src/ui/app.mjs', import.meta.url), 'utf8');
   assert.match(app, /import\("\/assets\/ui\/html-review\.mjs"\)/);
-  assert.match(app, /module\.mount\(root, change, externalReviewBaseContent\(change\), sanitizedHtmlPreviewDocument,/);
+  assert.match(app, /module\.mount\(htmlReview, externalChange\)/);
+  // The module uses the app's own helpers (globals of its classic script).
+  for (const name of ['externalReviewBaseContent', 'sanitizedHtmlPreviewDocument', 'wireHtmlPreviewNavigation']) assert.match(app, new RegExp('\\nfunction ' + name + '\\('));
 });
