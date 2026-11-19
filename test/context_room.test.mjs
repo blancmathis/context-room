@@ -8168,7 +8168,8 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /function renderHtmlDocumentPreview\(text, filePath = state\.selected\)/);
   assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"/);
   assert.match(html, /isHtmlDocument\s*\? renderHtmlDocumentPreview\(text, file\.path\)/);
-  assert.match(html, /externalChange[\s\S]*isHtmlDocument[\s\S]*renderHtmlDocumentPreview\(externalChange\.diskContent \|\| "", file\.path\)/);
+  // T-html-diff: a changed HTML page is reviewed as a page by html-review.mjs (both versions sanitized there).
+  assert.match(html, /externalChange[\s\S]*isHtmlDocument[\s\S]*"<div data-html-review><\/div>"/);
   assert.match(html, /const visualHtmlReview = isHtmlDocumentPath\(change\.path\);/);
   assert.match(html, /const jumpAction = summary\.pending && !visualHtmlReview/);
   assert.match(html, /const bulkActions = summary\.pending\s*\?/);
