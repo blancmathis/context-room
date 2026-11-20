@@ -3,6 +3,7 @@
 #   perso.sh perso     build HEAD (clean + pushed) into releases/<sha>/, switch `current`, restart the Hub
 #   perso.sh status    branch, sha, date of the running release
 #   perso.sh rollback  switch back to `previous`
+#   perso.sh install N switch to the already built release N (no build)
 # NO_INSTALL=1: build only (perso) or print the plan (rollback). Touches nothing that runs.
 # Env: PERSO_HOME (default ~/.local/share/context-room), CONTEXT_ROOM_HUB_HOME (default ~/.context-room),
 #      PERSO_PORT (4319), PERSO_LABEL (app.contextroom.local), PERSO_NODE, PERSO_DEPS_FROM (runtime dir with node_modules),
@@ -34,9 +35,14 @@ node_bin() {
 }
 health() { for _ in $(seq 1 60); do [ "$(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/" || true)" = 200 ] && return 0; sleep 2; done; return 1; }
 restart() {
-  local old; old=$(pgrep -f "context-room.mjs hub.*--port $PORT" || true)
-  launchctl kickstart -k "gui/$(id -u)/$LABEL"
-  sleep 5; for p in $old; do kill "$p" 2>/dev/null && { sleep 15; kill -9 "$p" 2>/dev/null || true; echo "stopped stale $p"; }; done
+  local old p i; old=$(pgrep -f "context-room.mjs hub.*--port $PORT" || true)
+  # if launchd refuses, the old hub is still the only one running: kill nothing, fail
+  launchctl kickstart -k "gui/$(id -u)/$LABEL" || { echo "perso: launchctl kickstart failed; old hub left running" >&2; return 1; }
+  # wait for the old hub to exit, so the health check cannot be answered by it
+  for p in $old; do
+    for i in $(seq 1 ${PERSO_STOP_WAIT:-5}); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null && { sleep "${PERSO_KILL_GRACE:-15}"; kill -9 "$p" 2>/dev/null || true; echo "stopped stale $p"; }; fi
+  done
   health
 }
 point() { ln -sfn "$1" "$2"; ln -sfn "$CUR/runtime/bin/context-room.mjs" "$HOME/.local/bin/context-room" 2>/dev/null || true; }
@@ -85,18 +91,23 @@ install_release() {
     perl -pi -e "s#^RUNTIME = .*#RUNTIME = BASE / 'current/runtime'#" "$LAUNCHER"
   fi
   [ -d "$HUB/hub" ] && tar czf "$backup_dir/hub-before-$name-$(date +%Y%m%d%H%M%S).tgz" -C "$HUB" hub
-  local was; was=$(readlink "$CUR")
+  local was oldprev; was=$(readlink "$CUR"); oldprev=$(readlink "$PREV" 2>/dev/null || true)
   ln -sfn "$was" "$PREV"; point "releases/$name" "$CUR"
   if restart; then echo "perso: now running $name (was ${was#releases/}); hub $(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/")"
   else
     echo "perso: hub did not come back on $name; switching back" >&2
-    point "$was" "$CUR"; ln -sfn "releases/$name" "$PREV"; restart || true; exit 1
+    point "$was" "$CUR"
+    # previous must never point to the broken release: restore what it was before this install
+    if [ -n "$oldprev" ]; then ln -sfn "$oldprev" "$PREV"; else rm -f "$PREV"; fi
+    restart || true; exit 1
   fi
 }
 
 case ${1:-} in
   perso) build; [ -n "${NO_INSTALL:-}" ] && { echo "perso: NO_INSTALL set, nothing switched. data-format check would say: $(fmt_of "$CUR" 2>/dev/null) -> $(fmt_of "$DEST")"; exit 0; }
          install_release "$(basename "$DEST")" ;;
+  install) [ -n "${2:-}" ] && [ -f "$REL/$2/perso.json" ] || die "usage: perso.sh install <built release name>"
+    install_release "$2" ;;
   status) c=$(rel_name "$CUR"); [ -n "$c" ] || die "not installed (no current release)"
     echo "current:  $c  branch=$(field "$CUR" branch)  built=$(field "$CUR" builtAt)  version=$(field "$CUR" packageVersion)"
     echo "previous: $(rel_name "$PREV")"
