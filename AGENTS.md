@@ -29,6 +29,8 @@ These instructions apply to this repository. Use them for Context Room product, 
 
 ## Local Rules
 
+- Perso channel: commit on branch `perso`, push, then run `make perso` yourself. No PR per change, no CI wait. Never set `PERSO_ACCEPT_DATA_CHANGE` or run `deploy-main.sh`; stop and report if the script refuses or reverts. Publishing to others: PR `perso` → `main`, only when Mathis says so.
+
 - Keep Context Room local-first and deterministic. Do not add LLM calls to `doctor`, `guard`, or `brief`.
 - Keep edit and review boundaries explicit. Changes to `allowedPaths`, `watchAllow`, or `reviewPaths` must be source-grounded.
 - Treat review as human-owned. Individual file decisions stay in the direct human UI and are never agent-facing commands. Before an agent operates a multi-file batch or terminal proposal acceptance or rejection, it must ask the user explicitly. After the first yes, restate the exact action, project, proposal or file scope, and effects, ask again, and do nothing unless the user gives a second separate, unambiguous yes.
