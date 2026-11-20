@@ -10,6 +10,7 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 BASE=${PERSO_HOME:-$HOME/.local/share/context-room}
+BASE=$(cd "$BASE" 2>/dev/null && pwd -P || echo "$BASE") # the kit builder wants real paths
 HUB=${CONTEXT_ROOM_HUB_HOME:-$HOME/.context-room}
 PORT=${PERSO_PORT:-4319}
 LABEL=${PERSO_LABEL:-app.contextroom.local}
