@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reference launcher for the installed Context Room Hub (macOS launchd).
 
-Copy to ~/.local/share/context-room/launch-installed.py and set BASE, NODE and
-RUNTIME. Only this launcher's child is restarted when the LAN address changes.
+Copy to ~/.local/share/context-room/launch-installed.py and set BASE and NODE. RUNTIME follows the `current` link kept by `make perso`.
+Only this launcher's child is restarted when the LAN address changes.
 Exit code: 0 only when this launcher itself received SIGTERM/SIGINT (an
 intended stop, e.g. `launchctl bootout`). Any other end exits non-zero, so
 launchd (KeepAlive = true) always restarts the Hub.
@@ -11,7 +11,7 @@ import ipaddress, os, signal, subprocess, time
 from pathlib import Path
 BASE = Path.home() / '.local/share/context-room'
 NODE = os.environ.get('CONTEXT_ROOM_LAUNCH_NODE') or '/usr/local/bin/node'
-RUNTIME = BASE / 'releases/REVISION-p4319/runtime'
+RUNTIME = BASE / 'current/runtime'
 child = None
 stopping = False
 RESTART_EXIT = 75  # EX_TEMPFAIL: the Hub ended without a stop request

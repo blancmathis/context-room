@@ -46,3 +46,16 @@ node bin/context-room.mjs doctor --root .
 ```
 
 The CLI entry point is `bin/context-room.mjs`; the main implementation is `src/context_room.mjs`.
+
+## Perso channel (your own build, daily)
+
+Run your own pushed commit without waiting for CI. Publishing stays PR, CI, merge.
+
+```bash
+make perso            # HEAD must be clean and pushed: build releases/<sha>/, switch `current`, restart the Hub
+make perso-status     # branch, sha, date, previous release, Hub HTTP code
+make perso-rollback   # back to `previous`
+make perso NO_INSTALL=1   # build only into releases/; switches and restarts nothing (agents use only this)
+```
+
+Releases live in `~/.local/share/context-room/releases/<sha>/` (`PERSO_HOME` overrides). Data stays in `~/.context-room`; it is backed up (`state-backups/`) before each switch. The first `make perso` makes the launchd launcher follow `current` (backup: `launch-installed.before-perso.py`) and adopts the release it runs today as `previous`. If the Hub does not answer after a switch, the old release comes back. A change of stored data format needs a migration: bump `scripts/perso-data-format` in that PR; `make perso` and `perso-rollback` then refuse until you plan it (`PERSO_ACCEPT_DATA_CHANGE=1` overrides).
