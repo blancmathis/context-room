@@ -46,6 +46,16 @@ restart() {
   done
   health
 }
+# launchd waits ThrottleInterval (30 s in the old plist) before it starts a job again: that was most of a deploy's time.
+ensure_fast_restart() {
+  local plist=$HOME/Library/LaunchAgents/$LABEL.plist cur
+  [ -f "$plist" ] || return 0
+  cur=$(plutil -extract ThrottleInterval raw "$plist" 2>/dev/null || echo 10)
+  [ "$cur" -le 5 ] 2>/dev/null && return 0
+  cp "$plist" "$BASE/$LABEL.before-throttle.plist"
+  plutil -replace ThrottleInterval -integer 2 "$plist" && { launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null; launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null; } || echo "perso: could not shorten ThrottleInterval (not fatal)" >&2
+  return 0
+}
 point() { ln -sfn "$1" "$2"; ln -sfn "$CUR/runtime/bin/context-room.mjs" "$HOME/.local/bin/context-room" 2>/dev/null || true; }
 
 build() {
@@ -93,6 +103,7 @@ install_release() {
     perl -pi -e "s#^RUNTIME = .*#RUNTIME = BASE / 'current/runtime'#" "$LAUNCHER"
   fi
   [ -d "$HUB/hub" ] && tar czf "$backup_dir/hub-before-$name-$(date +%Y%m%d%H%M%S).tgz" -C "$HUB" hub
+  ensure_fast_restart
   local was oldprev; was=$(readlink "$CUR"); oldprev=$(readlink "$PREV" 2>/dev/null || true)
   ln -sfn "$was" "$PREV"; point "releases/$name" "$CUR"
   if restart; then echo "perso: now running $name (was ${was#releases/}); hub $(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/")"
