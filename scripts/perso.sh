@@ -35,8 +35,24 @@ node_bin() {
   [ -x "${n:-}" ] && echo "$n" || command -v node
 }
 health() { for _ in $(seq 1 120); do [ "$(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/" || true)" = 200 ] && return 0; sleep 0.5; done; return 1; }
+PLIST=${PERSO_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}
+# The job must be loaded before kickstart: if it is not (a bootout, a crash of launchd state), bootstrap the plist
+# and wait until launchd reports it. bootout is async, so one bootstrap can fail: retry (~10 s by default).
+ensure_loaded() {
+  local d="gui/$(id -u)" i
+  launchctl print "$d/$LABEL" >/dev/null 2>&1 && return 0
+  [ -f "$PLIST" ] || { echo "perso: $LABEL not loaded and $PLIST missing" >&2; return 1; }
+  echo "perso: $LABEL not loaded; bootstrapping $PLIST" >&2
+  for i in $(seq 1 "${PERSO_LOAD_TRIES:-20}"); do
+    launchctl bootstrap "$d" "$PLIST" >/dev/null 2>&1 || true
+    launchctl print "$d/$LABEL" >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  echo "perso: launchctl bootstrap of $LABEL failed" >&2; return 1
+}
 restart() {
   local old p i; old=$(pgrep -f "context-room.mjs hub.*--port $PORT" || true)
+  ensure_loaded || true   # if it stays unloaded, kickstart fails below and nothing is killed
   # if launchd refuses, the old hub is still the only one running: kill nothing, fail
   launchctl kickstart -k "gui/$(id -u)/$LABEL" || { echo "perso: launchctl kickstart failed; old hub left running" >&2; return 1; }
   # wait for the old hub to exit, so the health check cannot be answered by it
@@ -45,16 +61,6 @@ restart() {
     if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null && { sleep "${PERSO_KILL_GRACE:-15}"; kill -9 "$p" 2>/dev/null || true; echo "stopped stale $p"; }; fi
   done
   health
-}
-# launchd waits ThrottleInterval (30 s in the old plist) before it starts a job again: that was most of a deploy's time.
-ensure_fast_restart() {
-  local plist=$HOME/Library/LaunchAgents/$LABEL.plist cur
-  [ -f "$plist" ] || return 0
-  cur=$(plutil -extract ThrottleInterval raw "$plist" 2>/dev/null || echo 10)
-  [ "$cur" -le 5 ] 2>/dev/null && return 0
-  cp "$plist" "$BASE/$LABEL.before-throttle.plist"
-  plutil -replace ThrottleInterval -integer 2 "$plist" && { launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null; launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null; } || echo "perso: could not shorten ThrottleInterval (not fatal)" >&2
-  return 0
 }
 point() { ln -sfn "$1" "$2"; ln -sfn "$CUR/runtime/bin/context-room.mjs" "$HOME/.local/bin/context-room" 2>/dev/null || true; }
 
@@ -103,7 +109,6 @@ install_release() {
     perl -pi -e "s#^RUNTIME = .*#RUNTIME = BASE / 'current/runtime'#" "$LAUNCHER"
   fi
   [ -d "$HUB/hub" ] && tar czf "$backup_dir/hub-before-$name-$(date +%Y%m%d%H%M%S).tgz" -C "$HUB" hub
-  ensure_fast_restart
   local was oldprev; was=$(readlink "$CUR"); oldprev=$(readlink "$PREV" 2>/dev/null || true)
   ln -sfn "$was" "$PREV"; point "releases/$name" "$CUR"
   if restart; then echo "perso: now running $name (was ${was#releases/}); hub $(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/")"

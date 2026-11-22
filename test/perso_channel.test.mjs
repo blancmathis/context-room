@@ -47,7 +47,7 @@ function mockEnv(home, victimPid) {
   fs.writeFileSync(path.join(bin, "pgrep"), `#!/bin/sh\necho ${victimPid}\n`, { mode: 0o755 });
   const fakeHome = path.join(home, "fakehome");
   fs.mkdirSync(path.join(fakeHome, ".local", "bin"), { recursive: true });
-  return { PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome, NO_INSTALL: "", CONTEXT_ROOM_HUB_HOME: path.join(home, "hub"), PERSO_STOP_WAIT: "1", PERSO_KILL_GRACE: "1" };
+  return { PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome, NO_INSTALL: "", CONTEXT_ROOM_HUB_HOME: path.join(home, "hub"), PERSO_STOP_WAIT: "1", PERSO_KILL_GRACE: "1", PERSO_LOAD_TRIES: "2" };
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
@@ -106,4 +106,64 @@ test("perso prune keeps current, previous and the 3 newest releases, and 10 back
   assert.deepEqual(fs.readdirSync(path.join(home, "releases")).sort(), ["a000001", "a000002", "a000005", "a000006", "a000007"]);
   assert.equal(fs.readdirSync(backups).length, 10);
   assert.ok(fs.existsSync(path.join(backups, "hub-before-x12-2026.tgz")));
+});
+
+// Fake launchctl with state: `print` works only while the job is loaded; `bootstrap` loads it, but the first
+// bootstrap fails (bootout is async). Fake curl answers 200. Calls are logged in order.
+function launchdEnv(home, { kickstartUnloadsFirst = false } = {}) {
+  const bin = path.join(home, "mockbin");
+  fs.mkdirSync(bin, { recursive: true });
+  const st = path.join(home, "ld");
+  fs.mkdirSync(st, { recursive: true });
+  fs.writeFileSync(path.join(bin, "launchctl"), `#!/bin/sh
+S=${st}; echo "$1" >> $S/calls
+case $1 in
+  print) [ -e $S/loaded ] ;;
+  bootstrap) if [ -e $S/boot1 ]; then touch $S/loaded; else touch $S/boot1; exit 5; fi ;;
+  kickstart) [ -e $S/loaded ] || exit 113
+    if [ -n "${kickstartUnloadsFirst ? 1 : ""}" ] && [ ! -e $S/k1 ]; then touch $S/k1; rm -f $S/loaded $S/boot1; exit 113; fi ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "pgrep"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "curl"), "#!/bin/sh\nprintf 200\n", { mode: 0o755 });
+  const fakeHome = path.join(home, "fakehome");
+  fs.mkdirSync(path.join(fakeHome, ".local", "bin"), { recursive: true });
+  const plist = path.join(home, "job.plist");
+  fs.writeFileSync(plist, "<plist/>");
+  const env = { PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome, NO_INSTALL: "", PERSO_PLIST: plist, PERSO_LOAD_TRIES: "4", CONTEXT_ROOM_HUB_HOME: path.join(home, "hub") };
+  const calls = () => fs.readFileSync(path.join(st, "calls"), "utf8").trim().split("\n");
+  const loaded = () => fs.existsSync(path.join(st, "loaded"));
+  return { env, calls, loaded };
+}
+
+test("restart bootstraps the job when it is not loaded, retrying until launchd has it, then kickstarts", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "perso-"));
+  release(home, "aaaaaaa", "1"); release(home, "bbbbbbb", "1");
+  fs.symlinkSync("releases/bbbbbbb", path.join(home, "current"));
+  fs.symlinkSync("releases/aaaaaaa", path.join(home, "previous"));
+  const ld = launchdEnv(home);
+  const result = run(home, "rollback", ld.env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /rolled back to aaaaaaa/);
+  assert.ok(ld.loaded(), "job must be loaded at the end");
+  const c = ld.calls();
+  assert.deepEqual(c.slice(0, 5), ["print", "bootstrap", "print", "bootstrap", "print"]);
+  assert.equal(c.at(-1), "kickstart");
+});
+
+test("revert path reloads the job when the failed restart left it unloaded", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "perso-"));
+  release(home, "aaaaaaa", "1"); release(home, "bbbbbbb", "1"); release(home, "ccccccc", "1");
+  fs.symlinkSync("releases/bbbbbbb", path.join(home, "current"));
+  fs.symlinkSync("releases/aaaaaaa", path.join(home, "previous"));
+  fs.writeFileSync(path.join(home, "launch-installed.py"), "RUNTIME = BASE / 'current/runtime'\n");
+  const ld = launchdEnv(home, { kickstartUnloadsFirst: true });
+  fs.writeFileSync(path.join(home, "ld", "loaded"), "");
+  const result = spawnSync("bash", [script, "install", "ccccccc"], { encoding: "utf8", env: { ...process.env, PERSO_HOME: home, PERSO_PORT: "1", ...ld.env } });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /switching back/);
+  assert.equal(fs.readlinkSync(path.join(home, "current")), "releases/bbbbbbb");
+  assert.ok(ld.loaded(), "the revert must leave the job loaded");
+  assert.ok(ld.calls().includes("bootstrap"));
+  assert.equal(ld.calls().at(-1), "kickstart");
 });
