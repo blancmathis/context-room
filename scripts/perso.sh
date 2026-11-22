@@ -3,6 +3,7 @@
 #   perso.sh perso     build HEAD (clean + pushed) into releases/<sha>/, switch `current`, restart the Hub
 #   perso.sh status    branch, sha, date of the running release
 #   perso.sh rollback  switch back to `previous`
+#   perso.sh prune     keep current + previous + 3 newest releases and 10 newest Hub backups (runs after each install)
 #   perso.sh install N switch to the already built release N (no build)
 # NO_INSTALL=1: build only (perso) or print the plan (rollback). Touches nothing that runs.
 # Env: PERSO_HOME (default ~/.local/share/context-room), CONTEXT_ROOM_HUB_HOME (default ~/.context-room),
@@ -33,7 +34,7 @@ node_bin() {
   local n; n=$(sed -n "s/^NODE = '\(.*\)'/\1/p" "$LAUNCHER" 2>/dev/null | head -1)
   [ -x "${n:-}" ] && echo "$n" || command -v node
 }
-health() { for _ in $(seq 1 60); do [ "$(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/" || true)" = 200 ] && return 0; sleep 2; done; return 1; }
+health() { for _ in $(seq 1 120); do [ "$(curl -sL -o /dev/null -w %{http_code} "http://127.0.0.1:$PORT/" || true)" = 200 ] && return 0; sleep 0.5; done; return 1; }
 restart() {
   local old p i; old=$(pgrep -f "context-room.mjs hub.*--port $PORT" || true)
   # if launchd refuses, the old hub is still the only one running: kill nothing, fail
@@ -49,7 +50,8 @@ point() { ln -sfn "$1" "$2"; ln -sfn "$CUR/runtime/bin/context-room.mjs" "$HOME/
 
 build() {
   cd "$REPO"
-  [ -z "$(git status --porcelain)" ] || die "working tree not clean. Commit first."
+  # PERSO_AUTO=1 (post-commit hook): the build is of the committed HEAD, so loose edits in the tree do not matter
+  [ -n "${PERSO_AUTO:-}" ] || [ -z "$(git status --porcelain)" ] || die "working tree not clean. Commit first."
   git fetch -q origin || die "git fetch failed"
   local full sha; full=$(git rev-parse HEAD); sha=$(git rev-parse --short=7 HEAD)
   [ -n "$(git branch -r --contains "$full")" ] || die "$sha is not pushed. Push the branch first."
@@ -65,7 +67,7 @@ build() {
   # dependencies: reuse a release with the identical lock file, else npm ci
   local d got=""
   for d in ${PERSO_DEPS_FROM:+"$PERSO_DEPS_FROM"} "$CUR/runtime" "$REL"/*/runtime; do
-    [ -d "$d/node_modules" ] && cmp -s "$stage.src/package-lock.json" "$d/package-lock.json" && { cp -R "$d/node_modules" "$stage/runtime/"; got=$d; break; }
+    [ -d "$d/node_modules" ] && cmp -s "$stage.src/package-lock.json" "$d/package-lock.json" && { cp -cR "$d/node_modules" "$stage/runtime/" 2>/dev/null || cp -R "$d/node_modules" "$stage/runtime/"; got=$d; break; }  # cp -c = APFS clone: ~0 extra disk
   done
   [ -n "$got" ] || (cd "$stage/runtime" && "$(dirname "$nodep")/npm" ci --omit=dev --no-audit --no-fund >/dev/null) || die "dependencies missing and npm ci failed"
   printf '{"sha":"%s","fullSha":"%s","branch":"%s","builtAt":"%s","packageVersion":"%s","dataFormat":"%s","port":%s}\n' \
@@ -103,11 +105,26 @@ install_release() {
   fi
 }
 
+# Keep current + previous + the 3 newest other releases, and the 10 newest Hub backups.
+prune() {
+  local c p n=0 d; c=$(rel_name "$CUR"); p=$(rel_name "$PREV")
+  for d in $(ls -1t "$REL" 2>/dev/null); do
+    case $d in .build-*) continue ;; esac
+    [ "$d" = "$c" ] || [ "$d" = "$p" ] && continue
+    n=$((n+1)); [ "$n" -le 3 ] && continue
+    rm -rf "${REL:?}/$d"
+  done
+  find "$REL" -maxdepth 1 -name '.build-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+  ls -1t "$BASE"/state-backups/hub-before-*.tgz 2>/dev/null | tail -n +11 | while read -r f; do rm -f "$f"; done
+  return 0
+}
+
 case ${1:-} in
+  prune) prune; echo "perso: pruned" ;;
   perso) build; [ -n "${NO_INSTALL:-}" ] && { echo "perso: NO_INSTALL set, nothing switched. data-format check would say: $(fmt_of "$CUR" 2>/dev/null) -> $(fmt_of "$DEST")"; exit 0; }
-         install_release "$(basename "$DEST")" ;;
+         install_release "$(basename "$DEST")"; prune ;;
   install) [ -n "${2:-}" ] && [ -f "$REL/$2/perso.json" ] || die "usage: perso.sh install <built release name>"
-    install_release "$2" ;;
+    install_release "$2"; prune ;;
   status) c=$(rel_name "$CUR"); [ -n "$c" ] || die "not installed (no current release)"
     echo "current:  $c  branch=$(field "$CUR" branch)  built=$(field "$CUR" builtAt)  version=$(field "$CUR" packageVersion)"
     echo "previous: $(rel_name "$PREV")"
@@ -118,5 +135,5 @@ case ${1:-} in
     [ -n "${NO_INSTALL:-}" ] && { echo "perso: dry run. would switch current $a -> $b, previous $b -> $a, restart $LABEL"; exit 0; }
     ln -sfn "releases/$a" "$PREV"; point "releases/$b" "$CUR"
     restart && echo "perso: rolled back to $b" || { echo "perso: hub down after rollback to $b" >&2; exit 1; } ;;
-  *) die "usage: perso.sh perso|status|rollback" ;;
+  *) die "usage: perso.sh perso|status|rollback|prune" ;;
 esac

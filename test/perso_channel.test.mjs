@@ -82,3 +82,28 @@ test("failed install restores previous instead of pointing it at the broken rele
     assert.ok(alive(pid));
   } finally { try { process.kill(pid, "SIGKILL"); } catch {} }
 });
+
+test("perso prune keeps current, previous and the 3 newest releases, and 10 backups", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "perso-"));
+  const names = ["a000001", "a000002", "a000003", "a000004", "a000005", "a000006", "a000007"];
+  names.forEach((n, i) => {
+    release(home, n, "1");
+    const t = new Date(Date.now() - (names.length - i) * 60_000);
+    fs.utimesSync(path.join(home, "releases", n), t, t);
+  });
+  fs.symlinkSync("releases/a000001", path.join(home, "current"));
+  fs.symlinkSync("releases/a000002", path.join(home, "previous"));
+  const backups = path.join(home, "state-backups");
+  fs.mkdirSync(backups);
+  for (let i = 0; i < 13; i++) {
+    const f = path.join(backups, `hub-before-x${i}-2026.tgz`);
+    fs.writeFileSync(f, "x");
+    const t = new Date(Date.now() - (13 - i) * 60_000);
+    fs.utimesSync(f, t, t);
+  }
+  const result = run(home, "prune");
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readdirSync(path.join(home, "releases")).sort(), ["a000001", "a000002", "a000005", "a000006", "a000007"]);
+  assert.equal(fs.readdirSync(backups).length, 10);
+  assert.ok(fs.existsSync(path.join(backups, "hub-before-x12-2026.tgz")));
+});

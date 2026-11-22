@@ -303,6 +303,15 @@ const MAX_DELETE_MANIFEST_BYTES = MAX_GIT_HEAD_SNAPSHOT_BYTES;
 const MAX_DELETE_MANIFEST_ENTRIES = PROJECT_EXPLORER_MAX_FILES;
 const MAX_ORPHANED_STAGING_ISSUES_PER_SCOPE = 256;
 
+// Perso channel: scripts/perso.sh writes perso.json beside runtime/. An open page compares this sha to reload itself.
+let persoReleaseCache;
+function contextRoomPersoRelease() {
+  if (persoReleaseCache === undefined) {
+    try { persoReleaseCache = String(JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../perso.json", import.meta.url)), "utf8")).sha || ""); }
+    catch { persoReleaseCache = ""; }
+  }
+  return persoReleaseCache || null;
+}
 function contextRoomBuildRevision() {
   const revision = String(process.env.CONTEXT_ROOM_BUILD_REVISION || "").trim().toLowerCase();
   return /^[a-f0-9]{40}$/.test(revision) ? revision : "";
@@ -26274,6 +26283,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         ok: true,
         version: CONTEXT_ROOM_VERSION,
         buildRevision: contextRoomBuildRevision() || null,
+        release: contextRoomPersoRelease(),
       });
       return;
     }
@@ -26282,6 +26292,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       ok: true,
       version: CONTEXT_ROOM_VERSION,
       buildRevision: contextRoomBuildRevision() || null,
+      release: contextRoomPersoRelease(),
       root,
       projectId: contextRoomProjectId(root),
       files: Number.isFinite(cachedReports?.documentCount) ? cachedReports.documentCount : null,
