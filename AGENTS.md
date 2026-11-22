@@ -29,7 +29,7 @@ These instructions apply to this repository. Use them for Context Room product, 
 
 ## Local Rules
 
-- Perso channel: just commit on branch `perso`. The post-commit hook pushes and deploys by itself (live in the Hub in about 15 s; the open page reloads). Check `tail $PERSO_HOME/perso.log` (default `~/.local/share/context-room/perso.log`): a line `live in N s` = done, `FAILED` = fix and commit again. `make perso` stays as manual fallback. No PR per change, no CI wait. Never set `PERSO_ACCEPT_DATA_CHANGE` or run `deploy-main.sh`; stop and report if the deploy refuses or reverts. Publishing to others: PR `perso` → `main`, only when Mathis says so.
+- Perso channel: just commit on branch `perso`. The post-commit hook pushes and deploys by itself (live in the Hub in about 40 s; the open page reloads). Check `tail $PERSO_HOME/perso.log` (default `~/.local/share/context-room/perso.log`): a line `live in N s` = done, `FAILED` = fix and commit again. `make perso` stays as manual fallback. No PR per change, no CI wait. Never set `PERSO_ACCEPT_DATA_CHANGE` or run `deploy-main.sh`; stop and report if the deploy refuses or reverts. Publishing to others: PR `perso` → `main`, only when Mathis says so.
 
 - Keep Context Room local-first and deterministic. Do not add LLM calls to `doctor`, `guard`, or `brief`.
 - Keep edit and review boundaries explicit. Changes to `allowedPaths`, `watchAllow`, or `reviewPaths` must be source-grounded.
