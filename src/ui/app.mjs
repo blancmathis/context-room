@@ -28218,6 +28218,7 @@ establishWorkspaceIdentity().then(() => {
   stopWorkspaceRuntime();
   showWorkspaceRecovery("Context Room could not start safely. " + error.message);
 });
+import("/assets/ui/perso-reload.mjs").catch(() => {});
 </script>
 </body>
 </html>`;
